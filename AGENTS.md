@@ -3,8 +3,11 @@
 ## Scope and language
 
 - This is a public engineering-record site.
-- Keep every visitor-facing web page, issue title, body text, caption, and
-  news item in Korean.
+- Keep the narrative structure of every visitor-facing web page, issue title,
+  body text, caption, and news item in Korean. Retain established technical
+  terms in English when translating them would be awkward or less precise
+  (for example: Modular, VLA, trial, runtime, adapter, and hand-eye
+  calibration).
 - Keep repository-management documents, instructions, metadata, commit
   messages, and other non-site files in English.
 - The private BeltBench repository owns implementation code. This repository
