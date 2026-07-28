@@ -1,32 +1,39 @@
-# BeltBench Devlog 운영 가이드
+# BeltBench Devlog contributor guide
 
-## 목적과 언어
+## Scope and language
 
-- 이 저장소는 공개 가능한 개발 기록 사이트다.
-- 사용자에게 보이는 페이지, 이슈 제목·본문·캡션·뉴스는 모두 한국어로 작성한다.
-- 구현 코드의 기준 저장소는 private BeltBench이며, 이 저장소에는 코드 전문을
-  중복 보관하지 않는다. 필요한 경우 변경 의도와 커밋 링크만 기록한다.
+- This is a public engineering-record site.
+- Keep every visitor-facing web page, issue title, body text, caption, and
+  news item in Korean.
+- Keep repository-management documents, instructions, metadata, commit
+  messages, and other non-site files in English.
+- The private BeltBench repository owns implementation code. This repository
+  records decisions and sanitized evidence; it does not mirror code trees.
 
-## 미디어와 보안
+## Media and security
 
-- 현장 사진, 스크린샷, 짧은 영상, 다이어그램은 포함할 수 있다.
-- 업로드 전 EXIF 위치 정보를 제거하고, 화면/사진에 다음이 보이지 않도록 점검한다:
-  IP·MAC·호스트명·내부 경로·계정·토큰·비공개 캘리브레이션·원본 데이터.
-- 민감 정보가 공개된 경우 즉시 파일과 참조를 제거하고, 공개 Git 이력도 교체한다.
+- Photos, screenshots, short videos, and diagrams are welcome when they make
+  an issue easier to understand.
+- Strip EXIF location data before publishing. Inspect media for device
+  identifiers, IP/MAC addresses, hostnames, internal paths, accounts, tokens,
+  private calibration, and raw datasets.
+- If sensitive material is published, remove the asset and references
+  immediately, then rewrite the public Git history as appropriate.
 
-## 이슈 문서 형식
+## Issue-page contract
 
-각 이슈 페이지에는 다음을 포함한다.
+Each issue page should cover:
 
-1. 문제와 영향
-2. 관측한 증거(필요 시 정제된 미디어)
-3. 원인 분석
-4. 해결 절차 또는 현재 차단 요인
-5. 검증 결과
-6. 관련 이슈와 다음 단계
+1. problem and impact;
+2. observed evidence, with sanitized media where useful;
+3. diagnosis;
+4. resolution procedure or current blocker;
+5. verification;
+6. related issues and next action.
 
-## 운영 규칙
+## Maintenance rules
 
-- 새 이슈는 issues/<영역>/ 아래에 두고 issues/index.html과 메인 뉴스에서 링크한다.
-- 기존 사진은 assets/images/ 아래의 설명적인 이름으로 보관한다.
-- 모든 변경은 로컬에서 확인한 뒤 공개 원격에 푸시한다.
+- Put new issue pages under issues/<area>/ and link them from issues/index.html
+  and the homepage news section.
+- Keep approved assets under assets/images/ using descriptive filenames.
+- Validate the local site before pushing to the public remote.
