@@ -1,1 +1,76 @@
-<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ISSUE-004 · Inspire left hand 제어 경로</title><link rel="stylesheet" href="../../assets/css/site.css"><style>.diagram{width:100%;margin:26px 0;border:1px solid var(--line);border-radius:14px;background:var(--panel)}.term-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:22px 0}.term{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}.term strong{display:block;margin-bottom:5px}.term p{margin:0;color:var(--muted);font-size:.94rem}@media(max-width:720px){.term-grid{grid-template-columns:1fr}}</style></head><body><header class="top"><div class="wrap"><a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a><nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav></div></header><main class="wrap article"><div class="eyebrow">ISSUE-004 · 연결과 제어 경로 · 2026-07-28</div><h1>Inspire left hand는 보이지만, 아직 제어할 수는 없다.</h1><p class="lede">hand를 별도 Ethernet 링크에 연결한 뒤 physical link, ARP, ICMP까지는 확인했다. 그러나 실제 관절을 읽고 움직이게 하는 Modbus TCP 서비스에는 아직 연결되지 않았다. 이 기록은 <em>ping 성공</em>과 <em>제어 가능</em> 사이에 무엇이 더 필요한지 설명한다.</p><div class="callout warn"><strong>현재 상태:</strong> 상태 레지스터를 읽기 전 TCP 연결이 timeout됐다. 따라서 hand에는 motion command를 보내지 않았다. 네트워크에서 보인다는 사실만으로 open/close를 시도하는 것은 안전하지 않다.</div><div class="photo-grid"><figure><img src="../../assets/images/inspire-left/hand-mounted.jpg" alt="xArm flange에 장착된 Inspire left hand"><figcaption>xArm flange에 장착된 Inspire left hand. 기구 장착과 전원 표시는 확인됐지만, 이것만으로 software control이 준비됐다고 볼 수는 없다.</figcaption></figure><figure><img src="../../assets/images/inspire-left/adapter-wiring.jpg" alt="Inspire hand 통신 어댑터와 배선"><figcaption>hand 통신 어댑터와 배선. 전원, adapter, Ethernet, controller service는 각각 따로 검증한다.</figcaption></figure></div><h2>공식 문서로 보는 장치와 cable interface</h2><p>현장 사진만으로는 adapter의 역할을 파악하기 어려울 수 있어, 아래에는 Inspire의 공식 RH56 user manual 발췌를 함께 둔다. 왼쪽은 여섯 DOF와 Modbus TCP 통신을 명시한 제품 개요이고, 오른쪽은 hand–Ethernet–전원–CAN/RS485 interface의 물리적인 연결을 보여 준다.</p><div class="photo-grid"><figure><img src="../../assets/images/inspire-official/rh56-product-04.jpg" alt="Inspire RH56 user manual의 제품 개요와 통신 사양"><figcaption>공식 문서 발췌: RH56 제품 개요. 6 DOF와 Modbus TCP 기반 통신 사양을 보여 준다. 출처: <a href="https://en.inspire-robots.com/wp-content/uploads/2025/01/INSPIRE-ROBOTS-The-Dexterous-Hand-RH56DFTP-User-Manual-V1.0.0.pdf">Inspire RH56 user manual</a>, p. 1.</figcaption></figure><figure><img src="../../assets/images/inspire-official/rh56-cable-interface.jpg" alt="Inspire RH56 user manual의 cable interface 도해"><figcaption>공식 문서 발췌: cable interface 도해. aviation plug, Ethernet, CAN/RS485, power interface의 구분을 보여 준다. 출처: <a href="https://en.inspire-robots.com/wp-content/uploads/2025/01/INSPIRE-ROBOTS-The-Dexterous-Hand-RH56DFTP-User-Manual-V1.0.0.pdf">Inspire RH56 user manual</a>, p. 3, 보안상 하단 주소 예시는 제외.</figcaption></figure></div><h2>한 장으로 보는 제어 경로</h2><p>로봇 hand 제어는 한 번의 연결이 아니라, 아래 다섯 계층을 차례로 통과하는 과정이다. 현재는 2·3단계는 통과했고 4단계에서 멈췄다.</p><img class="diagram" src="../../assets/images/diagrams/inspire-control-stack.svg" alt="PC 정책, Ethernet link, IP route, TCP Modbus service, hand register와 motion으로 이어지는 다섯 계층 다이어그램"><h2>용어를 먼저 정리하면</h2><div class="term-grid"><div class="term"><strong>NIC · Ethernet · carrier</strong><p>NIC는 PC의 유선 네트워크 포트다. carrier가 있다는 것은 케이블 반대편 장치의 전기적 신호를 감지했다는 뜻이다. 전화선이 꽂혀 있는지 확인하는 수준이다.</p></div><div class="term"><strong>IP · subnet · route</strong><p>IP는 네트워크 주소, subnet은 직접 대화할 수 있는 주소 범위다. route는 PC가 패킷을 어느 NIC로 보낼지 고르는 규칙이다. NIC와 Wi‑Fi가 여러 개면 잘못된 길을 택할 수 있다.</p></div><div class="term"><strong>ARP · ping</strong><p>ARP는 같은 Ethernet 링크에서 상대 IP의 하드웨어 주소를 찾는다. ping은 상대가 네트워크에 응답하는지를 묻는다. 둘은 장치의 기본 도달성만 확인한다.</p></div><div class="term"><strong>TCP · port · service</strong><p>TCP는 신뢰성 있는 연결을 만드는 방식이고, port는 장치 안에서 어떤 프로그램과 대화할지 고르는 번호다. controller가 해당 service를 열고 있어야 연결이 성립한다.</p></div><div class="term"><strong>Modbus TCP</strong><p>산업 장비의 값을 읽고 쓰는 application protocol이다. Ethernet/IP/TCP 위에 올라가며 client가 요청하고 device가 응답한다. 공식 표준은 이를 client/server request-reply 방식으로 정의한다.</p></div><div class="term"><strong>register</strong><p>controller 내부의 번호 붙은 작은 값 저장소다. 현재 관절 angle·force·error를 읽고, target angle·speed·force를 써서 hand에 요청한다.</p></div></div><h2>왜 ping이 되는데 제어가 안 될까?</h2><p>ping은 “이 장치가 네트워크에 살아 있나요?”라는 간단한 질문이다. 반면 제어 프로그램은 “지정된 TCP service에 연결한 뒤, 올바른 Modbus request를 보내고, controller가 이해할 수 있는 register를 읽거나 써도 되나요?”를 확인한다. 전자는 성공해도 후자는 실패할 수 있다.</p><table class="table"><tr><th>검사</th><th>이번 관측</th><th>무엇을 의미하나</th></tr><tr><td>physical link</td><td>hand용 NIC에서 carrier와 link가 감지됐다.</td><td>케이블이 빠졌거나 NIC가 내려간 문제는 아니다.</td></tr><tr><td>ARP · ICMP</td><td>hand controller로부터 응답을 받았다.</td><td>전원·기본 주소 도달성은 확보됐다.</td></tr><tr><td>기본 route</td><td>OS가 hand 전용 NIC가 아닌 Wi‑Fi를 먼저 선택했다.</td><td>초기 요청이 의도하지 않은 네트워크로 갈 수 있었다.</td></tr><tr><td>전용 NIC 지정</td><td>로컬 source address를 명시한 뒤에도 TCP 연결은 timeout됐다.</td><td>route 문제는 분리됐고, 남은 병목은 controller service다.</td></tr><tr><td>Modbus status read</td><td>관절 위치를 읽기 전에 TCP session이 성립하지 않았다.</td><td>motion은 보류한다. service·port·device mode를 확인해야 한다.</td></tr></table><h2>Inspire hand는 어떤 방식으로 움직이나</h2><p>ParaDex의 reference controller는 Modbus TCP를 통해 여섯 관절의 값을 다룬다. <strong>read</strong>는 현재 angle, force, error, status를 가져오고, <strong>write</strong>는 목표 angle과 설정값을 보낸다. 이때 hand controller가 목표값을 받아 실제 모터를 움직인다.</p><p>중요한 점은 low-level hand command와 grasp policy가 다르다는 것이다. low-level command는 “여섯 관절을 이 목표값으로 보내라”이고, policy는 카메라와 task 상태를 보고 “언제 열고, 언제 닫고, 실패하면 어떻게 다시 시도할지”를 결정한다. BeltBench M0에서는 이 둘을 분리해 기록해야 공정한 비교가 가능하다.</p><h2>안전한 제어 순서</h2><ol><li><strong>status read</strong>: 먼저 actual angle·force·error·status를 읽는다. 이 단계는 움직이지 않는다.</li><li><strong>human check</strong>: 오류 상태가 없는지, 손 주변과 basket이 안전한지, 목표 방향이 맞는지 사람이 확인한다.</li><li><strong>one explicit write</strong>: 확인 뒤에만 single open 또는 task action을 한 번 전송한다.</li><li><strong>evidence 기록</strong>: 명령 전후 상태와 영상·trial log를 남겨, 나중에 성공·실패를 재검토할 수 있게 한다.</li></ol><h2>BeltBench에 통합한 구현</h2><p>private BeltBench에는 표준 library 기반의 작은 <code>InspireModbusHand</code> adapter를 추가했다. 기존 ParaDex controller처럼 생성과 동시에 기본 목표값을 쓰거나 background loop를 시작하지 않는다. 대신 <code>status</code>는 읽기만 하고, <code>open</code>은 workspace 확인을 뜻하는 명시적 confirmation 없이는 실행되지 않는다.</p><p>이 adapter는 ParaDex를 복제하기 위한 것이 아니다. M0 benchmark에 필요한 공통 계약—관측, 상태 확인, 단일 action, evidence—만 남긴 얇은 hardware adapter다. endpoint와 NIC 주소는 local configuration으로만 전달하며 repository와 public devlog에는 저장하지 않는다.</p><h2>다음 해결 순서</h2><ol><li>controller가 부팅 완료·원격 제어 가능 상태인지 hand UI 또는 vendor tool에서 확인한다.</li><li>현재 firmware가 제공하는 Modbus TCP service와 port를 user manual 기준으로 확인한다.</li><li>전용 NIC를 명시한 상태로 <code>status</code> read가 성공하는지 검증한다.</li><li>error·status가 정상이고 workspace가 비어 있을 때에만 단일 <code>open</code>을 실행한다.</li><li>그 뒤에만 xArm–hand joint control과 M0 pick-place sequence로 확장한다.</li></ol><h2>참고 자료</h2><ul><li><a href="https://en.inspire-robots.com/wp-content/uploads/2025/01/INSPIRE-ROBOTS-The-Dexterous-Hand-RH56DFTP-User-Manual-V1.0.0.pdf" rel="noopener noreferrer">INSPIRE RH56 Dexterous Hand User Manual</a> — hand의 Modbus TCP frame과 기능 코드를 확인할 때 쓴 vendor manual.</li><li><a href="https://www.modbus.org/introduction-to-modbus" rel="noopener noreferrer">Modbus Organization: Introduction to Modbus</a> — Modbus가 Ethernet/TCP 위에서 동작하는 application protocol이라는 설명.</li><li><a href="https://www.modbus.org/modbus-specifications" rel="noopener noreferrer">Modbus specifications</a> — protocol과 TCP implementation guide의 공식 목록.</li></ul><h2>관련 이슈</h2><p><a href="xarm-network.html">ISSUE-001</a>은 xArm에서 physical link와 host routing을 분리해 해결한 사례다. hand에서도 route 문제를 같은 방식으로 분리했고, 현재 남은 병목은 controller service다. 이 문제가 해결돼야 <a href="../benchmark/tabletop-protocol.html">M0 table-top trial</a>에서 arm과 hand를 함께 평가할 수 있다.</p></main><footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer></body></html>
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ISSUE-004 · Inspire left hand 직렬 제어</title>
+  <link rel="stylesheet" href="../../assets/css/site.css">
+  <style>
+    .diagram{width:100%;margin:26px 0;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
+    .term-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:22px 0}
+    .term{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+    .term strong{display:block;margin-bottom:5px}.term p{margin:0;color:var(--muted);font-size:.94rem}
+    @media(max-width:720px){.term-grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <header class="top"><div class="wrap"><a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a><nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav></div></header>
+  <main class="wrap article">
+    <div class="eyebrow">ISSUE-004 · hand interface · 2026-07-29 · 해결</div>
+    <h1>Inspire left hand의 제어 경로는 Ethernet이 아니라 USB–RS485였다.</h1>
+    <p class="lede">초기 진단은 hand를 네트워크 장치로 가정해 link·route·TCP를 살폈다. 그러나 실제 연결은 USB–RS485 adapter를 통한 RH56 직렬 프로토콜이었다. 통신 계층을 바로잡은 뒤, hand를 움직이지 않는 <em>actual angle</em> 읽기로 여섯 관절의 응답을 검증했다.</p>
+
+    <div class="callout"><strong>검증 결과:</strong> adapter 열거, 직렬 포트 개방, RH56 상태 요청, 응답 헤더와 checksum 검증, 여섯 관절 값 복호화까지 성공했다. 이 검증에는 목표 자세를 쓰거나 hand를 움직이는 명령을 사용하지 않았다.</div>
+
+    <div class="photo-grid">
+      <figure><img src="../../assets/images/inspire-left/hand-mounted.jpg" alt="xArm flange에 장착된 Inspire left hand"><figcaption>xArm flange에 장착된 Inspire left hand. 기구 장착·전원·통신은 각각 별도의 확인 대상이다.</figcaption></figure>
+      <figure><img src="../../assets/images/inspire-left/adapter-wiring.jpg" alt="Inspire hand 통신 adapter와 배선"><figcaption>hand와 PC 사이의 통신 adapter 및 배선. 이 구성에서는 Ethernet service가 아니라 serial request–response를 사용한다.</figcaption></figure>
+    </div>
+
+    <h2>무엇이 잘못된 가정이었나</h2>
+    <p>케이블의 physical link나 IP 응답은 Ethernet 경로가 살아 있는지를 보여 줄 뿐이다. 이번 hand의 실제 controller interface는 RS485였다. RS485는 두 선을 이용해 장치 사이에 직렬 데이터를 주고받는 산업용 통신 방식이다. USB adapter가 PC에서는 일반적인 serial device처럼 보이고, 그 위에서 RH56의 자체 frame 형식이 동작한다.</p>
+    <p>따라서 TCP port나 Modbus TCP service를 찾는 것은 이 구성의 병목을 해결하지 못한다. 이전의 timeout은 hand 고장이 아니라 <strong>잘못 선택한 transport</strong>를 검사한 결과였다. 연결 방식은 현장 adapter와 vendor protocol로 확인하고, 읽기 요청부터 최소 단위로 검증해야 한다.</p>
+
+    <h2>읽기 요청이 실제로 하는 일</h2>
+    <table class="table"><tr><th>PC</th><th>USB–RS485 adapter</th><th>RH56 controller</th><th>hand 상태</th></tr><tr><td>read-only status command</td><td>USB bytes ↔ serial signal</td><td>ANGLE_ACT register를 읽음</td><td>여섯 관절 값과 frame checksum을 반환</td></tr></table>
+    <div class="term-grid">
+      <div class="term"><strong>USB–RS485 adapter</strong><p>PC의 USB 데이터를 RS485 전기 신호로 바꾼다. adapter 자체는 hand를 제어하지 않으며, 바이트를 정확히 전달하는 통로다.</p></div>
+      <div class="term"><strong>baud rate · 8-N-1</strong><p>직렬 통신의 속도와 한 글자(frame bit)의 형식을 정하는 약속이다. 양쪽이 같은 설정을 써야 문자가 깨지지 않는다.</p></div>
+      <div class="term"><strong>RH56 frame</strong><p>시작 바이트, hand ID, 길이, 명령, register 주소, payload, checksum으로 이루어진 요청·응답 묶음이다. 길이와 checksum이 맞아야 받은 데이터가 온전하다고 판단한다.</p></div>
+      <div class="term"><strong>register</strong><p>controller 내부의 번호 붙은 값 저장소다. actual angle은 현재 손가락 관절 상태를 읽는 register이고, target angle은 움직임을 요청하는 별도 register다.</p></div>
+    </div>
+
+    <h2>안전하게 검증한 순서</h2>
+    <ol>
+      <li>OS가 USB–RS485 adapter를 인식하는지 확인했다.</li>
+      <li>vendor manual의 직렬 설정으로 port를 열고, 입력 buffer를 비웠다.</li>
+      <li><code>ANGLE_ACT</code> register에 한 번의 read frame을 보냈다. 이 frame은 현재 상태만 요청하며 motion을 유발하지 않는다.</li>
+      <li>반환된 frame의 시작 바이트, hand ID, 명령, register 주소, checksum을 모두 확인했다.</li>
+      <li>12-byte payload를 little-endian signed integer 여섯 개로 해석해 관절 상태를 얻었다.</li>
+    </ol>
+    <p>이 순서는 제어 전에 통신을 좁게 검증하는 방법이다. <strong>응답이 온다</strong>와 <strong>안전하게 움직일 수 있다</strong>는 별개의 주장이다. motion은 workspace, xArm 상태, 사람이 확인한 목표 자세가 갖춰진 별도 단계에서만 실행한다.</p>
+
+    <h2>BeltBench에 남긴 최소 구현</h2>
+    <p>private BeltBench에는 <code>InspireSerialHand</code>라는 작은 hardware adapter를 추가했다. Python 표준 library만 사용해 외부 serial package에 의존하지 않고, import나 객체 생성만으로는 port를 열거나 명령을 보내지 않는다. 현재 CLI가 제공하는 것은 <code>status</code> 하나이며 read-only다.</p>
+    <p>driver는 요청 frame을 만들고 응답의 구조와 checksum을 확인한 뒤 상태만 반환한다. 쓰기 API는 향후 명시적이고 검토 가능한 action으로 제한할 수 있도록 분리했지만, benchmark 실행 경로에는 자동 motion이나 background loop를 넣지 않았다. 장치 경로·식별자·실측 관절 값은 local configuration과 trial evidence에만 두며 공개 기록에는 남기지 않는다.</p>
+
+    <h2>다음 단계</h2>
+    <ol>
+      <li>상태 read를 trial 시작 전 health check로 연결한다.</li>
+      <li>open/close 같은 단일 action은 사람이 승인한 안전 자세와 workspace 확인을 통과할 때만 추가한다.</li>
+      <li>xArm motion, camera timestamp, hand state를 같은 evidence record에 묶는다.</li>
+      <li>그 뒤에만 <a href="../benchmark/tabletop-protocol.html">정지 테이블탑 pick-place 평가</a>의 grasp·place 성공 기준에 hand action을 포함한다.</li>
+    </ol>
+
+    <h2>관련 이슈</h2>
+    <p><a href="xarm-network.html">ISSUE-001</a>은 xArm의 Ethernet 연결을 계층별로 진단한 사례다. 이번에는 같은 원칙—physical link, transport, protocol, application을 분리—을 적용해 interface 자체가 다르다는 점을 확인했다. <a href="calibration-automation.html">ISSUE-005</a>의 workcell calibration과 함께 완성되면, hand 상태도 camera·xArm 관측과 같은 trial 맥락에서 기록할 수 있다.</p>
+
+    <h2>참고 자료</h2>
+    <ul>
+      <li>INSPIRE-ROBOTS, <em>The Dexterous Hand RH56 Series User Manual</em> — serial frame, register와 checksum 확인에 사용한 vendor manual.</li>
+      <li><a href="https://en.wikipedia.org/wiki/RS-485" rel="noopener noreferrer">RS-485 개요</a> — differential serial bus의 기본 개념.</li>
+    </ul>
+  </main>
+  <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
