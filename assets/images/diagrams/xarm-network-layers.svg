@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="480" viewBox="0 0 1200 480" role="img" aria-labelledby="title">
+<title id="title">xArm connection diagnostic layers</title><defs><style>text{font-family:system-ui,sans-serif;fill:#e8eef8}.b{fill:#15243a;stroke:#78b7ff;stroke-width:2}.n{font-size:24px;font-weight:700}.s{font-size:18px;fill:#b8c8df}</style></defs><rect width="1200" height="480" fill="#0c1422"/><text x="60" y="54" class="n">xArm 연결은 다섯 개의 독립적인 문을 통과한다</text>
+<g transform="translate(80 100)"><rect class="b" width="1040" height="58" rx="12"/><text x="24" y="36" class="n">1 · Physical link</text><text x="330" y="36" class="s">케이블과 NIC가 전기 신호를 감지하는가?</text></g>
+<g transform="translate(80 170)"><rect class="b" width="1040" height="58" rx="12"/><text x="24" y="36" class="n">2 · IPv4 subnet</text><text x="330" y="36" class="s">PC와 controller가 같은 주소 범위에서 서로를 찾는가?</text></g>
+<g transform="translate(80 240)"><rect class="b" width="1040" height="58" rx="12"/><text x="24" y="36" class="n">3 · Route + ARP</text><text x="330" y="36" class="s">패킷이 올바른 유선 NIC로 가고, 상대 Ethernet 주소를 찾는가?</text></g>
+<g transform="translate(80 310)"><rect class="b" width="1040" height="58" rx="12"/><text x="24" y="36" class="n">4 · Control service</text><text x="330" y="36" class="s">controller가 제어용 TCP service를 열고 응답하는가?</text></g>
+<g transform="translate(80 380)"><rect class="b" width="1040" height="58" rx="12"/><text x="24" y="36" class="n">5 · Safe control</text><text x="330" y="36" class="s">Studio에서 error·estop·workspace를 확인한 뒤 제어 가능한가?</text></g></svg>
