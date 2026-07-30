@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Data layout · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+<style>pre{overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;line-height:1.55;white-space:pre-wrap}</style>
+</head>
+<body>
+<header class="top"><div class="wrap"><a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a><nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav></div></header>
+<main class="wrap article">
+<div class="eyebrow">DATA LAYOUT · 2026-07-30</div>
+<h1>코드는 가볍게, 실험 데이터는 확장 가능하게.</h1>
+<p class="lede">새 object와 실험 환경을 추가해도 repository 구조를 바꾸지 않도록, 코드·설정과 private asset·실험 기록을 분리했다.</p>
+<h2>한 개의 private data root</h2>
+<p>실행 시 <code>BELTBENCH_DATA_ROOT</code>를 지정한다. 이 경로는 Git에 올리지 않으며, 기존 AutoDex·ParaDex checkout을 runtime dependency로 쓰지 않는다.</p>
+<pre>export BELTBENCH_DATA_ROOT=/private/path/beltbench
+
+assets/objects/OBJECT/       # mesh, URDF, candidate, provenance
+assets/robots/ROBOT/         # robot description asset
+assets/models/MODEL/REV/     # 실제 runner가 쓰는 model revision만
+calibration/archive/RUN/     # 보정 이미지, session, result
+observations/OBJECT/RUN/     # 두 camera observation
+plans/OBJECT/RUN.json        # execution-blocked proposal
+trials/PROTOCOL/RUN/         # 평가 기록
+visualizations/OBJECT/RUN.glb</pre>
+<h2>왜 archive인가</h2>
+<p>Calibration, observation, plan, trial은 이전 결과를 덮어쓰지 않는다. 새 run 이름으로 저장하고, 어느 결과를 사용할지는 다음 명령에서 명시적으로 선택한다. 따라서 calibration이 바뀌어도 과거 observation과 실험 기록의 근거가 사라지지 않는다. 재생성 가능한 중간 파일만 cache에 둔다.</p>
+<h2>asset 추가 원칙</h2>
+<p>object별 asset은 필요한 최소 mesh, URDF, candidate만 독립 data root로 복사한다. 큰 learned model은 실제 BeltBench runner가 소비할 때에만 revision 단위로 추가하며, source revision과 checksum을 함께 남긴다. 이렇게 하면 특정 object의 예외 코드나 사용하지 않는 model 사본이 쌓이지 않는다.</p>
+<h2>공개 기록의 경계</h2>
+<p>이 페이지는 구조와 재현 원칙만 공개한다. 실제 private path, network address, device identifier, transform, calibration 수치, raw observation은 저장소 밖의 local configuration과 private data root에 남긴다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
