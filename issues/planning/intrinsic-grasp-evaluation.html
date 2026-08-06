@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Arm-independent intrinsic grasp 평가 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-010 · 2026-08-07 · 구조 검증, 후보 탈락</div>
+<h1>검증된 grasp가 없으면 새로 생성하되, 재사용 후보와 같은 독립 평가를 통과시킨다.</h1>
+<p class="lede">AutoDex 계열에서 동일한 물체, stable pose, hand, 작업 capability로 이미 검증된 grasp가 있다면 생성 비용을 줄일 수 있다. 그러나 검증 범위가 다르거나 그런 grasp가 없다면 BODex 같은 provider로 후보를 생성해야 한다. 두 경로의 차이는 후보를 얻는 방법뿐이며, BeltBench에서는 접촉, task wrench, support, 접근, hand closure, release를 같은 arm-independent evaluator로 다시 확인한다.</p>
+
+<h2>문제와 영향</h2>
+<p>기존 legacy Pepsi Light/Inspire-left pose는 실제 mesh와 hand joint pose를 포함하지만 검증된 grasp는 아니었다. provider가 남긴 success, contact count, native error를 그대로 신뢰하면 생성기의 내부 목적함수를 BeltBench 작업 성공 기준으로 오해하게 된다. 반대로 xArm IK와 workcell collision을 먼저 검사하면 hand-object grasp 품질이 특정 arm 배치에 묶여 재사용성이 사라진다.</p>
+<div class="grid two">
+<div class="card"><h3>Stale provenance</h3><p>원본 legacy grasp 파일이 바뀐 뒤 local fixture가 과거 SHA-256을 유지하고 있었다. 이전 loader는 JSON 구조만 읽었기 때문에 이 차이를 즉시 드러내지 못했다.</p></div>
+<div class="card"><h3>중복 hand geometry 경로</h3><p>기존 combined checker가 arm과 hand를 한 class 안에서 모두 배치했다. intrinsic 평가를 별도로 추가하면 mimic joint와 geometry placement가 두 구현으로 갈라질 위험이 있었다.</p></div>
+<div class="card"><h3>품질값 의미 혼합</h3><p>BODex native residual은 후보 생성기의 QP 목적값이다. BeltBench의 지정 작업 wrench를 견디는 margin과 단위, 정규화, acceptance 의미가 같지 않다.</p></div>
+<div class="card"><h3>거리 API 경고</h3><p>hpp-fcl 3.0에서 nearest-point enable flag가 deprecated되었다. 계속 사용하면 관통 상태의 signed distance와 법선 의미가 불명확해질 수 있었다.</p></div>
+</div>
+
+<h2>해결 구조</h2>
+<ol>
+<li><strong>후보 획득:</strong> 정확히 호환되는 검증 grasp가 있으면 재사용하고, 없으면 offline provider가 <code>unvalidated_proposal</code>을 생성한다.</li>
+<li><strong>Provenance gate:</strong> proposal batch뿐 아니라 provider input과 proposal-local source를 모두 다시 hash한다.</li>
+<li><strong>Hand-only geometry:</strong> end-effector URDF, root link, collision geometry identity, package path, SHA-256을 별도 manifest로 고정한다. arm URDF와 mount transform은 intrinsic 입력에서 제외한다.</li>
+<li><strong>기하 평가:</strong> 실제 hand collision geometry와 object mesh로 endpoint 접촉점·법선, non-contact clearance, self-collision, support plane을 계산한다.</li>
+<li><strong>경로 평가:</strong> open hand의 object-relative 접근과 fixed grasp pose의 closure를 각각 샘플링한다. intentional fingertip 이외의 충돌과 허용치를 넘는 관통을 실패로 남긴다.</li>
+<li><strong>Task quality:</strong> 마찰 피라미드와 접촉별 힘 상한을 둔 LP로 각 지정 wrench의 최대 균형 margin을 구하고 최솟값을 품질로 사용한다.</li>
+<li><strong>Release:</strong> drop capability는 별도 open command에서 잔류 접촉과 clearance를 검사한다.</li>
+<li><strong>Promotion과 deployment:</strong> approved protocol의 모든 intrinsic gate가 통과해야 <code>offline_intrinsic</code>으로 승격한다. 이후 robot IK, mount, arm-hand-workcell collision과 timing은 별도 평가한다.</li>
+</ol>
+<pre><code>maximize lambda
+subject to G alpha + lambda w_task = 0
+           alpha &gt;= 0
+           sum(alpha per contact) &lt;= 1</code></pre>
+<p>토크는 명시한 object-frame 기준점과 characteristic length로 정규화한다. provider score는 이 LP에 입력되지 않는다. combined arm-hand checker도 같은 hand-only model을 합성하도록 리팩터링해 joint expansion과 geometry placement 구현을 하나로 유지했다. 거리 질의는 최신 signed-distance API로 교체했다.</p>
+
+<h2>Legacy Pepsi 후보 진단 결과</h2>
+<table class="table">
+<tr><th>항목</th><th>관측</th><th>기준</th><th>판정</th></tr>
+<tr><td>Intentional fingertip contact</td><td>middle, ring 2개</td><td>최소 3개</td><td>실패</td></tr>
+<tr><td>최소 task-wrench margin</td><td>0</td><td>0.01 이상</td><td>실패</td></tr>
+<tr><td>Endpoint support clearance</td><td>약 2.68 mm</td><td>9 mm 이상</td><td>실패</td></tr>
+<tr><td>Closure 최대 관통</td><td>약 28.25 mm</td><td>0.5 mm 이하</td><td>실패</td></tr>
+<tr><td>Open release clearance</td><td>약 52.56 mm, 잔류 접촉 0</td><td>3 mm 이상, 접촉 0</td><td>통과</td></tr>
+<tr><td>Grasp-to-release 최대 관통</td><td>약 28.25 mm</td><td>0.5 mm 이하</td><td>실패</td></tr>
+</table>
+<p>두 fingertip은 collision이 아니라 각각 약 0.62 mm와 1.94 mm의 양의 표면 거리에서 contact threshold에 들어왔다. 반면 open-to-grasp 선형 closure 중에는 hand geometry가 물체를 깊게 통과했다. Open release endpoint 자체는 깨끗했지만 grasp-to-open 경로도 같은 관통 구간을 역으로 지났다. 이는 endpoint pose만 보는 검사가 놓치는 실패이며, 이 pose 또는 closure/release policy를 그대로 사용할 수 없음을 뜻한다.</p>
+<div class="callout"><strong>해석 경계:</strong> 현재 upside-down stable pose, 접근 방향, 마찰계수, task-wrench set은 provisional이다. 따라서 위 수치는 실제 grasp 성공률이나 하드웨어 안전을 증명하지 않는다. 다만 이 provisional 조건에서도 legacy 후보가 승격 기준에 크게 못 미친다는 진단은 재현됐다.</div>
+
+<h2>검증과 다음 행동</h2>
+<p>합성 opposing-contact 사례에서 양·음 force margin이 양수이고 생성할 수 없는 축 torque margin은 0이 되는지 확인했다. no-contact, explicit evaluator failure, source checksum drift가 모두 fail-closed로 동작하며, 기존 combined collision 결과도 hand-only model 합성 후 유지되는 회귀 테스트를 추가했다. Planning 환경에서 관련 전체 test 136개, OpenCV가 분리된 calibration 환경에서 14개가 통과했다. 실제 평가 artifact에는 NumPy 1.26.4, SciPy 1.13.1, Pinocchio 3.4.0, hpp-fcl 3.0.1, trimesh 4.8.3과 evaluator source SHA를 기록했다.</p>
+<p>첫 전체 test discovery는 <code>tests/</code>를 importable package로 요구하는 unittest 옵션 때문에 시작 전에 실패했다. 모든 module을 명시하는 기존 방식으로 바꿔 실제 136개 test를 실행했다. OpenCV test를 처음에는 존재하지 않는 환경 이름으로 호출해 실패했고, dependency가 설치된 calibration 환경으로 바로잡아 14개를 통과시켰다. 이 두 실패는 algorithm failure와 분리했다.</p>
+<p>실제 Pepsi mesh와 Inspire URDF 실행은 상세 evaluation bundle과 promotion summary를 생성했지만 항상 execution-blocked로 남는다. 마지막 negative smoke에서는 assessment, evaluation, proposal, protocol, asset, evaluator source checksum을 모두 재검증한 다음 promotion이 위 failure code를 이유로 거부되는 것을 확인했다. Public devlog의 새 page, issue index, homepage, CSS도 local static server에서 모두 HTTP 200을 반환했다.</p>
+<p>다음 단계는 stable pose를 측정해 provisional 상태를 해소하고, approved task protocol을 확정한 뒤 BODex에서 여러 후보를 새로 생성하는 것이다. 모든 후보를 같은 evaluator로 batch 평가하고, 통과 후보만 xArm deployment와 moving interception planning으로 넘긴다. 선형 closure가 계속 관통한다면 threshold를 완화하는 대신 hand closing trajectory 또는 후보 생성 제약을 수정해야 한다.</p>
+<p><a href="offline-planning-viser-plan.html">Offline planning과 Viser 기록</a>에서 이후 robot deployment와 moving interception 연결을 계속 관리한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
