@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Offline planning과 Viser 구현 계획 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-009 · 2026-08-06 · 진행 중</div>
+<h1>실제 로봇 없이 planning 결과와 실패 원인을 Viser에서 검증한다.</h1>
+<p class="lede">현재 가능한 연구 범위를 offline planning과 visualization까지로 제한했다. 목표는 conveyor animation을 빠르게 만드는 것이 아니라, 저장된 scene과 plan만으로 grasp 후보가 왜 가능하거나 불가능한지 재현하고 검사할 수 있는 기반을 만드는 것이다.</p>
+
+<h2>현재 구현에서 확인한 한계</h2>
+<p>기존 xArm trajectory는 URDF의 여섯 revolute joint를 읽어 numerical IK와 cubic interpolation을 수행한다. joint limit과 velocity는 확인하지만 fixed joint를 포함한 전체 robot geometry, self-collision, table·conveyor collision, 여러 grasp 후보 비교, object motion과 intercept time은 다루지 않는다. 기존 visualizer는 최종 상태와 tool path를 GLB로 내보내므로 공유에는 적합하지만 timeline과 실패 진단을 대화형으로 확인할 수 없다.</p>
+
+<h2>설계 원칙</h2>
+<div class="grid two">
+<div class="card"><h3>Artifact가 기준이다</h3><p>scene, request, plan, validation을 versioned JSON으로 먼저 저장한다. planner와 Viser는 같은 artifact를 사용하며 UI가 pose나 trajectory를 임의로 다시 계산하지 않는다.</p></div>
+<div class="card"><h3>Viewer는 계산하지 않는다</h3><p>Viser는 robot·hand·object·conveyor, candidate, trajectory, collision 진단을 표시할 뿐이다. FK, IK, collision, candidate ranking과 timing은 planning module이 담당한다.</p></div>
+<div class="card"><h3>검증기는 planner와 독립적이다</h3><p>planner가 성공을 선언해도 별도 validator가 joint, velocity, acceleration, clearance와 timing margin을 다시 계산한다. validator를 통과하지 못한 plan은 항상 execution-blocked다.</p></div>
+<div class="card"><h3>실환경 입력은 adapter다</h3><p>지금은 synthetic object state를 사용한다. 이후 FoundationPose·GoTrack 결과는 같은 ObjectState contract로 변환하므로 planning과 Viser 내부를 바꾸지 않는다.</p></div>
+</div>
+
+<h2>구현 단계</h2>
+<ol>
+<li><strong>P0 · fixture와 contract:</strong> frame, unit, asset checksum을 가진 planning scene과 request/result schema를 고정하고 synthetic fixture를 만든다.</li>
+<li><strong>P1 · Viser scene:</strong> robot link, Inspire hand, object, conveyor, collision proxy와 좌표계를 표시한다. joint slider 결과와 Pinocchio FK가 일치하는지 검사한다.</li>
+<li><strong>P2 · static grasp feasibility:</strong> 여러 object-frame grasp를 workspace, approach, multi-seed IK, joint limit, self/environment collision 순서로 거르고 rejection reason을 색으로 표시한다.</li>
+<li><strong>P3 · collision-aware motion:</strong> start, pre-grasp, grasp, lift, retreat를 계획하고 time parameterization 후 더 촘촘한 sample로 독립 재검증한다.</li>
+<li><strong>P4 · plan playback:</strong> play/pause, scrubber, phase 이동, tool/object path, minimum-clearance pair, score와 timing을 표시하고 두 plan을 비교한다.</li>
+<li><strong>P5 · moving interception:</strong> 일정 속도 object의 미래 pose와 후보 intercept time을 탐색하고 latency를 포함한 도착 가능성과 dynamic collision을 검사한다.</li>
+<li><strong>P6 · 반복 평가:</strong> object pose, belt speed, robot start, latency, obstacle, grasp set을 seeded matrix로 실행해 feasibility, failure taxonomy, planning time, clearance와 timing margin을 집계한다.</li>
+</ol>
+
+<h2>도구의 역할</h2>
+<p>Pinocchio는 robot kinematics와 geometry model, hpp-fcl은 collision과 distance query에 사용한다. sampling planner와 time parameterizer는 교체 가능한 interface 뒤에 둔다. Viser는 interactive diagnostic frontend로만 사용하고 기존 GLB export는 정적 공유 수단으로 유지한다. CPU core, offline planning, GoTrack GPU 환경은 서로 분리해 pinning한다.</p>
+
+<h2>첫 번째 완료 기준</h2>
+<div class="callout"><strong>첫 milestone:</strong> 저장된 static scene 하나를 Viser에서 열고, 모든 grasp 후보의 accepted/rejected 상태와 이유를 확인하며, 같은 결과를 독립 validation artifact로 재현한다.</div>
+<p>그 다음에만 collision-aware trajectory와 playback을 추가한다. 움직이는 object는 static planning의 FK·collision·timing 검증이 끝난 뒤 도입해 원인 혼합을 방지한다. 현재 단계는 계획 수립이며 Pinocchio, hpp-fcl, Viser dependency 설치 smoke와 license 확인은 아직 수행하지 않았다.</p>
+
+<h2>2026-08-06 · P0/P1 첫 vertical slice</h2>
+<p><code>PlanningScene</code>, entity, trajectory frame을 versioned JSON으로 정의하고 arm, hand, target, distractor, conveyor가 반드시 존재하는지 검증하도록 구현했다. synthetic selective-pick fixture는 target만 들어 올려 destination으로 옮기고 다른 object는 belt를 따라 계속 이동한다. live Viser에는 play/pause, timeline, speed와 arm·hand·target·other objects·conveyor·environment·trajectory·frame toggle을 추가했다.</p>
+<p>같은 scene adapter를 live viewer와 exporter가 공유한다. 121 frame, 8초 trajectory를 JSON으로 저장하고 Viser serializer로 timeline이 포함된 self-contained HTML animation을 만들었다. UI는 FK나 trajectory를 다시 계산하지 않고 저장된 frame pose만 표시한다.</p>
+
+<h2>구현 중 발생한 문제</h2>
+<div class="grid two">
+<div class="card"><h3>가변 link처럼 보이는 fixture</h3><p>초기 arm pose 계산은 elbow를 wrist 위치의 비율로 정해 link 길이가 trajectory 동안 달라질 수 있었다. 실제 planning과 혼동되는 잘못된 표현이므로 고정 길이 two-link 기하를 도입하고 모든 wrist waypoint에 reachability guard를 적용했다.</p></div>
+<div class="card"><h3>reachability 실패</h3><p>첫 artifact 생성에서 최대 wrist 거리가 설정 reach를 약간 초과해 즉시 실패했다. guard를 우회하지 않고 link 길이와 workcell fixture를 함께 검토해 모든 waypoint가 명시적 reach 안에 들도록 수정했다.</p></div>
+<div class="card"><h3>회전 경고</h3><p>한 vector만으로 link orientation을 맞추자 roll이 유일하지 않다는 SciPy 경고가 발생했다. local Z를 link 방향으로 보내는 최소 회전을 axis-angle로 직접 계산해 결정적 orientation으로 교체했다.</p></div>
+<div class="card"><h3>중복 가능성</h3><p>live viewer와 animation exporter가 scene 생성 코드를 각각 가지면 display가 달라질 수 있다. 공통 Viser scene adapter를 만들고 두 command가 같은 entity handle과 frame 적용 함수를 사용하도록 정리했다.</p></div>
+</div>
+
+<h2>검증 결과와 경계</h2>
+<p>로컬에 별도 Python 3.10 visualization 환경과 Viser 1.0.29를 생성했다. 신규 planning contract·playback test 5개가 통과했고, GPU 서버에서는 기존 test와 합쳐 23개가 통과했다. live server의 HTTP 응답과 121-frame standalone animation 생성을 확인했다.</p>
+<div class="callout"><strong>아직 실행 불가:</strong> 현재 arm과 hand는 contract·playback 검증을 위한 schematic geometry다. xArm URDF FK, 실제 Inspire mesh, grasp candidate IK, self/environment collision은 아직 연결하지 않았다. artifact의 execution-blocked reason에 이 경계를 기록한다.</div>
+<p><a href="../setup/modular-rebuild-audit.html">모듈 재구축 감사</a>와 <a href="../setup/initial-pose-tracking.html">초기 pose·tracking 연결</a>이 이 계획의 선행 기록이다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>

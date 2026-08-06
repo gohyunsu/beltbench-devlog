@@ -34,9 +34,30 @@ Each issue page should cover:
 5. verification;
 6. related issues and next action.
 
+Every implementation or investigation session must leave a chronological record
+that separates facts from hypotheses. Include the exact source revision and
+environment identity when they affect reproducibility. Record failed attempts:
+the symptom, direct evidence, root cause or current hypothesis, corrective
+action, and verification result are part of the research output.
+
+Use these status labels consistently:
+
+- `planned`: contract and acceptance evidence are defined, implementation absent;
+- `in progress`: implementation or verification is incomplete;
+- `blocked`: the unmet external condition and safe next action are explicit;
+- `verified`: the stated acceptance evidence passed at a recorded revision.
+
+Do not use `verified` for a structural smoke test when algorithmic accuracy was
+not measured. State the verification boundary directly.
+
 ## Maintenance rules
 
 - Put new issue pages under issues/<area>/ and link them from issues/index.html
   and the homepage news section.
 - Keep approved assets under assets/images/ using descriptive filenames.
 - Validate the local site before pushing to the public remote.
+- Add each new issue to `issues/index.html`; add only current, high-value work to
+  the homepage. Check links and serve the site locally before publishing.
+- Update an existing issue rather than creating a success-only duplicate. Append
+  dated verification notes so that regressions and superseded conclusions remain
+  traceable.
