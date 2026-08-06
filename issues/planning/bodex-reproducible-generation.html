@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BODex 후보 생성 재현성 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-011 · 2026-08-07 · 구현 및 GPU 검증 진행 중</div>
+<h1>검증 grasp가 없을 때 BODex 후보를 재현 가능하게 생성하고, 독립 평가로 넘긴다.</h1>
+<p class="lede">정확히 같은 object, stable pose, hand, task capability로 검증된 grasp가 있으면 재사용한다. 그런 항목이 없으면 offline 생성이 필요하다. 이번 작업은 Pepsi Light upside-down pose와 Inspire left hand를 예로 들어, BODex 입력 자산부터 GPU runtime, 후보 import, intrinsic 평가까지의 경계를 checksummed artifact로 고정하는 과정이다.</p>
+
+<h2>문제와 영향</h2>
+<p>기존 코드에는 BODex source가 있었지만, 현재 환경에서 그대로 실행 가능한 생성 pipeline은 아니었다. object mesh를 provider가 요구하는 디렉터리와 URDF로 만드는 절차, exact stable pose만 입력했다는 증거, Python·CUDA·native extension 조합, 생성 결과를 provider 판단과 분리해 import하는 규칙이 빠져 있었다. 이 상태에서 한 번 실행에 성공해도 다른 서버나 다음 환경에서 재현하기 어렵고, BODex의 success 값을 BeltBench의 grasp 검증으로 잘못 해석할 위험이 있었다.</p>
+<div class="grid two">
+<div class="card"><h3>Object layout 불일치</h3><p>BeltBench의 checksummed GLB manifest와 BODex의 OBJ·URDF·scene layout이 달랐다. collision decomposition을 한 mesh로 합치면 provider의 거리 질의 의미도 바뀐다.</p></div>
+<div class="card"><h3>Stable pose 혼합 위험</h3><p>provider output 디렉터리는 여러 tabletop pose를 담을 수 있다. 한 run을 나중에 특정 pose로 이름만 바꾸면 어떤 support orientation에서 생성했는지 증명할 수 없다.</p></div>
+<div class="card"><h3>GPU package만으로 부족</h3><p><code>torch</code>가 설치됐다는 사실은 CUDA tensor, cuRobo extension, Coal wrapper가 같은 worker에서 실제 load된다는 증거가 아니다.</p></div>
+<div class="card"><h3>Provider 판단과 검증 혼합</h3><p>BODex native success, contact count, metric은 생성 provenance다. BeltBench의 contact·task-wrench·support·approach·closure·release acceptance를 대신할 수 없다.</p></div>
+</div>
+
+<h2>구현한 계약</h2>
+<ol>
+<li><strong>Checksummed asset adapter:</strong> object manifest의 scale과 transform을 적용해 BODex-native OBJ, URDF, geometry info를 만든다.</li>
+<li><strong>Collision component 보존:</strong> Pepsi collision GLB의 connected component 94개를 각각 별도 URDF mesh로 유지한다.</li>
+<li><strong>단일 pose staging:</strong> 한 staging manifest에는 한 object와 한 stable-pose identity만 넣고, source와 생성 파일을 모두 다시 hash한다.</li>
+<li><strong>Runtime preflight:</strong> exact Python에서 NumPy, SciPy, trimesh, Torch, Warp, cuRobo CUDA extension, Coal wrapper를 import한다. GPU mode에서는 CUDA tensor 연산과 synchronize까지 수행한다.</li>
+<li><strong>Same-worker gate:</strong> generator, manipulator config, environment lock, object list, staging manifest digest가 preflight와 generation 사이에 같아야 한다.</li>
+<li><strong>Provider-neutral import:</strong> 모든 seed와 native metric shape를 보존하되 상태는 <code>unvalidated_proposal</code>로 고정한다.</li>
+<li><strong>독립 intrinsic 평가:</strong> 실제 hand URDF와 object collision mesh로 접촉과 경로를 다시 계산하고, 통과한 후보만 별도 robot deployment 평가로 넘긴다.</li>
+</ol>
+
+<h2>실패 기록과 원인 분석</h2>
+<table class="table">
+<tr><th>단계</th><th>증상</th><th>원인</th><th>조치</th></tr>
+<tr><td>초기 environment lock</td><td>Python 3.10용 <code>warp-lang 1.14.0</code> wheel을 찾지 못함</td><td>이전 local 환경의 버전을 현재 package index에서 그대로 복원할 수 없었음</td><td>vendored cuRobo가 요구하는 범위와 현재 wheel 제공 여부를 확인해 1.6.2로 명시</td></tr>
+<tr><td>Login node pip</td><td>대형 Torch wheel 배치 중 subprocess가 반복 종료됨</td><td>메모리·디스크 부족이 아니라 login node에서 중량 설치를 수행한 운영 경로가 부적절했음</td><td>환경 갱신, native build, GPU preflight를 하나의 PBS compute job으로 이동</td></tr>
+<tr><td>첫 compute preflight</td><td>CUDA tensor와 cuRobo는 통과했지만 Coal import가 <code>GLIBCXX</code> 오류로 차단됨</td><td>conda Boost가 요구하는 C++ runtime 대신 오래된 system <code>libstdc++</code>가 간접 load됨</td><td>선택한 환경의 <code>lib/</code>를 공통 runtime activation 계약으로 명시</td></tr>
+<tr><td>Library path 적용 후</td><td>Coal extension이 host보다 높은 <code>GLIBC</code> symbol을 요구함</td><td><code>gxx_linux-64</code>를 설치했지만 pip build가 unqualified host <code>g++</code>를 사용해 pinned sysroot를 적용하지 않음</td><td>glibc 2.17 sysroot를 lock하고 conda target <code>cc/c++</code>를 명시해 Coal·cuRobo를 강제 재빌드</td></tr>
+</table>
+<p>여기서 중요한 점은 오류를 <code>LD_PRELOAD</code>나 system library 교체로 숨기지 않았다는 것이다. compiler, sysroot, runtime search path를 하나의 환경 계약으로 만들고, preflight가 native import를 통과하지 않으면 generation을 시작하지 않도록 했다.</p>
+
+<h2>평가 evidence 시각화</h2>
+<p>상세 intrinsic JSON만으로는 contact와 경로 실패를 빠르게 검토하기 어려워 read-only Viser viewer도 추가했다. viewer는 checksummed proposal과 config에서 approach·closure·release interpolation만 복원하고, 저장된 contact point, inward normal, clearance, penetration 판정을 실제 Inspire hand와 Pepsi mesh 위에 표시한다. 자동 반복 재생과 일괄 label toggle을 제공하지만 품질을 재계산하거나 후보를 rank·promote하지 않는다.</p>
+<div class="callout"><strong>시각화 경계:</strong> 색상과 애니메이션은 저장된 evidence를 읽는 검토 도구다. Viser에서 자연스럽게 보인다는 사실은 grasp 성공, robot reachability, moving interception timing을 증명하지 않는다.</div>
+
+<h2>현재 검증과 남은 일</h2>
+<p>BeltBench revision <code>962d46e</code>에서 BODex asset, staging, import, runtime 관련 test 24개가 통과했다. 전체 core/planning test는 149개, OpenCV가 분리된 calibration test는 14개가 통과했다. 기존 legacy intrinsic artifact로 실제 Inspire URDF와 Pepsi GLB를 load해 Viser HTTP/WebSocket 기동도 확인했다.</p>
+<p>첫 compute run은 RTX A6000에서 Torch 2.5.1+CUDA 12.4 tensor 연산까지 성공했지만 Coal ABI gate에서 의도대로 차단됐다. conda target compiler와 glibc-2.17-compatible sysroot로 강제 재빌드하는 두 번째 run의 최종 native import와 GPU preflight를 확인 중이다. 이 검증이 끝나기 전에는 BODex 후보 생성 성공을 주장하지 않는다.</p>
+<p>GPU preflight가 통과하면 작은 seed 수의 Pepsi/Inspire smoke를 먼저 실행한다. 생성된 모든 seed를 import한 뒤 provider success와 무관하게 contact, support, approach, closure, release를 평가한다. 현재 upside-down stable pose와 task protocol은 provisional이므로, geometry가 좋아도 진단 결과만 만들 수 있고 validated library로 승격할 수 없다.</p>
+<p><a href="intrinsic-grasp-evaluation.html">Arm-independent intrinsic grasp 평가</a>에서 후보 acceptance 기준을, <a href="offline-planning-viser-plan.html">Offline planning과 Viser 구현</a>에서 이후 xArm deployment와 moving interception 연결을 계속 관리한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
