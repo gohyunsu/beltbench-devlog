@@ -232,6 +232,44 @@
 <p>첫 unit test는 base Python에 NumPy가 없어 import 단계에서 실패했다. dependency를 base에 추가하지 않고 <code>beltbench-planning</code> interpreter로 재실행했다. 전체 discovery에서는 restricted sandbox가 <code>/tmp</code>를 쓰지 못해 <code>TemporaryDirectory</code> test가 실패했고, planning 환경에 OpenCV가 없어 세 module이 import되지 않았다. 쓰기 가능한 임시 경로에서 planning test를 실행하고 OpenCV module은 <code>beltbench-calibration</code>로 분리해 코드 회귀와 환경 실패를 구분했다.</p>
 <p>최종 결과는 planning 89개와 OpenCV 14개, 총 103개 test 통과다. mount transform으로 새 hand-root library pose를 기존 arm-tip target과 비교해 1e-12 tolerance로 일치했고, grasp 접근 offset과 workcell vertical lift offset이 독립적으로 계산됨을 확인했다. resolver JSON round-trip은 status, source hash, evidence 11개와 contact count 3을 보존했고, unsupported preflight는 출력 artifact를 남기지 않았다.</p>
 
+<h2>2026-08-07 · 생성 pose를 validated grasp와 분리한 NPZ proposal 경계</h2>
+<p>source revision <code>c10a322</code>에서 resolver 다음 단계를 구현했다. exact object·stable pose·hand·task capability에 맞는 검증 grasp가 있으면 library에서 선택하고, 없으면 BODex 같은 offline generator로 생성한다. 단, 생성 성공은 검증 성공이 아니며 생성 결과를 곧바로 intercept planner에 넣지 않는다.</p>
+
+<h2>기존 candidate import가 안전 근거를 잃고 있었다</h2>
+<div class="grid two">
+<div class="card"><h3>pickle metadata</h3><p>기존 importer는 <code>bodex_info.npy</code>의 Python dict를 <code>allow_pickle=True</code>로 읽었다. provider output을 신뢰해야 하고 schema drift를 검출하기 어려운 경로라 삭제했다. 새 adapter는 고정 key를 가진 pickle-free <code>bodex_info.npz</code>만 허용한다.</p></div>
+<div class="card"><h3>metric 축 손실</h3><p>기존 코드는 <code>grasp_error</code>와 <code>dist_error</code>의 첫 값만 float로 평탄화했다. 새 proposal은 native array의 전체 값, shape, unit, metric ID와 “provider 내부 값이며 BeltBench acceptance metric이 아님”이라는 해석을 함께 보존한다.</p></div>
+<div class="card"><h3>provider success 오해</h3><p><code>--allow-unsuccessful</code> 선택에 따라 seed를 버리거나 남겼다. 이제 모든 complete seed를 import하고 provider success boolean을 evidence로만 저장한다. true도 planning 허가가 아니고 false도 import 누락의 근거가 아니다.</p></div>
+<div class="card"><h3>release command 혼동</h3><p>BODex <code>pregrasp_pose</code>는 손이 물체에 접근하기 전 posture이지 bin에서 놓을 때의 open command가 아니다. grasp library schema 3.0은 <code>pregrasp_command</code>, <code>grasp_command</code>, <code>release_command</code>를 분리하고 drop/place capability가 release command 없이 선언되면 거부한다.</p></div>
+</div>
+
+<h2>exact stable-pose staging과 provenance</h2>
+<p>첫 staging 구현은 object의 모든 tabletop pose를 한 provider run에 넣을 수 있었다. importer가 run 전체에 하나의 <code>stable_pose_id</code>를 부여하면 다른 자세의 seed까지 upside-down으로 오표기되는 문제다. 이를 수정해 synthesis request가 지정한 stable pose artifact 하나만 scene으로 만들고, scene 이름도 stable pose ID로 고정했다.</p>
+<p>staging manifest는 copied mesh, COACD URDF와 관련 파일, object info, stable-pose JSON, 생성 scene의 상대경로와 SHA-256을 모두 기록한다. importer는 이 manifest의 object/stable-pose identity와 모든 file hash를 확인한다. provider code, world-config loader, Inspire config, manipulator config, 원 stable-pose artifact도 별도 checksum으로 고정한다. proposal batch는 seed별 wrist transform, pregrasp/grasp command, contact count, native metrics, 네 source file checksum, provider revision과 random seed를 저장하고 status를 항상 <code>unvalidated_proposal</code>로 둔다.</p>
+
+<h2>BODex output 경로 재감사</h2>
+<div class="grid two">
+<div class="card"><h3>관측</h3><p>vendored BODex는 과거 디렉터리 깊이를 전제로 root를 세 단계 위로 계산해 log와 default output을 BeltBench 밖에 만들 수 있었다. custom output을 주면 skip checker와 writer가 서로 다른 seed root를 사용해 resume 판정도 일치하지 않았다.</p></div>
+<div class="card"><h3>수정</h3><p>BODex root를 현재 source 위치로 계산하고 log를 각 output의 <code>logs/</code>에 둔다. dataset skip checker와 writer가 같은 explicit output root를 사용하며, seed는 네 파일을 temporary sibling에 모두 쓴 뒤 rename한다. 일부 파일만 있는 seed와 stale temporary directory는 자동 보정하지 않고 실패한다.</p></div>
+</div>
+<p>hand contact tensor 의미도 source까지 추적했다. contact point는 <code>(contact, xyz)</code>, frame은 <code>(contact, 3, 3)</code>, force는 <code>(task wrench, contact, xyz)</code>다. 첫 adapter가 force 첫 축을 contact 수로 본 오류를 수정하고 회귀 test로 고정했다.</p>
+
+<h2>실행 환경과 CLI 정리</h2>
+<p>새 importer를 문서처럼 file path로 실행했을 때 checkout root가 Python path에 없어 import가 실패했다. 일부 script만 <code>sys.path.insert</code>를 가진 상태에 또 fallback을 추가하지 않고, 표준 <code>pyproject.toml</code>과 <code>pip install --no-deps -e .</code>로 project를 설치하도록 통일했다. 기존 project-root path mutation 25개를 제거했고 FoundationPose 외부 checkout을 명시적으로 adapter에 추가하는 한 지점만 유지했다.</p>
+<p>planning, calibration, visualization 세 환경에 editable install을 적용하고 대표 grasp, intercept, calibration, pose, Viser CLI의 <code>--help</code> import matrix를 통과했다. dependency는 계속 환경 YAML이 소유하며 editable install에 <code>--no-deps</code>를 사용한다.</p>
+
+<h2>GPU scheduler smoke와 남은 운영 문제</h2>
+<p>server guide에 따라 login node에서는 GPU를 조회하지 않고 account, helper, scheduler, 기존 job과 storage 상태만 확인했다. 기존 job은 변경하지 않았고 storage pressure가 높은 상태에서 새 BODex image나 대용량 asset 복사를 시작하지 않았다.</p>
+<div class="grid two">
+<div class="card"><h3>첫 smoke · 실패</h3><p>첫 job은 GPU compute node까지 할당됐지만 exit 1이었다. job script가 <code>set -u</code> 뒤 <code>/etc/profile</code>을 source한 불필요한 순서가 원인 후보였고 PBS stdout은 stage-out되지 않아 확정 증거가 부족하다. 성공으로 해석하지 않았다.</p></div>
+<div class="card"><h3>v2 smoke · 구조 통과</h3><p>compute job에서 profile source를 제거하고 PBS PATH의 <code>nvidia-smi</code> 존재를 검사했다. v2는 GPU 1개를 할당받아 <code>Exit_status=0</code>으로 끝났다. 다만 scheduler stage-out이 완료되지 않아 GPU 이름·driver stdout은 회수하지 못했다.</p></div>
+</div>
+<p>따라서 GPU allocation smoke는 통과했지만 BODex runtime smoke는 아직 아니다. 원격 checkout은 이전 revision이고 기존 BODex conda environment가 없으며, 로컬에도 Pepsi Light의 BODex용 <code>simplified.obj</code>, COACD URDF, simplified info가 없다. 임의 대형 설치나 synthetic Pepsi output으로 대체하지 않고 이 조건을 blocker로 남겼다.</p>
+
+<h2>검증 결과와 다음 단계</h2>
+<p>planning 환경에서 exact staging, NPZ import, proposal contract, release semantics, 기존 IK·collision·intercept 경로를 포함한 108개 test가 통과했다. OpenCV 의존 calibration·pose·legacy pilot 14개는 calibration 환경에서 별도로 통과해 총 122개 경로를 확인했다. Python compileall, PBS <code>bash -n</code>, Git whitespace 검사와 세 환경 CLI matrix도 통과했다.</p>
+<div class="callout"><strong>현재 정확한 경계:</strong> Pepsi upside-down/Inspire Left/drop resolution v2는 여전히 <code>synthesis_required</code>이고 selected grasp는 없다. 실제 provider proposal을 확보한 뒤에도 contact count만으로 승격하지 않는다. 독립 task-wrench quality, support clearance, approach sweep, hand closure, xArm IK, arm/hand/cross/workcell collision, release capability를 평가하고 review된 항목만 schema-3 validated library에 추가한다.</div>
+
 <p>남은 조치는 support clearance가 큰 validated grasp 조회 또는 synthesis, measured conveyor/camera covariance, online GPU planner adapter의 p50/p95/p99 benchmark, full-frame selected playback validation, connector 측정과 hardware release test다. 현재 결과는 실패를 숨기지 않는 offline planning evidence이며 robot 실행은 계속 차단한다.</p>
 <p><a href="../setup/modular-rebuild-audit.html">모듈 재구축 감사</a>와 <a href="../setup/initial-pose-tracking.html">초기 pose·tracking 연결</a>이 이 계획의 선행 기록이다.</p>
 </main>
