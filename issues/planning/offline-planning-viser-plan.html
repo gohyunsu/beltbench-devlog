@@ -79,6 +79,22 @@
 <p>core PlanningScene이 arm, hand, target, distractor, conveyor category를 모두 요구하고 live viewer도 같은 이름으로 toggle과 path를 만들고 있었다. 이는 synthetic demo의 구체적 구성을 공통 계약으로 잘못 끌어올린 것이다. entity category를 scene-safe한 개방형 문자열로 바꾸고, viewer는 실제 scene에 존재하는 category와 움직이는 entity를 탐색해 toggle과 path를 자동 생성하도록 리팩터링했다.</p>
 <p>hand demo도 모든 관절이 0에서 양의 upper 방향으로 닫힌다고 가정했다. 각 URDF joint의 lower·upper 안에서 0에 가장 가까운 neutral을 구하고 neutral에서 upper 방향으로 이동하도록 수정해 음수 범위나 0을 포함하지 않는 joint에도 적용 가능하게 했다. 외부 trajectory는 표시 전 모든 frame을 URDF position limit와 다시 대조한다.</p>
 <p>구체적인 xArm·Inspire 이름과 conveyor 치수는 검증 fixture와 local manifest에만 남는다. 공통 contract, Viser adapter, trajectory validator에는 joint 수, joint 이름, entity category 목록을 하드코딩하지 않는다. 관련 로컬 테스트 13개와 서버 전체 테스트 31개가 통과했다.</p>
+
+<h2>2026-08-06 · P2 kinematic feasibility 경계</h2>
+<p>기존 <code>xarm_trajectory.py</code>에 기능을 더 붙이지 않고 공통 <code>RobotModel</code>과 <code>SingleSeedIK</code> interface를 만들었다. object frame grasp에서 pre-grasp와 grasp tool target을 구성하고, 여러 seed의 IK를 결정적으로 비교하며, 두 target이 모두 통과할 때만 <code>kinematic_feasible</code>로 기록한다. pre-grasp 실패와 grasp 실패는 후보별 attempt와 함께 구분해 저장한다.</p>
+<p>IK 오차를 하나의 무차원 residual로 합치지 않고 translation metre와 rotation radian으로 분리했다. backend가 limit 밖 configuration, NaN 또는 예외를 반환해도 통과하지 못하며, 실패값은 JSON의 비표준 <code>Infinity</code> 대신 <code>null</code>로 저장한다. 이 결과는 collision clearance를 뜻하지 않으므로 <code>valid</code>나 <code>executable</code>이라는 이름을 사용하지 않았다.</p>
+
+<h2>Pinocchio adapter와 환경 문제</h2>
+<div class="grid two">
+<div class="card"><h3>Conda solver 조기 종료</h3><p>최초 환경 생성은 설정된 libmamba plugin을 찾지 못해 실제 환경 없이 종료됐다. <code>CONDA_NO_PLUGINS=true</code> 진단에서 원인을 확인하고 classic solver로 재실행했다. 생성이 늦게 완료된 뒤 Pinocchio 3.4.0, hpp-fcl 3.0.1, NumPy 1.26.4를 확인했다.</p></div>
+<div class="card"><h3>서버 pip 설치 중단</h3><p>junjinyong 공용 Python에는 Pinocchio가 없었다. 임시 pip 설치는 binary wheel이 아니라 약 100MB source package와 build dependency를 받아 적합하지 않아 중단했다. source build fallback을 남기지 않고 conda-forge binary를 쓰는 별도 planning environment만 공식 경로로 유지했다.</p></div>
+<div class="card"><h3>private Git 인증 부재</h3><p>서버 checkout은 GitHub credential이 없어 pull할 수 없었다. 로컬 main의 Git bundle을 전송하고 clean server tree를 fast-forward하여 소스 revision을 정확히 <code>4448ad3</code>으로 맞췄다.</p></div>
+<div class="card"><h3>테스트 skip 은폐 위험</h3><p>초기 dependency guard가 넓은 ImportError를 잡으면 adapter 내부 import 오류도 package 부재처럼 skip될 수 있었다. Pinocchio module 존재만 먼저 검사하고, 존재할 때 adapter import 오류는 그대로 실패하도록 수정했다.</p></div>
+</div>
+
+<h2>검증 결과와 다음 gate</h2>
+<p>로컬 <code>beltbench-planning</code> 환경에서 generic revolute·prismatic 2-joint URDF의 joint name, limit, FK와 reachable IK를 포함한 10개 테스트가 통과했다. junjinyong에서는 OpenCV가 격리된 기존 CPU 경로로 전체 41개 테스트가 통과했고, 공용 Python에 Pinocchio가 없어 adapter 전용 3개만 명시적으로 skip됐다. 두 결과를 합쳐 core 회귀와 실제 Pinocchio 수치 경로를 각각 검증했다.</p>
+<div class="callout"><strong>아직 P2 완료가 아니다:</strong> 현재 결과는 robot-independent kinematic feasibility까지다. 다음 구현은 hpp-fcl self/environment collision, 후보 ranking, 독립 revalidation과 Viser rejection diagnostics이며, 이 gate 전에는 실제 robot 실행으로 연결하지 않는다.</div>
 <p><a href="../setup/modular-rebuild-audit.html">모듈 재구축 감사</a>와 <a href="../setup/initial-pose-tracking.html">초기 pose·tracking 연결</a>이 이 계획의 선행 기록이다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
