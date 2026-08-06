@@ -60,6 +60,11 @@
 <h2>검증 결과와 경계</h2>
 <p>로컬에 별도 Python 3.10 visualization 환경과 Viser 1.0.29를 생성했다. 신규 planning contract·playback test 5개가 통과했고, GPU 서버에서는 기존 test와 합쳐 23개가 통과했다. live server의 HTTP 응답과 121-frame standalone animation 생성을 확인했다.</p>
 <div class="callout"><strong>아직 실행 불가:</strong> 현재 arm과 hand는 contract·playback 검증을 위한 schematic geometry다. xArm URDF FK, 실제 Inspire mesh, grasp candidate IK, self/environment collision은 아직 연결하지 않았다. artifact의 execution-blocked reason에 이 경계를 기록한다.</div>
+
+<h2>2026-08-06 · 외부 robot asset 연결</h2>
+<p>특정 checkout 경로를 코드에 넣지 않고 arm URDF, hand URDF, arm tip link, hand root link, world transform과 mount transform을 별도 manifest로 정의했다. 실제 xArm mesh와 Inspire left-hand mesh를 Viser에 로드해 각각 6개의 independent joint control을 확인했고, mimic finger joint는 URDF 정의에 따라 확장된다. arm joint가 바뀔 때 arm tip FK로 hand root frame도 함께 갱신한다.</p>
+<p>첫 실행에서 xArm 6축과 Inspire 6축이 모두 로드되고 local Viser endpoint가 정상 응답했다. joint lower limit이 정확히 0인 경우 일반적인 <code>or</code> 표현을 사용하면 fallback 값으로 바뀔 수 있는 문제를 코드 검토에서 발견해, <code>None</code>만 대체하도록 수정했다.</p>
+<div class="callout"><strong>검증 경계:</strong> 현재 local manifest의 arm-tip-to-hand-root 값은 표시 경로 검증용 identity다. 실제 mount 측정값, collision geometry 승인, IK와 trajectory validation 전에는 execution에 사용할 수 없다.</div>
 <p><a href="../setup/modular-rebuild-audit.html">모듈 재구축 감사</a>와 <a href="../setup/initial-pose-tracking.html">초기 pose·tracking 연결</a>이 이 계획의 선행 기록이다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
