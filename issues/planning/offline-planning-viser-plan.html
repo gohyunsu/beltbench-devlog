@@ -95,6 +95,25 @@
 <h2>검증 결과와 다음 gate</h2>
 <p>로컬 <code>beltbench-planning</code> 환경에서 generic revolute·prismatic 2-joint URDF의 joint name, limit, FK와 reachable IK를 포함한 10개 테스트가 통과했다. junjinyong에서는 OpenCV가 격리된 기존 CPU 경로로 전체 41개 테스트가 통과했고, 공용 Python에 Pinocchio가 없어 adapter 전용 3개만 명시적으로 skip됐다. 두 결과를 합쳐 core 회귀와 실제 Pinocchio 수치 경로를 각각 검증했다.</p>
 <div class="callout"><strong>아직 P2 완료가 아니다:</strong> 현재 결과는 robot-independent kinematic feasibility까지다. 다음 구현은 hpp-fcl self/environment collision, 후보 ranking, 독립 revalidation과 Viser rejection diagnostics이며, 이 gate 전에는 실제 robot 실행으로 연결하지 않는다.</div>
+
+<h2>2026-08-06 · hpp-fcl collision gate</h2>
+<p>pre-grasp와 grasp configuration 각각에 대해 explicit self-collision pair와 모든 robot-to-environment pair의 signed distance를 계산하는 <code>CollisionChecker</code> 경계를 추가했다. 결과는 clearance margin, 모든 geometry pair의 거리·판정, minimum pair를 저장한다. 하나라도 margin을 만족하지 못하면 최종 static evaluation은 실패하며, IK-only 결과는 계속 <code>kinematic_feasible</code>로만 남는다.</p>
+<p>독립 validator는 minimum distance만 보지 않고 저장된 pair 집합 전체, pair별 거리·판정, margin과 minimum pair를 다시 계산한다. 한 pair의 결과라도 바뀌면 validation이 실패한다. infeasible IK 후보에는 collision checker를 호출하지 않아 존재하지 않는 configuration을 검사하는 fallback도 두지 않았다.</p>
+
+<h2>실제 xArm collision asset smoke</h2>
+<div class="grid two">
+<div class="card"><h3>mesh package root 누락</h3><p>첫 실제 URDF load는 <code>xarm/meshes/base.obj</code>를 찾지 못했다. parent directory를 탐색하는 fallback 대신 robot asset manifest에 <code>package_directories</code>를 필수 key로 추가하고 ParaDex <code>rsc/robot</code> root를 명시했다.</p></div>
+<div class="card"><h3>geometry 이름 불일치</h3><p>URDF의 collision name이 그대로 유지될 것으로 예상했지만 Pinocchio는 <code>link_base_0</code>부터 <code>link6_0</code>까지 link 기반 이름을 생성했다. 실제 loader 결과를 확인하고 semantic config가 geometry sequence 전체를 고정하도록 했다.</p></div>
+<div class="card"><h3>model drift 방지</h3><p>이름만 같은 변경 URDF가 semantic pair를 재사용하지 못하도록 외부 xArm URDF SHA-256도 config에 고정했다. checksum 또는 geometry 순서가 달라지면 planning 전에 즉시 실패한다.</p></div>
+<div class="card"><h3>실행 command import</h3><p>파일 경로로 script를 실행하면 checkout root가 import path에 없어 실패했다. <code>sys.path</code> fallback을 추가하지 않고 새 planning command를 모두 <code>python -m scripts...</code> 형식으로 통일했다.</p></div>
+</div>
+<p>실제 xArm collision mesh 7개와 비인접 self pair 15개를 확인했다. neutral configuration에서 5 mm margin을 적용한 최소 거리는 <code>link4_0</code>–<code>link6_0</code>의 41.466 mm였고 clearance를 통과했다. 이 검사는 neutral state 하나의 asset smoke이며 trajectory clearance를 의미하지 않는다.</p>
+
+<h2>후보 ranking과 Viser rejection diagnostics</h2>
+<p>collision-feasible 후보만 grasp prior, minimum clearance(m), start→pre-grasp→grasp joint travel(rad)로 ranking한다. weight의 단위를 field 이름에 표시하고 score tie는 candidate id로 결정한다. rejected 후보는 score 경쟁에서 제외하고 IK 또는 clearance 실패 이유를 그대로 보존한다.</p>
+<p><code>StaticGraspDiagnostics</code> artifact에 object pose, 후보 target, IK attempt, collision pair evidence, ranking과 execution block reason을 저장한다. Viser는 이 artifact만 읽어 accepted는 녹색, IK rejected는 빨간색, clearance rejected는 주황색으로 표시하며 세 그룹을 독립적으로 켜고 끈다. viewer는 IK, collision, ranking module을 import하지 않는다.</p>
+<p>로컬 포트 8093에서 synthetic artifact를 로드해 HTTP 200을 확인했다. planning 환경의 collision·asset 관련 20개 테스트와 artifact·ranking·Viser 관련 16개 테스트가 통과했다. junjinyong revision <code>3cf0530</code>에서는 전체 54개 테스트가 통과했고, 공용 Python에 Pinocchio가 없어 전용 5개만 명시적으로 skip됐다.</p>
+<div class="callout"><strong>다음 gate:</strong> P2의 contract와 visualization은 연결됐지만 실제 BODex grasp set을 xArm+Inspire combined collision model에 적용하지 않았다. 다음 단계는 hand collision geometry, measured mount transform, conveyor/table obstacle 변환과 실제 후보 artifact를 연결한 뒤 P3 collision-aware motion으로 진행하는 것이다.</div>
 <p><a href="../setup/modular-rebuild-audit.html">모듈 재구축 감사</a>와 <a href="../setup/initial-pose-tracking.html">초기 pose·tracking 연결</a>이 이 계획의 선행 기록이다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
