@@ -12,7 +12,7 @@
 <nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
 </div></header>
 <main class="wrap article">
-<div class="eyebrow">ISSUE-009 · 2026-08-06 · 진행 중</div>
+<div class="eyebrow">ISSUE-009 · 2026-08-06 · offline reference 검증</div>
 <h1>실제 로봇 없이 planning 결과와 실패 원인을 Viser에서 검증한다.</h1>
 <p class="lede">현재 가능한 연구 범위를 offline planning과 visualization까지로 제한했다. 목표는 conveyor animation을 빠르게 만드는 것이 아니라, 저장된 scene과 plan만으로 grasp 후보가 왜 가능하거나 불가능한지 재현하고 검사할 수 있는 기반을 만드는 것이다.</p>
 
@@ -139,6 +139,49 @@
 <p>로컬 planning 환경에서 combined model, mimic expansion, pair-specific clearance, static evaluation, artifact와 semantic config 관련 30개 테스트가 통과했다. 실제 assembly neutral artifact도 171개 pair clearance를 통과했고 mount status는 provisional로 저장됐다. schema-2 static diagnostic을 포트 8093에서 다시 열어 89개 persistent Viser message와 HTTP 200을 확인했다.</p>
 <p>junjinyong revision <code>8247f42</code>에서는 전체 60개 테스트가 통과했다. 공용 Python에 Pinocchio가 없어 combined 2개와 기존 Pinocchio 5개, 총 7개는 명시적으로 skip됐고 이 경로는 로컬 planning 환경에서 별도로 통과했다.</p>
 <div class="callout"><strong>남은 실행 gate:</strong> mount 실측, conveyor/table primitive의 실제 base-frame 배치, schema-2 BODex artifact 재생성, 실제 후보의 xArm IK·combined collision 평가가 필요하다. 그 다음에만 collision-aware trajectory와 timing validation으로 진행한다.</div>
+
+<h2>2026-08-06 · moving-object 입력을 안정 자세와 planar 관측으로 분해</h2>
+<p>물체의 full SE(3)를 매 frame 임의로 입력하는 구조를 제거했다. 사용자가 선택하는 값은 <code>object_id</code>와 <code>stable_pose_id</code>이고, runtime perception은 belt frame의 <code>(x, y, yaw)</code>, covariance, timestamp만 측정한다. stable pose와 측정 yaw를 합성한 뒤 conveyor calibration으로 arm-base frame에 옮긴다. Pepsi Light 예제는 뒤집힌 안정 자세를 사용한다.</p>
+<p>belt motion은 초기 yaw를 보존하고 calibrated travel direction으로 평행이동만 한다. 관측된 angular velocity가 임계값보다 크면 모델을 정규화하거나 무시하지 않고 prediction을 거부한다. conveyor frame은 +x travel, +y transverse, +z up으로 고정하고, 실제 layout 방향은 <code>arm_base_from_belt_surface</code>에만 둔다. 예제 conveyor는 robot 정면과 나란하지 않고 옆을 가로지르는 side-pick 배치다.</p>
+
+<h2>conveyor calibration을 plane fit 하나로 끝내지 않는 이유</h2>
+<div class="grid two">
+<div class="card"><h3>문제</h3><p>평면 점만 맞추면 belt 높이와 법선은 구할 수 있지만 travel +x의 부호, surface origin, running belt의 runout, speed와 timestamp 오차는 결정되지 않는다. 이 상태로 intercept를 계산하면 좌표계는 수학적으로 유효해도 실행 timing은 틀릴 수 있다.</p></div>
+<div class="card"><h3>해결 절차</h3><p>intrinsic, camera extrinsic, 정지 belt의 분산된 plane point, belt 위 fiducial의 travel line, 명시적 origin, holdout residual, running runout, encoder 기반 speed를 분리된 evidence로 저장한다. collinear plane sample과 rank가 없는 travel sample은 solver가 거부한다.</p></div>
+</div>
+<p>현재 side-pick transform은 physical measurement가 없는 simulation fixture다. calibration contract와 synthetic fit test는 구현했지만 execution calibration으로 승격하지 않았다.</p>
+
+<h2>실제 asset을 사용한 integrated playback</h2>
+<p>xArm URDF, Inspire Left URDF, Pepsi Light visual/collision mesh, conveyor, robot table을 하나의 30 Hz artifact로 동기화했다. arm과 hand는 manifest로 선택하며 core planner에는 joint 수나 모델 이름이 없다. 선택한 object mesh가 없으면 primitive fallback으로 바꾸지 않고 실패한다. Labels, arm, hand, connector, object, workcell, path, coordinate frame은 독립 toggle이고 live/standalone Viser가 자동 반복 재생한다.</p>
+<p>처음에는 connector를 procedural bridge로 표시했지만 workspace의 실제 <code>xarm_base.obj</code>와 <code>inspire_base.obj</code> 위치를 잘못 탐색한 것이 원인이었다. 두 파일을 checksum과 provenance를 가진 paired visual asset으로 등록해 흰색으로 표시했다. 다만 xArm-side OBJ는 40개, Inspire-side OBJ는 21개의 non-watertight surface component이고 hole ID, thread, datum, tolerance가 없다. 실제 체결을 주장하지 않고 bolt center·axis·diameter, mating-plane gap과 반대 법선을 검사하는 별도 alignment contract를 추가했다. source STEP 또는 측정 feature가 들어오기 전 status는 provisional이다.</p>
+
+<h2>tabletop release 실패를 fixture 수정으로 숨기지 않았다</h2>
+<p>초기 pick-and-place 시도에서는 놓는 순간 ring 또는 middle finger가 작은 place station과 충돌했다. release 전에 손을 열기, pedestal 높이를 90 mm와 70 mm로 바꾸기, grasp offset을 15 mm와 30 mm로 이동하기를 각각 검사했지만 최소 margin은 계속 음수였다. 작은 받침대를 더 줄이거나 collision policy를 완화하면 animation은 통과할 수 있으나 grasp가 tabletop release와 호환되지 않는 사실을 숨기게 된다.</p>
+<div class="callout"><strong>결론:</strong> legacy grasp는 현재 evidence에서 <code>pick_only</code>로만 인정한다. <code>tabletop_release</code> capability는 별도 grasp와 검증 없이는 부여하지 않는다.</div>
+
+<h2>open-top bin과 ballistic drop으로 terminal task 재설계</h2>
+<p>작은 placement target 대신 내부 <code>0.34 × 0.34 m</code>, 높이 <code>0.24 m</code>의 넉넉한 상자를 robot table 옆에 두었다. terminal pose는 bin 중앙 상공이며 release 뒤 object state를 <code>attached</code>에서 바로 <code>placed</code>로 바꾸지 않고 <code>released</code>, <code>contained</code>로 분리했다. 초기 release velocity는 0, gravity는 -9.81 m/s², drop duration은 0.25초다.</p>
+<div class="grid two">
+<div class="card"><h3>v1 · terminal IK 실패</h3><p>첫 bin center와 release 높이는 object center 0.503 m, transfer offset 0.10 m였다. grasp offset을 합성하면 arm tip 높이가 0.763 m가 되어 세 intercept 모두 <code>transfer_above_bin_ik</code>에서 실패했다. bin을 table 가까이 옮기고 release object center를 0.368 m로 낮췄다. 캔 하단은 rim보다 약 67 mm 높아 drop clearance는 유지됐다.</p></div>
+<div class="card"><h3>v2 · release finger 관통</h3><p>세 후보의 IK와 sampled robot/workcell gate는 통과했지만 301-frame 독립 검증에서 release 직후 2 frame이 실패했다. 캔은 이미 낙하하는데 ring finger가 0.3초에 걸쳐 열려 object와 관통했다. 이 접촉을 allowed collision으로 추가하지 않았다.</p></div>
+<div class="card"><h3>v3 · event timing 수정</h3><p>30 Hz에서 closed release frame 다음 한 frame에 손을 완전히 열고 그 시점에 detach하도록 release event를 7.233초로 옮겼다. object는 bin 중앙 <code>(0.16, -0.55, 0.367615) m</code>에서 떨어져 7.500초에 floor support로 전환된다.</p></div>
+<div class="card"><h3>검증 결과</h3><p>최종 301 frame 중 invalid frame은 0이다. 상태 분포는 conveyor 138, attached 79, released 8, contained 76 frame이다. 최종 floor support distance는 약 0.052 mm였다. Viser 10초 standalone animation과 live auto-loop를 생성했다.</p></div>
+</div>
+<p>이 결과는 offline geometry와 release model의 일관성만 검증한다. 실제 finger opening latency, 물체 rebound, calibration 오차, belt timing, controller feedback은 hardware에서 다시 측정해야 한다.</p>
+
+<h2>AutoDex grasp가 없을 때의 처리</h2>
+<p>grasp library는 <code>object_id + stable_pose_id + end_effector_id + task capability</code>의 exact match, support clearance, evidence status를 hard gate로 사용한다. 검증된 AutoDex grasp가 있으면 object-relative pose를 재사용할 수 있다. 없다면 online에서 임의 fallback을 만들지 않고 unsupported를 반환한 뒤 offline synthesis job을 생성한다.</p>
+<p>synthesis는 접촉, force closure 또는 task quality, support clearance, approach, hand closure, IK, self/cross/environment collision을 확인하고 source와 evidence를 저장한다. static AutoDex 결과가 있다는 사실과 moving pick, <code>drop_release</code>, <code>tabletop_release</code> capability는 서로 다른 claim이다. provisional 후보는 필요한 검증과 review 후에만 validated library로 승격한다.</p>
+
+<h2>실시간성에 대한 냉정한 평가</h2>
+<p>현재 reference backend는 실시간이 아니다. 세 bin-drop 후보를 순차 multi-seed Pinocchio IK와 Python sampled collision로 검사하는 데 분 단위가 걸렸고, 301-frame full mesh validation도 분 단위였다. full validator는 regression/certification 용도이며 online loop에 넣어서는 안 된다.</p>
+<p>실시간 backend는 같은 contract 아래 batched GPU planning, static workcell SDF, grasp/terminal IK seed cache, warm start, stale generation 취소, event 주변 adaptive densification을 사용해야 한다. perception부터 dispatch까지 p95 120 ms 이내를 목표로 측정하고 10–20 Hz로 rolling replan한다. hand closing과 arm motion time은 computation latency가 아니라 intercept deadline에서 별도로 빼야 한다.</p>
+<p>후보 선택은 metre, radian, second, Jacobian 값을 임의 weighted sum으로 합치지 않는다. deadline, uncertainty-adjusted clearance, certified workspace boundary, joint-limit, singularity, prediction freshness를 각각 hard gate한 뒤 threshold-normalized 최소 여유가 가장 큰 후보를 선택하는 maximin rule을 구현하고 unit test했다. 현재 reference search의 legacy score는 diagnostic일 뿐 최종 online selector로 인정하지 않는다.</p>
+
+<h2>회귀 검증과 환경 분리</h2>
+<p><code>beltbench-planning</code>에서 takeoff contact 재접촉 regression을 포함한 69개 test가 통과했다. calibration, color pilot, pose artifact 3개 module은 OpenCV가 planning 환경에 없어 import되지 않았으며 코드 실패와 구분했다. OpenCV 4.8.1.78을 고정한 CPU-only <code>beltbench-calibration</code> 환경을 새로 만들고 해당 14개 test를 모두 통과해 총 83개 test 경로를 확인했다. planning과 visualization 환경에 OpenCV를 덧붙이지 않아 capability 경계를 유지했다.</p>
+<p>지정 GPU 계정의 SSH 상태도 다시 확인했지만 공개키 인증 이전 key-exchange 단계에서 connection reset이 반복돼 scheduler와 GPU smoke까지 진행하지 못했다. login node에서 GPU를 추측하거나 다른 계정으로 우회하지 않았다. 따라서 이번 latency 평가는 로컬 CPU reference의 분 단위 관찰로만 남기고, 실시간 backend benchmark는 SSH 경로 복구 후 15분 GPU allocation smoke부터 다시 시작한다.</p>
+<div class="callout"><strong>현재 경계:</strong> bin-drop offline playback은 full-frame 검증을 통과했지만 실시간 planner, 측정 calibration, validated moving/drop grasp, connector bolt alignment와 physical release test가 없다. 따라서 visualization은 확인 가능하지만 robot 실행은 계속 차단한다.</div>
 <p><a href="../setup/modular-rebuild-audit.html">모듈 재구축 감사</a>와 <a href="../setup/initial-pose-tracking.html">초기 pose·tracking 연결</a>이 이 계획의 선행 기록이다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
