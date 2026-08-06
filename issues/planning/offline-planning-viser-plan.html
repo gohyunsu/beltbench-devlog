@@ -70,6 +70,15 @@
 <p>planner와 executor가 함께 사용할 수 있도록 arm·hand joint 상태를 이름 기반으로 저장하는 versioned trajectory contract를 추가했다. frame마다 time, phase, arm joints, hand joints를 기록하고 시간 증가, joint set 불변, finite radian 값과 execution-block reason을 검증한다.</p>
 <p>URDF joint limit에서 안전한 표시용 121-frame fixture를 생성하고 기존 xArm·Inspire inspector에 timeline, play/pause, speed와 phase 표시를 연결했다. trajectory joint 이름이 로드된 URDF와 다르면 표시 전에 거부한다. playback 중 arm configuration, Inspire mimic configuration, arm-tip FK와 hand mount가 같은 frame에서 갱신된다.</p>
 <p>로컬 포트 8092에서 xArm 6축과 Inspire 6축 playback startup 및 HTTP 응답을 확인했다. 이 fixture는 IK와 collision이 없는 UI 검증이므로 실행 차단 상태를 유지한다.</p>
+
+<h2>2026-08-06 · playback 코드 재검토</h2>
+<p>전체 연결을 다시 검토해 외부 trajectory가 URDF joint 이름만 맞으면 position limit를 넘더라도 표시될 수 있는 누락을 발견했다. 모든 frame을 URDF lower·upper limit와 다시 대조하는 독립 validator를 추가하고 limit 초과 regression test를 작성했다.</p>
+<p>trajectory playback 중 manual joint slider가 활성화되어 두 입력 source가 경쟁할 수 있었으므로 playback mode에서는 slider를 비활성화했다. timeline callback마다 timestamp 배열을 다시 만들던 불필요한 처리도 초기화 시 한 번만 계산하도록 정리했다. 수정 후 로컬 관련 테스트 11개와 GPU 서버 전체 테스트 29개가 통과했다.</p>
+
+<h2>2026-08-06 · 특정 robot·hand 의존성 재검토</h2>
+<p>core PlanningScene이 arm, hand, target, distractor, conveyor category를 모두 요구하고 live viewer도 같은 이름으로 toggle과 path를 만들고 있었다. 이는 synthetic demo의 구체적 구성을 공통 계약으로 잘못 끌어올린 것이다. entity category를 scene-safe한 개방형 문자열로 바꾸고, viewer는 실제 scene에 존재하는 category와 움직이는 entity를 탐색해 toggle과 path를 자동 생성하도록 리팩터링했다.</p>
+<p>hand demo도 모든 관절이 0에서 양의 upper 방향으로 닫힌다고 가정했다. 각 URDF joint의 lower·upper 안에서 0에 가장 가까운 neutral을 구하고 neutral에서 upper 방향으로 이동하도록 수정해 음수 범위나 0을 포함하지 않는 joint에도 적용 가능하게 했다. 외부 trajectory는 표시 전 모든 frame을 URDF position limit와 다시 대조한다.</p>
+<p>구체적인 xArm·Inspire 이름과 conveyor 치수는 검증 fixture와 local manifest에만 남는다. 공통 contract, Viser adapter, trajectory validator에는 joint 수, joint 이름, entity category 목록을 하드코딩하지 않는다. 관련 로컬 테스트 13개와 서버 전체 테스트 31개가 통과했다.</p>
 <p><a href="../setup/modular-rebuild-audit.html">모듈 재구축 감사</a>와 <a href="../setup/initial-pose-tracking.html">초기 pose·tracking 연결</a>이 이 계획의 선행 기록이다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
