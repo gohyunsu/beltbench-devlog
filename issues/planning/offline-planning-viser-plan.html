@@ -114,6 +114,31 @@
 <p><code>StaticGraspDiagnostics</code> artifact에 object pose, 후보 target, IK attempt, collision pair evidence, ranking과 execution block reason을 저장한다. Viser는 이 artifact만 읽어 accepted는 녹색, IK rejected는 빨간색, clearance rejected는 주황색으로 표시하며 세 그룹을 독립적으로 켜고 끈다. viewer는 IK, collision, ranking module을 import하지 않는다.</p>
 <p>로컬 포트 8093에서 synthetic artifact를 로드해 HTTP 200을 확인했다. planning 환경의 collision·asset 관련 20개 테스트와 artifact·ranking·Viser 관련 16개 테스트가 통과했다. junjinyong revision <code>3cf0530</code>에서는 전체 54개 테스트가 통과했고, 공용 Python에 Pinocchio가 없어 전용 5개만 명시적으로 skip됐다.</p>
 <div class="callout"><strong>다음 gate:</strong> P2의 contract와 visualization은 연결됐지만 실제 BODex grasp set을 xArm+Inspire combined collision model에 적용하지 않았다. 다음 단계는 hand collision geometry, measured mount transform, conveyor/table obstacle 변환과 실제 후보 artifact를 연결한 뒤 P3 collision-aware motion으로 진행하는 것이다.</div>
+
+<h2>2026-08-06 · arm과 hand를 하나의 collision state로 결합</h2>
+<p>arm-only NumPy configuration에 hand 처리를 덧붙이지 않고 collision 입력을 이름 기반 <code>RobotCollisionState</code>로 교체했다. arm과 end-effector joint group을 분리하며 arm-only checker는 hand state가 들어오면 무시하지 않고 실패한다. static evaluator는 후보에 저장된 pre-grasp·grasp hand command를 각각 arm IK state와 결합해 두 상태를 모두 검사한다.</p>
+<p>Inspire URDF는 6개 독립 command joint와 6개 mimic joint를 가지지만 Pinocchio는 full 12-joint model을 만든다. generic URDF adapter가 mimic source, multiplier, offset과 limit를 검증해 6-command state를 12-joint collision state로 확장한다. mimic joint를 hardware command처럼 직접 입력하면 거부한다.</p>
+
+<h2>combined model 구현 중 발견한 frame·policy 문제</h2>
+<div class="grid two">
+<div class="card"><h3>Pinocchio joint 순서</h3><p>실제 hand에서 Pinocchio tree traversal 순서와 URDF 선언 순서가 달라 첫 smoke가 중단됐다. 순서가 같다고 가정하지 않고 joint 이름 집합을 검증한 뒤 Pinocchio order로 명시적으로 재정렬했다.</p></div>
+<div class="card"><h3>hand root frame 가정</h3><p>초기 combined checker는 hand model universe가 mount frame이라고 가정했다. Inspire에서는 우연히 identity지만 다른 URDF에는 성립하지 않는다. manifest의 <code>hand_root_link</code> FK 역변환으로 모든 hand geometry를 지정 root에 정렬하도록 수정했다.</p></div>
+<div class="card"><h3>reflection mount</h3><p>기존 legacy mount JSON의 회전은 orthonormal이지만 determinant -1인 reflection이었다. 공통 transform validator에 determinant +1 gate를 추가하고 ParaDex combined URDF의 proper fixed joint 회전으로 수정했다. mount는 여전히 measured가 아닌 <code>provisional</code>이다.</p></div>
+<div class="card"><h3>단일 5 mm margin</h3><p>proper mount 후 arm-hand overlap은 사라졌지만 open hand의 정상 finger 간격은 0.22–3.15 mm라 global 5 mm margin을 통과할 수 없었다. pair evidence마다 required clearance를 저장하고 arm self, hand self, cross, environment margin을 분리했다. 정상 hand self와 mount cross는 collision-free 0 mm, environment는 5 mm 정책을 사용한다.</p></div>
+</div>
+
+<h2>semantic pair와 실제 assembly smoke</h2>
+<p>hand geometry 13개와 URDF checksum을 고정하고 kinematic-adjacent self pair만 allowed로 기록했다. arm-hand는 mount 접촉 pair 하나만 allowed이며, checker는 전체 Cartesian pair에서 allowed 집합을 제외한 모든 pair를 자동 검사한다. geometry가 추가되거나 이름·checksum이 바뀌면 planning 전에 실패한다.</p>
+<p>provisional ParaDex fixed-joint mount, xArm neutral 6축, Inspire open 6-command state에서 총 171개 pair를 검사했다. 최소 거리는 hand base와 thumb link 사이 0.221 mm이고 해당 hand-self policy의 required clearance는 0 mm라 collision check는 통과했다. artifact는 mount status와 source를 포함하고 provisional mount 및 trajectory 미검증 때문에 실행 차단 상태를 유지한다.</p>
+
+<h2>BODex candidate schema 정리</h2>
+<p>기존 NPZ key <code>wrist_from_object</code>는 실제 코드가 <code>object_from_wrist</code>로 사용해 transform 방향이 모호했다. compatibility fallback을 두지 않고 schema 2로 올려 <code>object_from_end_effector_root</code>, named pre-grasp/grasp command state, generator·hand·robot identity와 quality evidence를 필수화했다.</p>
+<p>planning adapter는 provisional/measured mount의 <code>arm_tip_from_end_effector_root</code>를 이용해 arm-tip IK target으로 변환하고, 접근 방향도 end-effector-root frame에서 object frame으로 변환한다. generator quality의 방향을 임의 해석하지 않고 호출자가 candidate별 grasp prior를 명시해야 한다.</p>
+
+<h2>검증 결과</h2>
+<p>로컬 planning 환경에서 combined model, mimic expansion, pair-specific clearance, static evaluation, artifact와 semantic config 관련 30개 테스트가 통과했다. 실제 assembly neutral artifact도 171개 pair clearance를 통과했고 mount status는 provisional로 저장됐다. schema-2 static diagnostic을 포트 8093에서 다시 열어 89개 persistent Viser message와 HTTP 200을 확인했다.</p>
+<p>junjinyong revision <code>8247f42</code>에서는 전체 60개 테스트가 통과했다. 공용 Python에 Pinocchio가 없어 combined 2개와 기존 Pinocchio 5개, 총 7개는 명시적으로 skip됐고 이 경로는 로컬 planning 환경에서 별도로 통과했다.</p>
+<div class="callout"><strong>남은 실행 gate:</strong> mount 실측, conveyor/table primitive의 실제 base-frame 배치, schema-2 BODex artifact 재생성, 실제 후보의 xArm IK·combined collision 평가가 필요하다. 그 다음에만 collision-aware trajectory와 timing validation으로 진행한다.</div>
 <p><a href="../setup/modular-rebuild-audit.html">모듈 재구축 감사</a>와 <a href="../setup/initial-pose-tracking.html">초기 pose·tracking 연결</a>이 이 계획의 선행 기록이다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
