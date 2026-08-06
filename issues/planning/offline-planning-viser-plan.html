@@ -87,13 +87,13 @@
 <h2>Pinocchio adapter와 환경 문제</h2>
 <div class="grid two">
 <div class="card"><h3>Conda solver 조기 종료</h3><p>최초 환경 생성은 설정된 libmamba plugin을 찾지 못해 실제 환경 없이 종료됐다. <code>CONDA_NO_PLUGINS=true</code> 진단에서 원인을 확인하고 classic solver로 재실행했다. 생성이 늦게 완료된 뒤 Pinocchio 3.4.0, hpp-fcl 3.0.1, NumPy 1.26.4를 확인했다.</p></div>
-<div class="card"><h3>서버 pip 설치 중단</h3><p>junjinyong 공용 Python에는 Pinocchio가 없었다. 임시 pip 설치는 binary wheel이 아니라 약 100MB source package와 build dependency를 받아 적합하지 않아 중단했다. source build fallback을 남기지 않고 conda-forge binary를 쓰는 별도 planning environment만 공식 경로로 유지했다.</p></div>
+<div class="card"><h3>서버 pip 설치 중단</h3><p>지정 GPU 서버의 공용 Python에는 Pinocchio가 없었다. 임시 pip 설치는 binary wheel이 아니라 약 100MB source package와 build dependency를 받아 적합하지 않아 중단했다. source build fallback을 남기지 않고 conda-forge binary를 쓰는 별도 planning environment만 공식 경로로 유지했다.</p></div>
 <div class="card"><h3>private Git 인증 부재</h3><p>서버 checkout은 GitHub credential이 없어 pull할 수 없었다. 로컬 main의 Git bundle을 전송하고 clean server tree를 fast-forward하여 소스 revision을 정확히 <code>4448ad3</code>으로 맞췄다.</p></div>
 <div class="card"><h3>테스트 skip 은폐 위험</h3><p>초기 dependency guard가 넓은 ImportError를 잡으면 adapter 내부 import 오류도 package 부재처럼 skip될 수 있었다. Pinocchio module 존재만 먼저 검사하고, 존재할 때 adapter import 오류는 그대로 실패하도록 수정했다.</p></div>
 </div>
 
 <h2>검증 결과와 다음 gate</h2>
-<p>로컬 <code>beltbench-planning</code> 환경에서 generic revolute·prismatic 2-joint URDF의 joint name, limit, FK와 reachable IK를 포함한 10개 테스트가 통과했다. junjinyong에서는 OpenCV가 격리된 기존 CPU 경로로 전체 41개 테스트가 통과했고, 공용 Python에 Pinocchio가 없어 adapter 전용 3개만 명시적으로 skip됐다. 두 결과를 합쳐 core 회귀와 실제 Pinocchio 수치 경로를 각각 검증했다.</p>
+<p>로컬 <code>beltbench-planning</code> 환경에서 generic revolute·prismatic 2-joint URDF의 joint name, limit, FK와 reachable IK를 포함한 10개 테스트가 통과했다. 지정 GPU 서버에서는 OpenCV가 격리된 기존 CPU 경로로 전체 41개 테스트가 통과했고, 공용 Python에 Pinocchio가 없어 adapter 전용 3개만 명시적으로 skip됐다. 두 결과를 합쳐 core 회귀와 실제 Pinocchio 수치 경로를 각각 검증했다.</p>
 <div class="callout"><strong>아직 P2 완료가 아니다:</strong> 현재 결과는 robot-independent kinematic feasibility까지다. 다음 구현은 hpp-fcl self/environment collision, 후보 ranking, 독립 revalidation과 Viser rejection diagnostics이며, 이 gate 전에는 실제 robot 실행으로 연결하지 않는다.</div>
 
 <h2>2026-08-06 · hpp-fcl collision gate</h2>
@@ -112,7 +112,7 @@
 <h2>후보 ranking과 Viser rejection diagnostics</h2>
 <p>collision-feasible 후보만 grasp prior, minimum clearance(m), start→pre-grasp→grasp joint-range-normalized travel로 ranking한다. revolute와 prismatic joint를 같은 radian 단위로 오해하지 않도록 각 joint half range로 정규화한다. rejected 후보는 score 경쟁에서 제외하고 IK 또는 clearance 실패 이유를 그대로 보존한다.</p>
 <p><code>StaticGraspDiagnostics</code> artifact에 object pose, 후보 target, IK attempt, collision pair evidence, ranking과 execution block reason을 저장한다. Viser는 이 artifact만 읽어 accepted는 녹색, IK rejected는 빨간색, clearance rejected는 주황색으로 표시하며 세 그룹을 독립적으로 켜고 끈다. viewer는 IK, collision, ranking module을 import하지 않는다.</p>
-<p>로컬 포트 8093에서 synthetic artifact를 로드해 HTTP 200을 확인했다. planning 환경의 collision·asset 관련 20개 테스트와 artifact·ranking·Viser 관련 16개 테스트가 통과했다. junjinyong revision <code>3cf0530</code>에서는 전체 54개 테스트가 통과했고, 공용 Python에 Pinocchio가 없어 전용 5개만 명시적으로 skip됐다.</p>
+<p>로컬 포트 8093에서 synthetic artifact를 로드해 HTTP 200을 확인했다. planning 환경의 collision·asset 관련 20개 테스트와 artifact·ranking·Viser 관련 16개 테스트가 통과했다. 지정 GPU 서버 revision <code>3cf0530</code>에서는 전체 54개 테스트가 통과했고, 공용 Python에 Pinocchio가 없어 전용 5개만 명시적으로 skip됐다.</p>
 <div class="callout"><strong>다음 gate:</strong> P2의 contract와 visualization은 연결됐지만 실제 BODex grasp set을 xArm+Inspire combined collision model에 적용하지 않았다. 다음 단계는 hand collision geometry, measured mount transform, conveyor/table obstacle 변환과 실제 후보 artifact를 연결한 뒤 P3 collision-aware motion으로 진행하는 것이다.</div>
 
 <h2>2026-08-06 · arm과 hand를 하나의 collision state로 결합</h2>
@@ -137,7 +137,7 @@
 
 <h2>검증 결과</h2>
 <p>로컬 planning 환경에서 combined model, mimic expansion, pair-specific clearance, static evaluation, artifact와 semantic config 관련 30개 테스트가 통과했다. 실제 assembly neutral artifact도 171개 pair clearance를 통과했고 mount status는 provisional로 저장됐다. schema-2 static diagnostic을 포트 8093에서 다시 열어 89개 persistent Viser message와 HTTP 200을 확인했다.</p>
-<p>junjinyong revision <code>8247f42</code>에서는 전체 60개 테스트가 통과했다. 공용 Python에 Pinocchio가 없어 combined 2개와 기존 Pinocchio 5개, 총 7개는 명시적으로 skip됐고 이 경로는 로컬 planning 환경에서 별도로 통과했다.</p>
+<p>지정 GPU 서버 revision <code>8247f42</code>에서는 전체 60개 테스트가 통과했다. 공용 Python에 Pinocchio가 없어 combined 2개와 기존 Pinocchio 5개, 총 7개는 명시적으로 skip됐고 이 경로는 로컬 planning 환경에서 별도로 통과했다.</p>
 <div class="callout"><strong>남은 실행 gate:</strong> mount 실측, conveyor/table primitive의 실제 base-frame 배치, schema-2 BODex artifact 재생성, 실제 후보의 xArm IK·combined collision 평가가 필요하다. 그 다음에만 collision-aware trajectory와 timing validation으로 진행한다.</div>
 
 <h2>2026-08-06 · moving-object 입력을 안정 자세와 planar 관측으로 분해</h2>
@@ -271,6 +271,44 @@
 <div class="callout"><strong>현재 정확한 경계:</strong> Pepsi upside-down/Inspire Left/drop resolution v2는 여전히 <code>synthesis_required</code>이고 selected grasp는 없다. 실제 provider proposal을 확보한 뒤에도 contact count만으로 승격하지 않는다. 독립 task-wrench quality, support clearance, approach sweep, hand closure, xArm IK, arm/hand/cross/workcell collision, release capability를 평가하고 review된 항목만 schema-3 validated library에 추가한다.</div>
 
 <p>남은 조치는 support clearance가 큰 validated grasp 조회 또는 synthesis, measured conveyor/camera covariance, online GPU planner adapter의 p50/p95/p99 benchmark, full-frame selected playback validation, connector 측정과 hardware release test다. 현재 결과는 실패를 숨기지 않는 offline planning evidence이며 robot 실행은 계속 차단한다.</p>
+
+<h2>2026-08-07 · intrinsic grasp와 robot deployment를 별도 검증으로 분리</h2>
+<p>source revision <code>4a5f77e</code>에서 “AutoDex에서 검증된 hand pose가 없으면 생성한다”는 원칙을 실행 가능한 계약으로 다시 정의했다. 결론은 맞다. exact object, stable pose, end effector, task capability와 최소 validation scope가 모두 일치하고 checksummed assessment가 있는 grasp는 library에서 선택한다. 그런 entry가 없으면 offline generator로 object-relative hand pose를 생성한다. 다만 generator의 optimizer success, contact count와 native score만으로는 검증 grasp가 되지 않는다.</p>
+
+<div class="callout"><strong>선택·생성 규칙:</strong> 검증된 AutoDex 계열 pose가 있으면 재사용한다. 없으면 BODex 또는 다른 backend로 생성하고, arm-independent intrinsic 검증을 통과한 후보만 <code>offline_intrinsic</code> library에 승격한다. 이후 선택한 arm과 workcell에서 deployment를 별도로 평가한다. synthesis와 intrinsic 검증은 intercept 실시간 deadline 밖에서 수행한다.</div>
+
+<h2>기존 경계에서 발견한 네 가지 문제</h2>
+<div class="grid two">
+<div class="card"><h3><code>validated</code>의 범위가 모호했다</h3><p>정적 geometry, 실제 정지 grasp, 움직이는 belt pick은 서로 다른 주장인데 하나의 상태처럼 읽힐 수 있었다. <code>unvalidated → offline_intrinsic → hardware_static → hardware_moving_pick</code> scope로 분리하고 offline command는 첫 번째 승격만 허용했다.</p></div>
+<div class="card"><h3>손 pose와 robot 배치가 섞였다</h3><p>contact와 task quality는 hand·object 관계의 속성이고 xArm IK와 table collision은 특정 배치의 속성이다. 이를 한 acceptance 목록에 두면 library가 arm에 종속된다. intrinsic 6개와 deployment 6개 evidence를 별도 artifact로 분리했다.</p></div>
+<div class="card"><h3>asset path만 맞으면 다른 robot도 들어올 수 있었다</h3><p>robot manifest에 arm과 end-effector identity가 없었다. manifest, deployment config, proposal, assessment와 viewer에 명시적 <code>arm_id</code>, <code>end_effector_id</code>를 추가하고 mismatch를 model loading과 IK 전에 거부했다.</p></div>
+<div class="card"><h3>library evidence가 문자열 경로뿐이었다</h3><p>scope가 있는 entry도 수동 편집된 evidence 경로를 신뢰할 수 있었다. library schema 5.0은 validation assessment SHA-256을 요구하고, resolution loader가 원 library hash와 evidence 파일을 확인한 뒤 compatibility와 deterministic selection을 다시 계산한다.</p></div>
+</div>
+
+<h2>생성 proposal에서 library 승격까지</h2>
+<p>synthesis request schema 2.0은 intrinsic evidence를 contact geometry, 독립 task quality, support clearance, sampled approach path, sampled hand closure, task/release capability로 고정한다. 별도 deployment evidence는 robot IK, arm self-collision, hand self-collision, arm-hand cross-collision, workcell collision, robot-object collision이다.</p>
+<p><code>GraspIntrinsicAssessment</code>는 승인된 protocol revision, 최소 contact 수, quality metric과 threshold, support clearance, approach·closure 최소 거리와 sample 수, capability와 release command, 여덟 source file checksum을 보존한다. 하나라도 부족하면 promotion은 실패하며 provider success는 판정에 사용하지 않는다. 통과해도 승격 scope는 항상 <code>offline_intrinsic</code>이다. 현재 구현은 이 계약과 promotion verifier까지이며, mesh/contact/wrench/closure를 계산해 assessment를 생산하는 실제 intrinsic evaluator backend는 아직 구현 전이다.</p>
+
+<h2>특정 arm에서의 정적 deployment 평가</h2>
+<p>proposal의 <code>object_from_hand_root</code>는 checksummed <code>arm_tip_from_hand_root</code> mount로만 arm-tip target으로 변환한다. 접근 방향도 hand-root 기준의 명시적 policy 입력으로 받는다. named start state와 IK seed, generic <code>RobotModel</code>/<code>SingleSeedIK</code>, Pinocchio/HPP-FCL combined checker를 사용하며 provider metric은 ranking prior로 사용하지 않는다.</p>
+<p>평가는 pre-grasp와 grasp의 IK, arm·hand·cross·workcell clearance를 저장한 뒤, object와 모든 arm/hand geometry의 endpoint distance를 별도로 계산한다. grasp에서는 허용한 finger geometry의 비관통 근접 contact 수를 요구하고 다른 robot-object 근접은 거부한다. object gate를 통과한 후보만 기존 static ranking 순서를 유지하며 다시 점수를 조작하지 않는다.</p>
+
+<h2>실제 xArm·Inspire·Pepsi fixture 결과</h2>
+<p>실제 provider 결과가 아직 없어 legacy ParaDex pose를 <code>legacy_fixture</code>, <code>provider_success=false</code>, contact 0인 비승격 진단 proposal로 명시했다. 이 fixture는 BODex 또는 AutoDex 결과가 아니며 intrinsic promotion에 사용할 수 없다.</p>
+<div class="grid two">
+<div class="card"><h3>IK</h3><p>두 pre-grasp seed와 세 grasp seed가 모두 설정된 translation·rotation tolerance 안에서 수렴했다. 이는 target reachability evidence일 뿐 grasp 유효성은 아니다.</p></div>
+<div class="card"><h3>workcell rejection</h3><p>pre-grasp에서 <code>end_effector/left_ring_1_0</code>과 <code>environment/conveyor-deck</code>의 signed distance가 약 -28.902 mm였다. grasp posture에서도 hand self-clearance가 5 mm 기준보다 작았다. 최종 deployment reason은 <code>pregrasp_clearance</code>다.</p></div>
+<div class="card"><h3>object interaction</h3><p>별도 endpoint check에서는 middle과 ring distal geometry가 Pepsi mesh에서 3 mm 이내의 비관통 contact로 집계됐고 arm-object penetration은 없었다. 이 결과는 workcell 실패를 덮어쓰지 않으며 intrinsic task quality도 증명하지 않는다.</p></div>
+<div class="card"><h3>Viser</h3><p>실제 xArm URDF, Inspire Left URDF, Pepsi mesh, 흰색 paired connector CAD, conveyor·robot table·drop bin을 같은 scene builder로 로드했다. start, pre-grasp, grasp 세 상태와 candidate rejection group, arm·hand·connector·object·workcell·frame·label toggle을 확인했다.</p></div>
+</div>
+
+<h2>검증 절차와 결과</h2>
+<p>planning 환경 128개와 OpenCV가 필요한 calibration 환경 14개, 총 142개 unit test가 통과했다. Python compileall, staged whitespace 검사, resolver·BODex import·deployment assessment·promotion·intercept·Viser CLI import matrix를 통과했다. 실제 assessment viewer는 세 상태를 로드하고 execution-blocked 상태로 시작했다. checksummed resolution을 intercept CLI에 준 preflight는 <code>synthesis_required</code>에서 종료했으며 report나 playback을 남기지 않았다.</p>
+<p>공용 storage helper에 남아 있던 사용자별 data-root fallback도 제거했다. 이제 명시적 <code>--data-root</code> 또는 <code>BELTBENCH_DATA_ROOT</code>가 없으면 즉시 실패한다. 공개 문서에는 서버 계정, scheduler queue, 사용자별 절대 경로를 남기지 않고 private server guide를 참조한다.</p>
+
+<div class="callout"><strong>현재 정확한 경계:</strong> 선택 규칙, proposal import, intrinsic assessment contract, fail-closed promotion, 특정 robot의 정적 IK·collision·object-contact assessment와 실제 asset Viser는 구현됐다. 그러나 실제 Pepsi BODex proposal, assessment를 계산하는 intrinsic evaluator, 승인된 approach policy, 측정된 arm-hand mount와 connector bolt alignment, moving trajectory/timing, perception latency, hardware grasp·release 검증은 아직 없다. 따라서 현재 Pepsi drop 요청은 계속 <code>synthesis_required</code>이고 모든 robot execution은 차단된다.</div>
+
+<p>다음 구현 순서는 실제 object/hand asset을 준비한 BODex generation, 독립 intrinsic evaluator와 protocol calibration, 통과 grasp의 checksummed library 승격, 그 grasp를 사용한 static deployment 후보 개선, moving intercept trajectory와 dense validation, 마지막으로 hardware static·moving scope 검증이다. 기존 arm-specific proof-of-concept 경로는 공식 command에서 제외했으며 새 계약과 동등한 evidence를 만들지 못하는 경로로 fallback하지 않는다.</p>
 <p><a href="../setup/modular-rebuild-audit.html">모듈 재구축 감사</a>와 <a href="../setup/initial-pose-tracking.html">초기 pose·tracking 연결</a>이 이 계획의 선행 기록이다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
