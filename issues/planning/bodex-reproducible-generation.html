@@ -65,8 +65,8 @@
 <div class="callout"><strong>시각화 경계:</strong> 색상과 애니메이션은 저장된 evidence를 읽는 검토 도구다. Viser에서 자연스럽게 보인다는 사실은 grasp 성공, robot reachability, moving interception timing을 증명하지 않는다.</div>
 
 <h2>현재 검증과 남은 일</h2>
-<p>BeltBench revision <code>488cc77</code>에서 planning/core test 162개와 OpenCV 분리 test 14개, 총 176개가 통과했다. BODex asset·staging·runtime·output schema·import 집중 test는 30개, Viser runtime과 관련 scene/playback 집중 test는 15개가 통과했다. 모든 v2 proposal, evaluation, assessment source checksum도 다시 검증했다.</p>
-<p>다음 production 생성은 provider config의 충분한 seed budget을 명시한 별도 immutable run으로 수행한다. 비용이 큰 전체 path 평가는 독립 endpoint contact·penetration·task-wrench screening을 먼저 적용한 뒤 생존 후보에만 수행하는 batch evaluator로 정리할 필요가 있다. provider success는 평가 순서를 정하는 안전 근거가 아니며 acceptance에는 계속 사용하지 않는다.</p>
+<p>BeltBench revision <code>9c70b62</code>에서 planning/core test 169개와 OpenCV 분리 test 14개, 총 183개가 통과했다. BODex asset·staging·runtime·output schema·import와 Viser 관련 회귀도 전체 suite에 포함했다. 최종 endpoint screening v3의 source 16개와 기존 proposal source를 다시 검증했다.</p>
+<p>비용이 큰 전체 path 평가 전에 독립 endpoint contact·penetration·self/support clearance·task-wrench를 계산하는 O(N) batch evaluator를 구현했다. 실제 8개는 기존 full 결과와 8/8 일치하며 모두 조기 탈락해 352개 path state를 생략했다. 다음 production 생성은 provider config의 충분한 seed budget을 명시한 별도 immutable run으로 수행하고, exact survivor worklist에 포함된 후보만 full path로 넘긴다. provider success는 평가 순서나 acceptance에 사용하지 않는다.</p>
 <p>현재 upside-down stable pose는 mesh bounds 기반 provisional이고 task protocol도 provisional이다. 따라서 geometry가 좋아도 진단 결과만 만들 수 있다. measured stable pose와 approved protocol을 확보하고 intrinsic gate를 통과한 뒤에만 <code>offline_intrinsic</code> library로 승격하며, xArm mount·IK·combined collision·moving timing은 그 다음의 별도 deployment gate다.</p>
 <p><a href="intrinsic-grasp-evaluation.html">Arm-independent intrinsic grasp 평가</a>에서 후보 acceptance 기준을, <a href="offline-planning-viser-plan.html">Offline planning과 Viser 구현</a>에서 이후 xArm deployment와 moving interception 연결을 계속 관리한다.</p>
 </main>
