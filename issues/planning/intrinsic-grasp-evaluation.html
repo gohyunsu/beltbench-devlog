@@ -12,7 +12,7 @@
 <nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
 </div></header>
 <main class="wrap article">
-<div class="eyebrow">ISSUE-010 · 2026-08-07 · O(N) endpoint screening 구현, 실제 8개 전부 조기 차단</div>
+<div class="eyebrow">ISSUE-010 · 2026-08-07 · Production 2,000개 screening, 153개 full-path 평가 완료</div>
 <h1>검증된 grasp가 없으면 새로 생성하되, 재사용 후보와 같은 독립 평가를 통과시킨다.</h1>
 <p class="lede">AutoDex 계열에서 동일한 물체, stable pose, hand, 작업 capability로 이미 검증된 grasp가 있다면 생성 비용을 줄일 수 있다. 그러나 검증 범위가 다르거나 그런 grasp가 없다면 BODex 같은 provider로 후보를 생성해야 한다. 두 경로의 차이는 후보를 얻는 방법뿐이며, BeltBench에서는 접촉, task wrench, support, 접근, hand closure, release를 같은 arm-independent evaluator로 다시 확인한다.</p>
 
@@ -78,11 +78,45 @@ subject to G alpha + lambda w_task = 0
 <p>최종 v3 artifact는 evaluator, task-wrench solver, hand model, input validator, screening contract, collision adapter, environment lock을 포함한 source 16개를 다시 hash해 모두 통과했다. 대표 후보 하나는 refactor 뒤 full evaluation을 다시 수행했으며, ID와 source reference를 제외한 의미 필드 26개가 이전 artifact와 모두 같았다. 실제 endpoint 탈락 후보를 <code>--screening-batch</code>와 함께 full evaluator에 전달했을 때 exact input 확인 후 <code>endpoint_contact_penetration</code>으로 계산 시작 전에 거부됐다.</p>
 <div class="callout"><strong>권한 경계:</strong> Endpoint screening은 계산 worklist일 뿐 validation evidence가 아니다. Provisional protocol과 stable pose는 endpoint geometry failure와 별도로 기록해 promotion은 막되, endpoint가 좋은 후보의 full-path diagnostic까지 없애지는 않는다. 최종 승격에는 여전히 checksummed contact·task-wrench·support·approach·closure·release 평가 전체가 필요하다.</div>
 
+<h2>Production screening과 full-path 결과</h2>
+<p>2,000개 normalized proposal을 4개 process로 screening했다. 각 process가 독립 Pinocchio/FCL hand·object model을 소유하고 numeric library 내부 thread는 1개로 제한했다. 8-seed fixture에서는 worker 1개와 2개의 endpoint 결과와 순서가 8/8 완전히 같았다. Production run은 약 2분 14초에 끝났고 1,847개를 endpoint에서 차단해 153개만 approach·closure·release 평가 대상으로 남겼다.</p>
+<table class="table">
+<tr><th>Endpoint failure</th><th>발생 수</th><th>비고</th></tr>
+<tr><td><code>endpoint_contact_penetration</code></td><td>1,423</td><td>허용 contact의 관통 한계 초과</td></tr>
+<tr><td><code>task_wrench_margin</code></td><td>1,383</td><td>지정 task wrench 최소 margin 부족</td></tr>
+<tr><td><code>endpoint_noncontact_object_clearance</code></td><td>673</td><td>비접촉 geometry 충돌 또는 clearance 부족</td></tr>
+<tr><td><code>insufficient_contact_count</code></td><td>399</td><td>intentional contact 3개 미만</td></tr>
+<tr><td><code>support_clearance</code></td><td>96</td><td>stable support plane 여유 부족</td></tr>
+</table>
+<p>한 후보가 여러 failure를 동시에 가질 수 있으므로 합계는 1,847보다 크다. Screening artifact는 2,000개 입력 순서를 그대로 보존하고 source 17개를 다시 hash했다. Artifact SHA-256은 <code>6c23a5252eed…6193e4</code>이며 provider success와 native metric은 decision record에 없다.</p>
+
+<h3>반복 full evaluator의 복잡도 결함</h3>
+<p>처음에는 기존 single-proposal CLI를 153번 호출하는 방안을 검토했다. 그러나 이 방식은 매 후보마다 10,009개 provider source를 다시 hash하고 mutable hand/object model을 다시 load한다. Batch 구현 초안도 common context 확인 함수를 survivor마다 호출해 내부적으로 2,000개 proposal validation을 반복하는 <code>O(S×N)</code> 결함이 있었다. 실행 전에 이를 발견해 source와 common context는 parent에서 한 번만 검증하고, worker마다 model을 한 번 load한 뒤 contiguous partition을 순차 평가하도록 바꿨다.</p>
+<p>각 후보는 여전히 독립 evaluation/assessment JSON을 갖는다. 파일명에는 untrusted proposal ID를 쓰지 않고 screening index를 사용한다. 모든 worker가 끝난 뒤에만 ordered <code>summary.json</code>을 만들며, PBS 후처리 verifier가 proposal 원본, screening, source code, 153개 artifact pair를 총 10,339개 verified file로 다시 대조해야 run이 완료된다.</p>
+
+<h3>153개 full-path 진단</h3>
+<table class="table">
+<tr><th>항목</th><th>결과</th><th>해석</th></tr>
+<tr><td>Evaluation/assessment pair</td><td>153/153, 순서 일치</td><td>부분 누락 없음</td></tr>
+<tr><td>전체 failure-free</td><td>0/153</td><td>protocol 미승인과 stable pose 미측정 때문에 execution 차단</td></tr>
+<tr><td>Context 제외 geometry clear</td><td>129/153</td><td>시각화·후속 측정 대상일 뿐 validated grasp 아님</td></tr>
+<tr><td>Approach object clearance 실패</td><td>17</td><td>가장 많은 full-path root failure</td></tr>
+<tr><td>Approach contact penetration 실패</td><td>4</td><td>접근 중 intentional contact 관통 초과</td></tr>
+<tr><td>Closure contact penetration 실패</td><td>2</td><td>closing path 관통 초과</td></tr>
+<tr><td>Release contact penetration 실패</td><td>5</td><td>opening/drop 경로 관통 초과</td></tr>
+</table>
+<p>Geometry-clear 129개의 static task-wrench quality는 0.01036~0.34377, 평균 약 0.06549였다. 가장 높은 후보는 screening survivor index 73의 <code>bodex-79a11b485450582b</code>로 quality 약 0.34377이었다. 다만 이 값은 arm IK, joint limit, singularity, workcell clearance, calibration error, latency와 timing slack을 포함하지 않는다. 따라서 최종 grasp 또는 intercept를 quality 하나로 선택하지 않고 대표 Viser 검토 후보로만 지정했다.</p>
+
+<h2>Production evidence Viser 검증</h2>
+<p>처음 local mirror에서 index 73 evaluation을 열었을 때 synthesis request가 exact relative path에 없어 viewer가 source 확인 단계에서 중단됐다. 누락 파일을 원격 evidence에서 가져와 expected SHA-256 <code>013cc1a30dd…81b7</code>와 일치시킨 뒤 다시 실행했다. 실제 Pepsi mesh와 Inspire hand URDF를 load한 Viser HTTP/WebSocket server가 기동됐고 자동 loop state를 구성한 뒤 timeout으로 종료했다.</p>
+<p>이 과정에서 viewer가 선택 후보 1개만 사용하면서 proposal 2,000개의 native source 10,009개를 모두 다시 hash하는 startup 병목도 확인했다. Evaluation이 proposal-batch JSON 자체를 이미 checksum으로 고정하므로, 공통 provider input과 선택 proposal의 5개 native file만 재검증하는 scoped evidence 모듈로 바꿨다. 사용하지 않는 후보 source가 없어도 선택 후보 검토는 통과하고, 선택 후보나 공통 source가 바뀌면 여전히 fail-closed가 되는 회귀 test를 추가했다.</p>
+<div class="callout"><strong>진단과 승인 분리:</strong> <code>diagnostic_geometry_clear</code>는 provisional context failure와 그에 따른 capability failure를 제외한 root geometry/path 결과다. 이를 <code>failure_free</code>, <code>offline_intrinsic</code>, hardware execution 권한으로 해석하면 안 된다. Stable pose 측정과 protocol 승인 후 같은 evidence를 다시 생성해야 하며, 이후에도 xArm deployment와 moving interception gate가 남는다.</div>
+
 <h2>검증과 다음 행동</h2>
-<p>BeltBench revision <code>9c70b62</code>에서 합성 opposing-contact 사례의 양·음 force margin이 양수이고 생성할 수 없는 축 torque margin은 0이 되는지 확인했다. no-contact, explicit evaluator failure, source checksum drift가 모두 fail-closed로 동작하며, 기존 combined collision 결과도 hand-only model 합성 후 유지되는 회귀 테스트를 추가했다. Screening contract, immutable worklist, exact input path, linear batch validation test를 포함한 planning/core test 169개와 OpenCV가 분리된 test 14개, 총 183개가 통과했다.</p>
+<p>BeltBench revision <code>3c3e2ef</code>에서 합성 opposing-contact, no-contact, explicit failure, source checksum drift, deterministic partition, worker별 model 1회 load, summary tamper, selected-proposal source scope를 회귀 test로 확인했다. Planning/core test 181개와 OpenCV 분리 test 14개, 총 195개가 통과했다. Production full evaluation은 revision <code>c8c4492</code>에서 수행됐고, viewer startup 최적화는 결과 schema나 evaluator source를 변경하지 않는 후속 revision이다.</p>
 <p>첫 전체 test discovery는 <code>tests/</code>를 importable package로 요구하는 unittest 옵션 때문에 시작 전에 실패했다. 모든 module을 명시하는 기존 방식으로 바로잡았다. 정적 검사기 Ruff는 planning 환경에 설치되어 있지 않아 실험 환경에 새 dependency를 임의로 추가하지 않았고, 전체 module import·회귀 test와 실제 CLI 실행으로 검증했다. OpenCV test는 calibration 환경에서 분리 실행했다.</p>
 <p>실제 Pepsi mesh와 Inspire URDF 실행은 상세 evaluation bundle과 promotion summary를 생성했지만 항상 execution-blocked로 남는다. 마지막 negative smoke에서는 assessment, evaluation, proposal, protocol, asset, evaluator source checksum을 모두 재검증한 다음 promotion이 위 failure code를 이유로 거부되는 것을 확인했다. Public devlog의 새 page, issue index, homepage, CSS도 local static server에서 모두 HTTP 200을 반환했다.</p>
-<p>다음 단계는 smoke보다 충분한 production seed budget으로 후보를 생성해 새 screening artifact를 만들고, worklist 생존 후보의 approach·closure·release 경로만 정밀 평가하는 것이다. 동시에 stable pose를 측정해 provisional 상태를 해소하고 approved task protocol을 확정해야 한다. 통과 후보만 xArm deployment와 moving interception planning으로 넘기며, 선형 closure가 계속 관통한다면 threshold를 완화하는 대신 hand closing trajectory 또는 후보 생성 제약을 수정한다.</p>
+<p>다음 단계는 129개를 곧바로 grasp library에 넣는 것이 아니다. 실제 Pepsi upside-down stable pose를 측정하고 task protocol을 승인한 뒤 동일 context에서 intrinsic evaluation을 다시 생성한다. 그 결과를 통과한 후보만 xArm deployment의 mount transform, IK, self/environment collision과 moving interception timing에 넘긴다. 여러 grasp가 남으면 static quality 최고값이 아니라 calibration·pose·timing·joint·clearance margin의 normalized bottleneck이 가장 큰 후보를 선택한다. 선형 closure가 계속 관통하면 threshold를 완화하지 않고 closing trajectory 또는 생성 제약을 수정한다.</p>
 <p><a href="offline-planning-viser-plan.html">Offline planning과 Viser 기록</a>에서 이후 robot deployment와 moving interception 연결을 계속 관리한다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>

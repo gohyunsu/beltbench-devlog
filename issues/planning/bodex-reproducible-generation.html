@@ -12,7 +12,7 @@
 <nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
 </div></header>
 <main class="wrap article">
-<div class="eyebrow">ISSUE-011 · 2026-08-07 · GPU smoke 완료, production 후보 생성 필요</div>
+<div class="eyebrow">ISSUE-011 · 2026-08-07 · GPU production 2,000 seeds 생성·import 완료</div>
 <h1>검증 grasp가 없을 때 BODex 후보를 재현 가능하게 생성하고, 독립 평가로 넘긴다.</h1>
 <p class="lede">정확히 같은 object, stable pose, hand, task capability로 검증된 grasp가 있으면 재사용한다. 그런 항목이 없으면 offline 생성이 필요하다. 이번 작업은 Pepsi Light upside-down pose와 Inspire left hand를 예로 들어, BODex 입력 자산부터 GPU runtime, 후보 import, intrinsic 평가까지의 경계를 checksummed artifact로 고정하는 과정이다.</p>
 
@@ -47,6 +47,8 @@
 <tr><td>두 번째 generation launch</td><td><code>ModuleNotFoundError: torch_scatter</code></td><td>cuRobo의 간접 runtime dependency가 environment lock과 preflight import 목록에 없었음</td><td>Torch/CUDA 조합에 맞는 wheel을 pin하고 ready preflight 필수 import에 추가</td></tr>
 <tr><td>실패 run 관측</td><td>scheduler output만 남고 run directory 안에 원인 로그가 없었음</td><td>PBS stdout 경로와 immutable evidence 경로가 분리됨</td><td>모든 run이 시작 즉시 run-local <code>job.log</code>를 열고 shell exit에서 <code>status.json</code>을 기록</td></tr>
 <tr><td>첫 8-seed 평가</td><td>provider contact 5개인데 독립 CAD에서는 접촉이 0~1개뿐</td><td>저장 코드가 중간 optimization stage의 wrist와 최종 stage의 finger joint를 한 pose로 조합함</td><td><code>pregrasp_wrist_se3.npy</code>와 final <code>wrist_se3.npy</code>를 분리한 adapter v2로 전환하고 과거 4-file seed를 거부</td></tr>
+<tr><td>Production planning 준비</td><td>BODex CUDA 환경에서 endpoint evaluator import가 <code>pinocchio</code> 부재로 차단됨</td><td>생성 runtime과 독립 기하 평가 runtime의 dependency 역할이 다른데 한 환경으로 취급했음</td><td>기존 CUDA 환경을 수정하지 않고 planning lock으로 새 prefix를 만들고 <code>pip check</code>, native import, 집중 test 12개를 통과</td></tr>
+<tr><td>Local evidence mirror</td><td>10,000개 native source를 Windows mount에서 재열거할 때 metadata I/O가 과도하게 느림</td><td>작은 파일이 많은 provider layout을 원격 storage에서 local mount로 옮긴 뒤 다시 순회했음</td><td>생성 worker와 같은 storage에서 import·checksum 검증을 끝낸 뒤 checksummed JSON과 작은 evidence archive만 전송</td></tr>
 </table>
 <p>여기서 중요한 점은 오류를 <code>LD_PRELOAD</code>나 system library 교체로 숨기지 않았다는 것이다. compiler, sysroot, runtime search path를 하나의 환경 계약으로 만들고, preflight가 native import를 통과하지 않으면 generation을 시작하지 않도록 했다.</p>
 
@@ -59,14 +61,26 @@
 <p>v2에서도 provider success는 0/8이었고 최종 승인 후보는 없었다. task-wrench를 통과한 두 후보의 quality는 약 0.0849와 0.0147이었지만 허용 contact penetration을 크게 넘었다. 경로 관통이 없던 후보는 접촉 2개와 quality 0으로 탈락했고, endpoint 관통이 0.5 mm 이하였던 다른 후보도 quality 0과 release 관통으로 탈락했다. 따라서 threshold를 낮추거나 “가장 덜 나쁜” 후보를 자동 선택하지 않았다.</p>
 <div class="callout"><strong>해석:</strong> 8 seeds는 실행 경로와 evidence schema를 확인하는 smoke budget이지 grasp 탐색 budget이 아니다. adapter 수정으로 올바른 기하가 복원됐지만 usable grasp가 생성됐다는 뜻은 아니다. production seed batch를 별도 immutable run으로 만들고, provider 결과와 무관한 hard gate를 통과한 후보만 library 승격 대상으로 삼아야 한다.</div>
 
+<h2>Production 2,000-seed 생성</h2>
+<p>Smoke와 별개인 immutable production run에서 random seed 123과 2,000개 seed budget을 고정했다. A6000 worker에서 실제 provider generation은 약 309.4초가 걸렸고, seed 디렉터리 2,000개와 필수 파일 5개씩 총 10,000개가 모두 존재했다. Run 시작 전에 exact command와 config를 기록하고, 종료 시 source revision, package 목록, GPU 정보, preflight, status를 같은 run evidence에 남겼다. 기존 output이나 manifest가 있으면 덮어쓰지 않고 실패하도록 했다.</p>
+<table class="table">
+<tr><th>항목</th><th>결과</th><th>해석</th></tr>
+<tr><td>생성 수</td><td>2,000/2,000 seed, 필수 파일 10,000/10,000</td><td>구조와 provenance 완전성 통과</td></tr>
+<tr><td>Provider-native success</td><td>0/2,000</td><td>acceptance가 아니라 원본 provenance로만 보존</td></tr>
+<tr><td>Normalized proposal</td><td>2,000개, source reference 10,009개 검증</td><td>provider 결과를 누락 없이 독립 evaluator 입력으로 변환</td></tr>
+<tr><td>Proposal artifact SHA-256</td><td><code>c3cf5e861285…8689bc3</code></td><td>이후 screening이 exact batch를 재확인</td></tr>
+<tr><td>Run archive SHA-256</td><td><code>1fb7073c43dd…9bcdc4</code></td><td>원격 생성 결과와 local mirror 전송 일치</td></tr>
+</table>
+<p>Local mirror를 처음 구성할 때 두 relative symlink가 한 directory level 짧아 source가 해석되지 않았다. 검증을 우회하지 않고 링크를 제거해 exact server-home 구조로 다시 만들었고, manifest·visual mesh·collision mesh checksum이 모두 맞은 뒤에만 후속 작업을 진행했다. 이 문제는 알고리즘 실패가 아니라 evidence relocation 오류였으며, checksum gate가 계산 시작 전에 발견했다.</p>
+
 <h2>평가 evidence 시각화</h2>
 <p>상세 intrinsic JSON만으로는 contact와 경로 실패를 빠르게 검토하기 어려워 read-only Viser viewer도 추가했다. viewer는 checksummed proposal과 config에서 approach·closure·release interpolation만 복원하고, 저장된 contact point, inward normal, clearance, penetration 판정을 실제 Inspire hand와 Pepsi mesh 위에 표시한다. 자동 반복 재생과 일괄 label toggle을 제공하지만 품질을 재계산하거나 후보를 rank·promote하지 않는다.</p>
 <p>final-wrist 후보의 44개 approach·closure·release 상태를 load해 HTTP 응답을 확인했다. 기존 playback과 포트가 겹쳤을 때 Viser가 다음 포트를 자동 선택하면서 CLI가 요청 포트를 잘못 출력하는 문제도 발견했다. 모든 Viser entry point가 <code>server.get_port()</code>로 실제 bind 포트를 보고하도록 수정했고, 출력 URL과 HTTP 200 응답이 일치하는지 재검증했다.</p>
 <div class="callout"><strong>시각화 경계:</strong> 색상과 애니메이션은 저장된 evidence를 읽는 검토 도구다. Viser에서 자연스럽게 보인다는 사실은 grasp 성공, robot reachability, moving interception timing을 증명하지 않는다.</div>
 
 <h2>현재 검증과 남은 일</h2>
-<p>BeltBench revision <code>9c70b62</code>에서 planning/core test 169개와 OpenCV 분리 test 14개, 총 183개가 통과했다. BODex asset·staging·runtime·output schema·import와 Viser 관련 회귀도 전체 suite에 포함했다. 최종 endpoint screening v3의 source 16개와 기존 proposal source를 다시 검증했다.</p>
-<p>비용이 큰 전체 path 평가 전에 독립 endpoint contact·penetration·self/support clearance·task-wrench를 계산하는 O(N) batch evaluator를 구현했다. 실제 8개는 기존 full 결과와 8/8 일치하며 모두 조기 탈락해 352개 path state를 생략했다. 다음 production 생성은 provider config의 충분한 seed budget을 명시한 별도 immutable run으로 수행하고, exact survivor worklist에 포함된 후보만 full path로 넘긴다. provider success는 평가 순서나 acceptance에 사용하지 않는다.</p>
+<p>BeltBench revision <code>3c3e2ef</code>에서 planning/core test 181개와 OpenCV 분리 test 14개, 총 195개가 통과했다. BODex asset·staging·runtime·output schema·import, process-parallel screening/full evaluation, Viser source-scope 회귀가 전체 suite에 포함됐다. Production proposal의 10,009개 source와 이후 생성된 evaluation evidence도 compute worker에서 다시 검증했다.</p>
+<p>Production 생성과 import는 완료됐다. 비용이 큰 전체 path 평가 전에 독립 endpoint contact·penetration·self/support clearance·task-wrench를 계산하는 O(N) batch evaluator를 적용했고, exact survivor만 full path로 넘겼다. Provider success는 생성, screening, full evaluation의 순서나 acceptance에 사용하지 않았다. 실제 수치와 남은 stable-pose/protocol gate는 <a href="intrinsic-grasp-evaluation.html">Arm-independent intrinsic grasp 평가</a>에 기록한다.</p>
 <p>현재 upside-down stable pose는 mesh bounds 기반 provisional이고 task protocol도 provisional이다. 따라서 geometry가 좋아도 진단 결과만 만들 수 있다. measured stable pose와 approved protocol을 확보하고 intrinsic gate를 통과한 뒤에만 <code>offline_intrinsic</code> library로 승격하며, xArm mount·IK·combined collision·moving timing은 그 다음의 별도 deployment gate다.</p>
 <p><a href="intrinsic-grasp-evaluation.html">Arm-independent intrinsic grasp 평가</a>에서 후보 acceptance 기준을, <a href="offline-planning-viser-plan.html">Offline planning과 Viser 구현</a>에서 이후 xArm deployment와 moving interception 연결을 계속 관리한다.</p>
 </main>
