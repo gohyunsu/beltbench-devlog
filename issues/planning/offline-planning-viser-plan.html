@@ -332,11 +332,24 @@
 </table>
 <p>마지막 21개 frame은 endpoint IK 사이의 smooth joint interpolation이 Cartesian collision-free path를 보장하지 않아서 남았다. 이를 intentional contact로 허용하거나 threshold를 낮추지 않았다. 현재 <code>InterceptPlannerBackend.search_batch</code>는 robot brand와 독립적인 교체 경계이고 Pinocchio/HPP-FCL 구현은 순서를 보존하는 CPU reference다. 실제 online backend는 최신 observation generation만 처리하고, on-device batched FK·Jacobian·warm-start IK·SDF query와 collision-aware time parameterization을 제공해야 한다. Source re-hash, grasp synthesis, 129개 deployment scan, dense mesh regression은 deadline 밖에 둔다.</p>
 
-<h2>v4 재현 결과와 시각화 경계</h2>
-<p>수정 전 마지막 baseline은 top-8 coarse search에 약 395.38초, 세 dense refinement에 약 412.61초가 걸렸다. 세 refinement는 같은 grasp의 4.8, 5.0, 4.6초 순서였고 각각 invalid frame 30, 30, 32개로 탈락했다. 주된 pair는 Inspire index finger geometry와 Pepsi mesh였고 4.6초 후보에는 bin wall clearance failure도 1 frame 있었다. 독립 verifier가 planning을 다시 실행해 direct·transitive source 1,046개와 no-selection 결정을 재현했다. 따라서 이 backend는 실시간이 아니며 latency 목표 표의 근거로 사용할 수 없다.</p>
-<p>별도로 실제 xArm URDF, Inspire Left URDF, Pepsi GLB, 흰색 <code>xarm_base.obj</code>·<code>inspire_base.obj</code>, conveyor, robot mounting table, open-top bin을 같은 Viser scene builder에서 로드했다. Live viewer는 Play와 Loop를 기본으로 켜고 arm, hand, connector, object, workcell, path, frame, 전체 label을 toggle한다. 301 frame·10초 standalone HTML도 self-contained animation으로 export했다. 다만 현재 paired OBJ는 checksummed visual evidence일 뿐 bolt-hole feature, mating datum, thread, tolerance, collision mesh와 measured relative transform이 없어 체결 가능성을 증명하지 않는다.</p>
+<h2>최종 v5 재현 결과</h2>
+<p>source revision <code>0db5442</code>의 최종 production-shaped run은 top-8×3 후보의 coarse search에 약 386.37초, 상위 세 후보의 dense refinement에 약 411.86초가 걸렸다. 26개 direct source를 포함한 전체 provenance를 독립 verifier가 다시 따라가 1,051개 파일과 no-selection 결정을 재현했고, run은 정상 종료했다. 이는 한 번의 CPU reference 측정이며 p95 benchmark나 실시간 성능 근거가 아니다.</p>
+<table class="table">
+<tr><th>정밀 순위</th><th>shortlist·intercept</th><th>invalid frame</th><th>실패 phase</th></tr>
+<tr><td>1</td><td>rank 6 · <code>5.0 s</code></td><td>21</td><td>approach 5 · pregrasp 6 · close 10</td></tr>
+<tr><td>2</td><td>rank 6 · <code>4.8 s</code></td><td>18</td><td>approach 1 · pregrasp 7 · close 10</td></tr>
+<tr><td>3</td><td>rank 1 · <code>4.6 s</code></td><td>23</td><td>approach 9 · pregrasp 3 · close 11</td></tr>
+</table>
+<p>세 후보 모두 environment가 아니라 Inspire finger와 Pepsi mesh의 비의도적 penetration으로 탈락했다. belt interpolation과 phase target 수정으로 이전 <code>30/30/32</code> frame보다 개선됐지만 0이 아니므로 diagnostic candidate와 execution candidate는 모두 <code>null</code>이고 selected playback도 쓰지 않았다. 이 실패는 threshold나 intentional-contact 목록을 넓힐 문제가 아니라 endpoint IK 사이에서 collision-aware approach sweep을 생성해야 하는 문제다.</p>
 
-<div class="callout"><strong>현재 판정:</strong> bounded top-K, batch backend, maximin gate, dense verifier, 실제 asset Viser는 연결됐다. 그러나 endpoint IK를 잇는 현재 reference interpolation은 collision-aware trajectory planning이 아니며 measured grasp·calibration·latency도 없다. Safe no-selection이 올바른 결과다. 다음 구현은 threshold 완화가 아니라 collision-aware accelerated backend와 representative replay 비교, 그 다음 hardware static·moving validation이다.</div>
+<h2>현재 motion과 Viser 진단</h2>
+<p>탈락 후보 중 rank 6의 4.8초 경로를 명시적 <code>rejected</code> diagnostic으로 다시 materialize했다. 301 frame·10초 동안 conveyor 상태의 물체 속도는 robot-base 좌표에서 정확히 <code>(0, 0.08, 0) m/s</code>였고 rotation 변화는 수치 오차 수준이었다. 즉 belt-frame +x가 robot-base +y에 매핑되어 conveyor가 robot 정면축과 수직이고, 초기 yaw를 유지한 채 평행이동한다. 같은 full-frame validator가 18 frame 실패를 다시 확인했으므로 이 HTML은 성공 시연이 아니라 접근 충돌을 관찰하는 evidence다.</p>
+<p>실제 xArm URDF, Inspire Left URDF, Pepsi GLB, 흰색 <code>xarm_base.obj</code>·<code>inspire_base.obj</code>, conveyor, robot mounting table, open-top bin을 같은 Viser scene builder에서 로드했다. Standalone HTML은 자동 반복 재생되고 live viewer는 Play·Loop와 arm, hand, connector, object, workcell, path, frame, 전체 label toggle을 제공한다. 현재 paired OBJ는 checksummed visual evidence일 뿐 bolt-hole feature, mating datum, thread, tolerance, collision mesh와 measured relative transform이 없어 체결 가능성을 증명하지 않는다.</p>
+
+<h2>최종 회귀 검증</h2>
+<p>planning 환경 202개와 OpenCV 전용 환경 14개, 총 216개 unit test가 통과했다. 최종 portfolio report SHA-256도 회수 전후 일치했다. Python 205개 compile, PBS script 9개 shell syntax, Git whitespace와 공개 devlog HTML 18개의 내부 링크를 검사했고 broken link는 0개였다. Local Viser diagnostic은 source 저장소의 ignored data 영역에만 두며 Git에 대용량 HTML이나 private run 경로를 넣지 않는다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> bounded top-K, batch backend, maximin gate, dense verifier, 실제 asset Viser는 연결됐다. 그러나 endpoint IK를 잇는 현재 reference interpolation은 collision-aware trajectory planning이 아니며 measured grasp·calibration·latency도 없다. Safe no-selection이 올바른 결과다. 다음 구현은 <code>InterceptPlannerBackend.search_batch</code> 아래의 collision-aware accelerated backend와 representative replay 비교, 그 다음 hardware static·moving validation이다.</div>
 
 <p><a href="../setup/modular-rebuild-audit.html">모듈 재구축 감사</a>와 <a href="../setup/initial-pose-tracking.html">초기 pose·tracking 연결</a>이 이 계획의 선행 기록이다.</p>
 </main>
