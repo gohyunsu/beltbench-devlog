@@ -12,7 +12,7 @@
 <nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
 </div></header>
 <main class="wrap article">
-<div class="eyebrow">ISSUE-009 · 2026-08-07 · robust reference 검증</div>
+<div class="eyebrow">ISSUE-009 · 2026-08-07 · bounded moving-intercept portfolio 검증</div>
 <h1>실제 로봇 없이 planning 결과와 실패 원인을 Viser에서 검증한다.</h1>
 <p class="lede">현재 가능한 연구 범위를 offline planning과 visualization까지로 제한했다. 목표는 conveyor animation을 빠르게 만드는 것이 아니라, 저장된 scene과 plan만으로 grasp 후보가 왜 가능하거나 불가능한지 재현하고 검사할 수 있는 기반을 만드는 것이다.</p>
 
@@ -309,6 +309,35 @@
 <div class="callout"><strong>현재 정확한 경계:</strong> 선택 규칙, proposal import, intrinsic assessment contract, fail-closed promotion, 특정 robot의 정적 IK·collision·object-contact assessment와 실제 asset Viser는 구현됐다. 그러나 실제 Pepsi BODex proposal, assessment를 계산하는 intrinsic evaluator, 승인된 approach policy, 측정된 arm-hand mount와 connector bolt alignment, moving trajectory/timing, perception latency, hardware grasp·release 검증은 아직 없다. 따라서 현재 Pepsi drop 요청은 계속 <code>synthesis_required</code>이고 모든 robot execution은 차단된다.</div>
 
 <p>다음 구현 순서는 실제 object/hand asset을 준비한 BODex generation, 독립 intrinsic evaluator와 protocol calibration, 통과 grasp의 checksummed library 승격, 그 grasp를 사용한 static deployment 후보 개선, moving intercept trajectory와 dense validation, 마지막으로 hardware static·moving scope 검증이다. 기존 arm-specific proof-of-concept 경로는 공식 command에서 제외했으며 새 계약과 동등한 evidence를 만들지 못하는 경로로 fallback하지 않는다.</p>
+
+<h2>2026-08-07 · production 후보를 bounded moving-intercept portfolio로 연결</h2>
+<p>2,000개 BODex proposal의 독립 screening과 full-path intrinsic 진단 뒤 context failure를 제외한 geometry-clear 후보는 129개였다. 이들을 xArm·Inspire assembly와 세 대표 belt horizon에서 평가한 결과 387개 grasp-time endpoint 중 255개가 endpoint IK와 collision gate를 통과했고, 85개 grasp가 세 horizon 모두에서 가능했다. 여기서 바로 전체 trajectory를 실시간 탐색하면 source 검증과 CPU FCL 비용이 deadline에 들어가므로, endpoint hard gate, threshold-normalized maximin order, grasp pose·hand command diversity를 적용해 82개 eligible 중 8개만 checksummed shortlist로 컴파일했다.</p>
+<table class="table">
+<tr><th>단계</th><th>입력</th><th>출력</th><th>실시간 경계</th></tr>
+<tr><td>Intrinsic·deployment</td><td>2,000 proposal, 3 horizon</td><td>129 geometry-clear, 255 feasible endpoint pair</td><td>항상 offline</td></tr>
+<tr><td>Shortlist compile</td><td>85개 all-horizon 후보</td><td>82 hard-gate eligible, diverse top-8</td><td>process 시작 전에 검증·상주</td></tr>
+<tr><td>Coarse portfolio</td><td>top-8 × 3 intercept time</td><td>IK, sampled collision, timing·workspace·joint·singularity margin</td><td>backend batch 경계</td></tr>
+<tr><td>Dense refinement</td><td>operational maximin 상위 최대 3개</td><td>모든 frame의 robot·object·workcell contact 판정</td><td>현재는 offline reference</td></tr>
+</table>
+<p>선택 순서는 provider score나 static quality 하나가 아니다. 각 후보에서 deadline, uncertainty-adjusted collision, interception workspace, normalized joint-limit, normalized Jacobian singular value를 독립 hard gate하고, 통과 후보 중 가장 작은 normalized slack이 큰 순서로 정한다. Grasp promotion과 측정 latency가 없는 현재 evidence에서는 이 두 authority만 offline diagnostic ordering에서 제외한다. Execution ordering은 둘을 다시 포함하므로 현재 결과가 robot command를 허가할 수 없다.</p>
+
+<h2>reference planning에서 드러난 문제와 수정</h2>
+<table class="table">
+<tr><th>관측</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>첫 portfolio에서 모든 후보의 workspace margin 실패</td><td>interception 후보 score에 home과 고정 bin transfer 위치까지 포함</td><td>첫 approach부터 첫 lifted frame까지만 interception workspace로 정의하고 terminal path는 전체 IK·collision gate로 계속 검사</td><td>수치 의미를 분리했지만 초기 phase label 때문에 한 번 더 실패</td></tr>
+<tr><td><code>lift</code>를 골랐는데도 bin transfer가 score에 포함</td><td>frame phase가 segment 도착점이 아니라 시작 waypoint 이름을 유지</td><td>phase 이름 집합이 아니라 첫 <code>lift</code> frame index에서 scoring window 종료</td><td>15개 full-path 계산 가능 후보와 3개 operational refinement 후보 생성</td></tr>
+<tr><td>CPU reference job이 GPU resource assignment 단계에서 반복 hold</td><td>Pinocchio/HPP-FCL이 CPU-only인데 queue 이름 때문에 GPU까지 불필요하게 요청</td><td>PBS resource를 CPU 2개·메모리 16 GB로 명시하고 GPU 요청과 <code>nvidia-smi</code> 제거</td><td>계산 node에서 정상 실행, GPU를 사용했다는 잘못된 주장 제거</td></tr>
+<tr><td>동일 shortlist 재검증이 다른 환경에서 실패</td><td>Jacobian SVD가 약 <code>5.6e-17</code> 달랐고 symlink relocation이 같은 source의 상대경로 문자열을 바꿈</td><td>ID·순위·hash·문자열은 exact, finite float만 <code>1e-12</code> tolerance로 비교하고 이미 검증된 source evidence reference를 보존</td><td>1,025개 transitive source를 local mirror에서 다시 검증</td></tr>
+<tr><td>v4 dense validator에서 세 후보 모두 접근 중 finger-object penetration</td><td>constant-velocity prediction을 playback이 smoothstep으로 바꿨고 모든 approach target을 미래 intercept pose에 고정</td><td>object playback을 prediction과 같은 piecewise-linear translation으로 수정하고 approach·pregrasp·open-at-grasp·grasp를 각 timestamp의 object pose에 배치</td><td>한 grasp smoke에서 invalid frame 30개가 21개로 감소했지만 0은 아님</td></tr>
+</table>
+<p>마지막 21개 frame은 endpoint IK 사이의 smooth joint interpolation이 Cartesian collision-free path를 보장하지 않아서 남았다. 이를 intentional contact로 허용하거나 threshold를 낮추지 않았다. 현재 <code>InterceptPlannerBackend.search_batch</code>는 robot brand와 독립적인 교체 경계이고 Pinocchio/HPP-FCL 구현은 순서를 보존하는 CPU reference다. 실제 online backend는 최신 observation generation만 처리하고, on-device batched FK·Jacobian·warm-start IK·SDF query와 collision-aware time parameterization을 제공해야 한다. Source re-hash, grasp synthesis, 129개 deployment scan, dense mesh regression은 deadline 밖에 둔다.</p>
+
+<h2>v4 재현 결과와 시각화 경계</h2>
+<p>수정 전 마지막 baseline은 top-8 coarse search에 약 395.38초, 세 dense refinement에 약 412.61초가 걸렸다. 세 refinement는 같은 grasp의 4.8, 5.0, 4.6초 순서였고 각각 invalid frame 30, 30, 32개로 탈락했다. 주된 pair는 Inspire index finger geometry와 Pepsi mesh였고 4.6초 후보에는 bin wall clearance failure도 1 frame 있었다. 독립 verifier가 planning을 다시 실행해 direct·transitive source 1,046개와 no-selection 결정을 재현했다. 따라서 이 backend는 실시간이 아니며 latency 목표 표의 근거로 사용할 수 없다.</p>
+<p>별도로 실제 xArm URDF, Inspire Left URDF, Pepsi GLB, 흰색 <code>xarm_base.obj</code>·<code>inspire_base.obj</code>, conveyor, robot mounting table, open-top bin을 같은 Viser scene builder에서 로드했다. Live viewer는 Play와 Loop를 기본으로 켜고 arm, hand, connector, object, workcell, path, frame, 전체 label을 toggle한다. 301 frame·10초 standalone HTML도 self-contained animation으로 export했다. 다만 현재 paired OBJ는 checksummed visual evidence일 뿐 bolt-hole feature, mating datum, thread, tolerance, collision mesh와 measured relative transform이 없어 체결 가능성을 증명하지 않는다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> bounded top-K, batch backend, maximin gate, dense verifier, 실제 asset Viser는 연결됐다. 그러나 endpoint IK를 잇는 현재 reference interpolation은 collision-aware trajectory planning이 아니며 measured grasp·calibration·latency도 없다. Safe no-selection이 올바른 결과다. 다음 구현은 threshold 완화가 아니라 collision-aware accelerated backend와 representative replay 비교, 그 다음 hardware static·moving validation이다.</div>
+
 <p><a href="../setup/modular-rebuild-audit.html">모듈 재구축 감사</a>와 <a href="../setup/initial-pose-tracking.html">초기 pose·tracking 연결</a>이 이 계획의 선행 기록이다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
