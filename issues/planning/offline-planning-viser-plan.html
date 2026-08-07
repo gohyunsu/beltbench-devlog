@@ -396,7 +396,21 @@
 <h2>BeltBench 기준 수정과 이전 evidence의 효력</h2>
 <p>기존 BeltBench는 provider score를 제외하고 named contact 3개 이상, contact distance 3 mm, 허용 contact penetration 0.5 mm 이하, non-contact clearance 1 mm, support clearance 9 mm, self-collision, approach 20·closure 12·release 12 sample, release contact 0개와 3 mm clearance, task wrench, robot IK·assembly·workcell·object collision, joint-limit·Jacobian margin을 독립 hard gate했다. 그러나 intrinsic task wrench가 ±force 3축과 ±yaw만 포함해 roll·pitch moment를 빠뜨린 사실을 이번 감사에서 확인했다.</p>
 <p>원인은 정적 tabletop gravity hold보다 엄격한 독립 metric을 만들었지만, 실제 unsupported pick/lift에서 필요한 완전한 6D load envelope를 설정 파일이 끝까지 표현하지 못한 것이다. 해결로 protocol revision을 <code>draft-2026-08-07.2</code>로 올리고 ±force·±moment 6축의 12방향을 모두 요구했다. Shortlist compiler도 hard gate 통과 후보 중 새 deployment horizon을 추가하는 후보를 먼저 고르고, envelope가 채워진 뒤에만 maximin normalized slack과 pose·hand diversity로 redundancy를 고른다. Coverage는 collision이나 wrench 실패를 보상할 수 없다.</p>
-<p>영향은 명확하다. 이전 129 geometry-clear, 82 eligible, top-8과 그 grasp를 사용한 61/61·301/301 결과는 <code>draft-2026-08-07.1</code>의 역사적 planning regression이다. 새 intrinsic 기준의 grasp-selection evidence가 아니며 수치를 이월하지 않는다. Checksummed ancestry 때문에 이전 screening을 새 config와 섞으면 verifier가 거부한다. 기존 2,000 BODex proposal은 후보 evidence라 재사용할 수 있지만, screening, full path, moving deployment, shortlist는 새 ID로 다시 계산해야 한다.</p>
+<p>영향은 명확하다. 이전 129 geometry-clear, 82 eligible, top-8과 그 grasp를 사용한 61/61·301/301 결과는 <code>draft-2026-08-07.1</code>의 역사적 planning regression이다. 새 intrinsic 기준의 grasp-selection evidence가 아니며 수치를 이월하지 않는다. Checksummed ancestry 때문에 이전 screening을 새 config와 섞으면 verifier가 거부한다. 기존 2,000 BODex proposal만 immutable 후보 evidence로 재사용하고 screening, full path, moving deployment, shortlist를 새 ID로 다시 계산했다.</p>
+
+<h2>12방향 기준의 전체 planning chain 재검증</h2>
+<p><code>draft-2026-08-07.2</code>에서 2,000개 endpoint를 다시 검사해 140개를 full-path로 넘겼고, 그중 provisional context failure를 제외한 geometry-clear diagnostic 117개를 얻었다. xArm·Inspire assembly를 세 horizon <code>4.6/4.8/5.0 s</code>에 배치한 351개 endpoint pair 중 231개가 가능했다. 각 horizon에서 동일한 77개가 가능했고, 전체 rejection은 <code>pregrasp_ik</code> 117건과 <code>grasp_robot_object_penetration</code> 3건이었다.</p>
+<table class="table">
+<tr><th>단계</th><th>입력</th><th>결과</th><th>검증 의미</th></tr>
+<tr><td>Endpoint screen</td><td>2,000 proposal</td><td>140 full-path work item</td><td>12방향 intrinsic hard gate</td></tr>
+<tr><td>Full path</td><td>140 candidate</td><td>117 geometry-clear</td><td>approach·closure·release sampled diagnostic</td></tr>
+<tr><td>Moving deployment</td><td>117×3 pair</td><td>231/351 feasible</td><td>nominal yaw의 endpoint IK·collision</td></tr>
+<tr><td>Shortlist</td><td>117 candidate</td><td>74 eligible→top-8</td><td>hard gate 뒤 coverage·redundancy</td></tr>
+<tr><td>Timed portfolio</td><td>top-8×3 pair</td><td>diagnostic 1, execution 0</td><td>CPU sampled planning·dense replay</td></tr>
+</table>
+<p>Coverage-first를 넣었다고 8개가 서로 다른 horizon을 억지로 하나씩 맡는 것은 아니다. 현재 nominal yaw에서는 동일한 후보 집합이 세 horizon을 모두 덮으므로 첫 eligible candidate가 전체 horizon coverage를 즉시 채운다. 이후 7개는 threshold-normalized bottleneck slack과 grasp pose·hand command 다양성으로 redundancy를 확보한다. 이 결과는 horizon sampling만으로 context diversity가 충분하지 않음을 보여 주며, 다음 atlas에 yaw와 pose uncertainty를 넣어야 하는 근거다.</p>
+<p>새 top-8 전체를 timed backend로 다시 계산한 결과 rank 4 <code>bodex-a9b299caeade8d79</code>의 <code>5.0 s</code> intercept가 diagnostic으로 선택됐다. Moving approach의 61개 target과 61개 joint waypoint가 robot-workcell·robot-object gate를 모두 통과했고, 독립 validator도 playback 301 frame을 모두 유효하게 판정했다. Coarse search는 순차 CPU reference에서 약 579.11초, 이 후보의 dense refinement는 약 126.43초였고, transitive input과 결과 966개 파일을 verifier가 재확인했다.</p>
+<p>이 결과를 실시간 성공으로 해석하면 안 된다. 24개 조합 중 11개는 robustness gate, 8개는 bin 위 transfer IK, 4개는 approach IK, 1개는 workcell clearance에서 거부됐다. Rank 4의 4.8초와 5.0초 후보도 grasp evidence가 validated가 아니고 latency p95가 측정되지 않아 execution gate를 통과하지 않는다. 따라서 저장된 playback은 오프라인 diagnostic이며 robot command authority는 계속 <code>null</code>이다.</p>
 
 <h2>다음 envelope</h2>
 <p>현재 deployment context는 nominal yaw에서 세 intercept horizon뿐이다. 실제 입력은 object ID와 stable tabletop pose가 주어지고 초기 planar 위치·yaw는 측정되므로, 다음 offline artifact는 stable-pose symmetry의 fundamental yaw domain을 명시한 yaw×horizon atlas여야 한다. 각 cell은 같은 hard gate를 통과해야 하고, online은 resident atlas에서 측정 yaw와 covariance가 지지되는 후보만 읽은 뒤 최신 exact pose로 timed trajectory를 다시 검사한다. Atlas 밖이거나 yaw uncertainty가 크면 fallback grasp를 추측하지 않고 abort한다.</p>
