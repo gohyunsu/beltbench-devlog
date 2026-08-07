@@ -12,7 +12,7 @@
 <nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
 </div></header>
 <main class="wrap article">
-<div class="eyebrow">ISSUE-010 · 2026-08-07 · 구조 검증, 후보 탈락</div>
+<div class="eyebrow">ISSUE-010 · 2026-08-07 · 실제 BODex smoke 8개 독립 평가, 전부 차단</div>
 <h1>검증된 grasp가 없으면 새로 생성하되, 재사용 후보와 같은 독립 평가를 통과시킨다.</h1>
 <p class="lede">AutoDex 계열에서 동일한 물체, stable pose, hand, 작업 capability로 이미 검증된 grasp가 있다면 생성 비용을 줄일 수 있다. 그러나 검증 범위가 다르거나 그런 grasp가 없다면 BODex 같은 provider로 후보를 생성해야 한다. 두 경로의 차이는 후보를 얻는 방법뿐이며, BeltBench에서는 접촉, task wrench, support, 접근, hand closure, release를 같은 arm-independent evaluator로 다시 확인한다.</p>
 
@@ -55,11 +55,22 @@ subject to G alpha + lambda w_task = 0
 <p>두 fingertip은 collision이 아니라 각각 약 0.62 mm와 1.94 mm의 양의 표면 거리에서 contact threshold에 들어왔다. 반면 open-to-grasp 선형 closure 중에는 hand geometry가 물체를 깊게 통과했다. Open release endpoint 자체는 깨끗했지만 grasp-to-open 경로도 같은 관통 구간을 역으로 지났다. 이는 endpoint pose만 보는 검사가 놓치는 실패이며, 이 pose 또는 closure/release policy를 그대로 사용할 수 없음을 뜻한다.</p>
 <div class="callout"><strong>해석 경계:</strong> 현재 upside-down stable pose, 접근 방향, 마찰계수, task-wrench set은 provisional이다. 따라서 위 수치는 실제 grasp 성공률이나 하드웨어 안전을 증명하지 않는다. 다만 이 provisional 조건에서도 legacy 후보가 승격 기준에 크게 못 미친다는 진단은 재현됐다.</div>
 
+<h2>BODex v2 Pepsi smoke 결과</h2>
+<p>실제 BODex GPU smoke 8개를 같은 evaluator로 다시 평가했다. 첫 output adapter는 중간 optimization stage wrist와 최종 finger joint를 섞고 있었고, 이 hybrid pose에서는 provider contact 5개가 독립 평가에서 0~1개로 줄었다. 저장 경계를 final wrist로 수정하고 중간 wrist를 별도 evidence로 보존한 v2에서는 두 stage root가 2.8~8.6 mm, 1.9~4.2° 달랐으며, 독립 접촉 수가 2~4개로 회복됐다.</p>
+<table class="table">
+<tr><th>분류</th><th>후보 수</th><th>독립 관측</th><th>결론</th></tr>
+<tr><td>Task-wrench 통과</td><td>2/8</td><td>quality 약 0.0849, 0.0147</td><td>접촉·quality만으로 승인 불가</td></tr>
+<tr><td>경로 관통 없음</td><td>1/8</td><td>접촉 2개, quality 0</td><td>접촉 수와 quality 실패</td></tr>
+<tr><td>Endpoint 관통 허용치 이내</td><td>2/8</td><td>둘 다 quality 0, 하나는 release 관통</td><td>drop capability 실패</td></tr>
+<tr><td>전체 hard gate 통과</td><td>0/8</td><td>모든 assessment execution-blocked</td><td>library 승격 없음</td></tr>
+</table>
+<p>Provider success도 0/8이었다. 그러나 provider success를 이유로 후보를 버린 것이 아니라 모든 seed를 import하고 독립 evidence를 계산했다. 반대로 두 후보가 provider와 다른 독립 quality를 통과했어도 수 cm 수준의 penetration을 이유로 차단했다. 이 결과는 provider metric과 BeltBench acceptance를 분리해야 한다는 설계를 실제 데이터에서 확인한 것이다.</p>
+
 <h2>검증과 다음 행동</h2>
-<p>합성 opposing-contact 사례에서 양·음 force margin이 양수이고 생성할 수 없는 축 torque margin은 0이 되는지 확인했다. no-contact, explicit evaluator failure, source checksum drift가 모두 fail-closed로 동작하며, 기존 combined collision 결과도 hand-only model 합성 후 유지되는 회귀 테스트를 추가했다. Planning 환경에서 관련 전체 test 136개, OpenCV가 분리된 calibration 환경에서 14개가 통과했다. 실제 평가 artifact에는 NumPy 1.26.4, SciPy 1.13.1, Pinocchio 3.4.0, hpp-fcl 3.0.1, trimesh 4.8.3과 evaluator source SHA를 기록했다.</p>
-<p>첫 전체 test discovery는 <code>tests/</code>를 importable package로 요구하는 unittest 옵션 때문에 시작 전에 실패했다. 모든 module을 명시하는 기존 방식으로 바꿔 실제 136개 test를 실행했다. OpenCV test를 처음에는 존재하지 않는 환경 이름으로 호출해 실패했고, dependency가 설치된 calibration 환경으로 바로잡아 14개를 통과시켰다. 이 두 실패는 algorithm failure와 분리했다.</p>
+<p>합성 opposing-contact 사례에서 양·음 force margin이 양수이고 생성할 수 없는 축 torque margin은 0이 되는지 확인했다. no-contact, explicit evaluator failure, source checksum drift가 모두 fail-closed로 동작하며, 기존 combined collision 결과도 hand-only model 합성 후 유지되는 회귀 테스트를 추가했다. Planning/core test 162개와 OpenCV가 분리된 test 14개, 총 176개가 통과했다. 실제 평가 artifact에는 NumPy 1.26.4, SciPy 1.13.1, Pinocchio 3.4.0, hpp-fcl 3.0.1, trimesh 4.8.3과 evaluator source SHA를 기록했다.</p>
+<p>첫 전체 test discovery는 <code>tests/</code>를 importable package로 요구하는 unittest 옵션 때문에 시작 전에 실패했다. 모든 module을 명시하는 기존 방식으로 바꿔 실제 162개 test를 실행했다. OpenCV test를 처음에는 존재하지 않는 환경 이름으로 호출해 실패했고, dependency가 설치된 calibration 환경으로 바로잡아 14개를 통과시켰다. 이 두 실패는 algorithm failure와 분리했다.</p>
 <p>실제 Pepsi mesh와 Inspire URDF 실행은 상세 evaluation bundle과 promotion summary를 생성했지만 항상 execution-blocked로 남는다. 마지막 negative smoke에서는 assessment, evaluation, proposal, protocol, asset, evaluator source checksum을 모두 재검증한 다음 promotion이 위 failure code를 이유로 거부되는 것을 확인했다. Public devlog의 새 page, issue index, homepage, CSS도 local static server에서 모두 HTTP 200을 반환했다.</p>
-<p>다음 단계는 stable pose를 측정해 provisional 상태를 해소하고, approved task protocol을 확정한 뒤 BODex에서 여러 후보를 새로 생성하는 것이다. 모든 후보를 같은 evaluator로 batch 평가하고, 통과 후보만 xArm deployment와 moving interception planning으로 넘긴다. 선형 closure가 계속 관통한다면 threshold를 완화하는 대신 hand closing trajectory 또는 후보 생성 제약을 수정해야 한다.</p>
+<p>다음 단계는 smoke보다 충분한 production seed budget으로 후보를 생성하고, 독립 endpoint screening 후 생존 후보의 approach·closure·release 경로만 정밀 평가하는 것이다. 동시에 stable pose를 측정해 provisional 상태를 해소하고 approved task protocol을 확정해야 한다. 통과 후보만 xArm deployment와 moving interception planning으로 넘기며, 선형 closure가 계속 관통한다면 threshold를 완화하는 대신 hand closing trajectory 또는 후보 생성 제약을 수정한다.</p>
 <p><a href="offline-planning-viser-plan.html">Offline planning과 Viser 기록</a>에서 이후 robot deployment와 moving interception 연결을 계속 관리한다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
