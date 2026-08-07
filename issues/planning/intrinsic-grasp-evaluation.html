@@ -12,9 +12,10 @@
 <nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
 </div></header>
 <main class="wrap article">
-<div class="eyebrow">ISSUE-010 · 2026-08-07 · Production 2,000개 screening, 153개 full-path 평가 완료</div>
+<div class="eyebrow">ISSUE-010 · 2026-08-07 · draft .1 완료, 12-direction draft .2 재검증 대기</div>
 <h1>검증된 grasp가 없으면 새로 생성하되, 재사용 후보와 같은 독립 평가를 통과시킨다.</h1>
 <p class="lede">AutoDex 계열에서 동일한 물체, stable pose, hand, 작업 capability로 이미 검증된 grasp가 있다면 생성 비용을 줄일 수 있다. 그러나 검증 범위가 다르거나 그런 grasp가 없다면 BODex 같은 provider로 후보를 생성해야 한다. 두 경로의 차이는 후보를 얻는 방법뿐이며, BeltBench에서는 접촉, task wrench, support, 접근, hand closure, release를 같은 arm-independent evaluator로 다시 확인한다.</p>
+<div class="callout"><strong>현재 효력:</strong> 아래 2,000→153→129 수치는 ±force 3축과 ±yaw만 사용한 <code>draft-2026-08-07.1</code>의 역사적 진단이다. Roll·pitch moment를 빠뜨린 사실을 확인해 <code>draft-2026-08-07.2</code>는 ±force·±moment 6축의 12방향을 요구한다. 기존 수치는 새 grasp-selection evidence로 이월하지 않으며 screening 이후 단계를 새 ID로 재계산한다.</div>
 
 <h2>문제와 영향</h2>
 <p>기존 legacy Pepsi Light/Inspire-left pose는 실제 mesh와 hand joint pose를 포함하지만 검증된 grasp는 아니었다. provider가 남긴 success, contact count, native error를 그대로 신뢰하면 생성기의 내부 목적함수를 BeltBench 작업 성공 기준으로 오해하게 된다. 반대로 xArm IK와 workcell collision을 먼저 검사하면 hand-object grasp 품질이 특정 arm 배치에 묶여 재사용성이 사라진다.</p>
@@ -116,7 +117,7 @@ subject to G alpha + lambda w_task = 0
 <p>BeltBench revision <code>3c3e2ef</code>에서 합성 opposing-contact, no-contact, explicit failure, source checksum drift, deterministic partition, worker별 model 1회 load, summary tamper, selected-proposal source scope를 회귀 test로 확인했다. Planning/core test 181개와 OpenCV 분리 test 14개, 총 195개가 통과했다. Production full evaluation은 revision <code>c8c4492</code>에서 수행됐고, viewer startup 최적화는 결과 schema나 evaluator source를 변경하지 않는 후속 revision이다.</p>
 <p>첫 전체 test discovery는 <code>tests/</code>를 importable package로 요구하는 unittest 옵션 때문에 시작 전에 실패했다. 모든 module을 명시하는 기존 방식으로 바로잡았다. 정적 검사기 Ruff는 planning 환경에 설치되어 있지 않아 실험 환경에 새 dependency를 임의로 추가하지 않았고, 전체 module import·회귀 test와 실제 CLI 실행으로 검증했다. OpenCV test는 calibration 환경에서 분리 실행했다.</p>
 <p>실제 Pepsi mesh와 Inspire URDF 실행은 상세 evaluation bundle과 promotion summary를 생성했지만 항상 execution-blocked로 남는다. 마지막 negative smoke에서는 assessment, evaluation, proposal, protocol, asset, evaluator source checksum을 모두 재검증한 다음 promotion이 위 failure code를 이유로 거부되는 것을 확인했다. Public devlog의 새 page, issue index, homepage, CSS도 local static server에서 모두 HTTP 200을 반환했다.</p>
-<p>다음 단계는 129개를 곧바로 grasp library에 넣는 것이 아니다. 실제 Pepsi upside-down stable pose를 측정하고 task protocol을 승인한 뒤 동일 context에서 intrinsic evaluation을 다시 생성한다. 그 결과를 통과한 후보만 xArm deployment의 mount transform, IK, self/environment collision과 moving interception timing에 넘긴다. 여러 grasp가 남으면 static quality 최고값이 아니라 calibration·pose·timing·joint·clearance margin의 normalized bottleneck이 가장 큰 후보를 선택한다. 선형 closure가 계속 관통하면 threshold를 완화하지 않고 closing trajectory 또는 생성 제약을 수정한다.</p>
+<p>다음 단계는 역사적 129개를 곧바로 grasp library에 넣는 것이 아니다. 기존 2,000개 provider proposal은 source evidence로만 재사용하고, 12-direction intrinsic screening과 full path를 새 checksummed ancestry로 다시 만든다. 실제 Pepsi upside-down stable pose를 측정하고 task protocol을 승인한 뒤 동일 context에서 intrinsic evaluation을 다시 생성한다. 그 결과를 통과한 후보만 xArm deployment의 mount transform, IK, self/environment collision과 moving interception timing에 넘긴다. 여러 grasp가 남으면 static quality 최고값이 아니라 context coverage를 먼저 확보하고 calibration·pose·timing·joint·clearance margin의 normalized bottleneck으로 redundancy를 고른다. 선형 closure가 계속 관통하면 threshold를 완화하지 않고 closing trajectory 또는 생성 제약을 수정한다.</p>
 <p><a href="offline-planning-viser-plan.html">Offline planning과 Viser 기록</a>에서 이후 robot deployment와 moving interception 연결을 계속 관리한다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>

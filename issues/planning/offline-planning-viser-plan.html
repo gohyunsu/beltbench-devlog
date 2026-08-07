@@ -12,7 +12,7 @@
 <nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
 </div></header>
 <main class="wrap article">
-<div class="eyebrow">ISSUE-009 · 2026-08-07 · bounded moving-intercept portfolio 검증</div>
+<div class="eyebrow">ISSUE-009 · 2026-08-07 · timed moving-tool planning과 Viser 검증</div>
 <h1>실제 로봇 없이 planning 결과와 실패 원인을 Viser에서 검증한다.</h1>
 <p class="lede">현재 가능한 연구 범위를 offline planning과 visualization까지로 제한했다. 목표는 conveyor animation을 빠르게 만드는 것이 아니라, 저장된 scene과 plan만으로 grasp 후보가 왜 가능하거나 불가능한지 재현하고 검사할 수 있는 기반을 만드는 것이다.</p>
 
@@ -350,6 +350,57 @@
 <p>planning 환경 202개와 OpenCV 전용 환경 14개, 총 216개 unit test가 통과했다. 최종 portfolio report SHA-256도 회수 전후 일치했다. Python 205개 compile, PBS script 9개 shell syntax, Git whitespace와 공개 devlog HTML 18개의 내부 링크를 검사했고 broken link는 0개였다. Local Viser diagnostic은 source 저장소의 ignored data 영역에만 두며 Git에 대용량 HTML이나 private run 경로를 넣지 않는다.</p>
 
 <div class="callout"><strong>현재 판정:</strong> bounded top-K, batch backend, maximin gate, dense verifier, 실제 asset Viser는 연결됐다. 그러나 endpoint IK를 잇는 현재 reference interpolation은 collision-aware trajectory planning이 아니며 measured grasp·calibration·latency도 없다. Safe no-selection이 올바른 결과다. 다음 구현은 <code>InterceptPlannerBackend.search_batch</code> 아래의 collision-aware accelerated backend와 representative replay 비교, 그 다음 hardware static·moving validation이다.</div>
+
+<h2>2026-08-07 · timed moving-tool backend와 301-frame 재검증</h2>
+<p>이전 후보는 phase endpoint에서만 IK를 풀고 그 사이를 joint-space smooth interpolation으로 연결했다. 그 결과 rank 6·4.8초 후보가 endpoint gate를 통과해도 approach 쪽 18 frame에서 Inspire finger와 Pepsi mesh가 관통했다. 검토 과정에서 <code>close_above_object</code> waypoint에 이미 닫힌 hand command를 넣어 pregrasp에서 close로 이동하는 동안 손가락이 너무 일찍 닫히는 별도 timing 오류도 확인했다. clearance를 낮추거나 해당 관통을 intentional contact로 허용하는 대신, moving approach 자체를 시간 동기화 target 문제로 다시 정의했다.</p>
+
+<h2>모듈 경계와 처리 절차</h2>
+<p><code>TimedToolTarget</code>은 timestamp, phase, object pose, tool target, hand command, contact 허용·필수 조건을 보존한다. <code>TimedToolTrajectoryBackend</code>는 이 robot-independent 입력에서 dense named joint waypoint와 검증 evidence를 반환하는 교체 경계다. CPU 기준 구현인 <code>ReferenceSampledToolIKBackend</code>는 직전 해를 continuation seed로 먼저 사용하고, 그 해가 IK 또는 collision hard gate를 통과하지 못할 때만 남은 seed branch를 확장한다. 각 branch는 IK residual만으로 선택하지 않고 robot-workcell과 robot-object collision을 모두 통과해야 한다.</p>
+<ol>
+<li>approach에서 close 직전까지 pregrasp hand command를 유지하고 <code>close→grasp</code> 구간에서만 손을 닫는다.</li>
+<li>30 Hz로 approach, pregrasp, close, grasp 사이 61개 target을 만든다. 물체는 초기 yaw를 유지한 채 belt 방향으로 평행이동하고, closure 동안 tool root는 물체 기준 grasp transform을 유지한다.</li>
+<li>각 target에서 multi-seed IK, robot-workcell collision, robot-object collision을 순서대로 평가한다. grasp 시점에는 승인된 hand geometry의 비관통 contact 수도 요구한다.</li>
+<li>성공한 61개 joint waypoint를 playback에 넣은 뒤, 별도 full-frame validator로 10초·301 frame 전체를 다시 검사한다.</li>
+<li>같은 artifact를 실제 xArm URDF, Inspire Left URDF, Pepsi mesh, 흰색 paired connector CAD, conveyor, robot table, open-top drop bin이 있는 Viser scene으로 export한다.</li>
+</ol>
+
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>수정</th><th>결과</th></tr>
+<tr><td>접근 중 finger sweep</td><td>닫힌 hand command를 한 phase 일찍 지정</td><td>손 폐쇄를 <code>close→grasp</code>로 이동</td><td>pregrasp와 close 도착 전까지 open posture 유지</td></tr>
+<tr><td>endpoint 사이 관통</td><td>중간 Cartesian target과 object motion 제약이 없음</td><td>61개 timed moving-tool target에서 IK·collision 재계산</td><td>기존 18개 invalid frame이 0개로 감소</td></tr>
+<tr><td>모든 seed를 매 frame 평가하면 느림</td><td>continuation 정보 미사용</td><td>직전 해 fast path, hard-gate 실패 때만 bounded branch 확장</td><td>기준 구현의 불필요한 IK·collision query 감소</td></tr>
+<tr><td>중간 실패가 report에 드러나지 않음</td><td>v3가 endpoint와 playback evidence만 저장</td><td>v4에 backend capability, target·waypoint count, 최초 실패 시각·phase·종류·pair 추가</td><td>IK나 collision 실패를 playback 생성 전에 fail-closed 처리</td></tr>
+<tr><td>기존 report 호환성 위험</td><td>새 nullable key가 v3 JSON shape를 바꿀 수 있음</td><td>v3는 신규 key를 직렬화하지 않고 v4만 trajectory evidence를 요구</td><td>기존 embedded report 8개의 byte-level JSON shape 재현</td></tr>
+</table>
+
+<h2>재현 결과와 남은 차단 조건</h2>
+<p>실제 production-shaped rank 6 grasp와 4.8초 intercept를 다시 계산한 결과 endpoint phase는 모두 IK에 성공했고, timed backend는 target 61개 중 61개를 생성하면서 모든 sampled robot-workcell·robot-object gate를 통과했다. 독립 full-frame validator도 301개 중 301개를 유효하게 판정했다. Viser standalone animation은 301 frame·10초를 자동 반복하며 live viewer의 arm, hand, connector, object, workcell, path, frame, 전체 label toggle과 동일한 scene adapter를 사용한다.</p>
+<p>이 결과에도 selected candidate는 없다. 현재 grasp evidence가 <code>validated</code>가 아니라 provisional이고 pipeline latency p95도 측정되지 않았기 때문에 robustness gate가 정확히 두 조건에서 실패한다. 따라서 이번 결과는 기존 접근 관통을 조건 완화 없이 제거했다는 offline diagnostic이지 robot execution 권한이 아니다.</p>
+<p>최종 회귀에서는 planning 환경 206개와 OpenCV 전용 calibration 환경 14개, 총 220개 unit test가 통과했다. 전체 Python source compile, PBS script shell syntax, Git whitespace 검사도 통과했으며 저장된 v4 artifact와 기존 v3 report의 round-trip 검증을 별도로 수행했다.</p>
+
+<div class="callout"><strong>검증 범위:</strong> 30 Hz target과 301-frame replay에서의 sampled collision-validity만 확인했다. 연속 충돌 검증, free-space transfer용 RRTConnect·cuRobo 경로, joint velocity·acceleration·jerk와 controller limit을 포함한 time parameterization, 측정 calibration·latency, connector bolt-hole와 mating datum, 실제 moving grasp·release는 아직 검증되지 않았다. CPU Pinocchio/HPP-FCL backend도 실시간 성능 근거가 아니다.</div>
+
+<p>다음 단계는 free-space segment planner를 같은 fail-closed contract 아래 분리하고, time parameterizer와 controller capability를 artifact에 명시한 뒤, GPU batched backend가 reference 결과와 같은 acceptance decision을 내는지 representative replay로 비교하는 것이다. 이후에만 측정된 conveyor·camera·robot calibration과 latency distribution을 넣고, 정적 hardware grasp에서 moving grasp와 상자 위 ballistic release 순으로 scope를 승격한다.</p>
+
+<h2>2026-08-07 · AutoDex grasp 선택 기준 재감사</h2>
+<p>AutoDex 최신 main과 fork main, 더 오래된 interactive visualization branch를 모두 비교했다. Fork main은 upstream main과 동일하지만 interactive branch는 동일한 tree가 아니었다. 다만 핵심 grasp filter에서 확인된 branch 차이는 scene 경로 해석과 generator 인자 수준이며, 아래 선택 규칙과 임계값은 최신 main을 기준으로 다시 읽었다. Gallery/site 저장소가 아니라 실제 선택 코드는 <code>autodex-code</code>의 BODex solver, <code>sim_filter</code>, <code>order</code>, runtime planner에 있다.</p>
+<table class="table">
+<tr><th>AutoDex 단계</th><th>실제 판정</th><th>BeltBench 판단</th></tr>
+<tr><td>BODex solver</td><td>optimizer feasibility, grasp residual 0.001, mean contact-distance residual 0.01</td><td>후보 생성 evidence로만 보존하고 독립 acceptance로 사용하지 않음</td></tr>
+<tr><td>Scene·squeeze filter</td><td>pregrasp sphere collision과 extrapolated squeeze에서 object sphere contact 존재 여부</td><td>named contact, contact 수, penetration, non-contact clearance가 없어 그대로 채택하지 않음</td></tr>
+<tr><td>MuJoCo hold</td><td>고정 0.1 kg, tabletop gravity 한 방향, 5 cm·15도 이탈 기준</td><td>코드에 선언된 6 force 방향과 penetration 상수도 현재 경로에서 사용되지 않으므로 moving pick 검증으로 해석하지 않음</td></tr>
+<tr><td><code>selected_100</code></td><td>collision·MuJoCo binary matrix의 greedy scene set-cover 순서에서 앞 100개 복사</td><td>품질 top-100이 아님. Coverage 발상만 독립 hard gate 뒤에서 제한적으로 채택</td></tr>
+<tr><td>Hardware 통계</td><td>실험 success를 사용한 smoothed reliability</td><td>향후 통제 trial의 별도 reliability evidence로만 사용하고 geometry·safety를 덮지 않음</td></tr>
+</table>
+
+<h2>BeltBench 기준 수정과 이전 evidence의 효력</h2>
+<p>기존 BeltBench는 provider score를 제외하고 named contact 3개 이상, contact distance 3 mm, 허용 contact penetration 0.5 mm 이하, non-contact clearance 1 mm, support clearance 9 mm, self-collision, approach 20·closure 12·release 12 sample, release contact 0개와 3 mm clearance, task wrench, robot IK·assembly·workcell·object collision, joint-limit·Jacobian margin을 독립 hard gate했다. 그러나 intrinsic task wrench가 ±force 3축과 ±yaw만 포함해 roll·pitch moment를 빠뜨린 사실을 이번 감사에서 확인했다.</p>
+<p>원인은 정적 tabletop gravity hold보다 엄격한 독립 metric을 만들었지만, 실제 unsupported pick/lift에서 필요한 완전한 6D load envelope를 설정 파일이 끝까지 표현하지 못한 것이다. 해결로 protocol revision을 <code>draft-2026-08-07.2</code>로 올리고 ±force·±moment 6축의 12방향을 모두 요구했다. Shortlist compiler도 hard gate 통과 후보 중 새 deployment horizon을 추가하는 후보를 먼저 고르고, envelope가 채워진 뒤에만 maximin normalized slack과 pose·hand diversity로 redundancy를 고른다. Coverage는 collision이나 wrench 실패를 보상할 수 없다.</p>
+<p>영향은 명확하다. 이전 129 geometry-clear, 82 eligible, top-8과 그 grasp를 사용한 61/61·301/301 결과는 <code>draft-2026-08-07.1</code>의 역사적 planning regression이다. 새 intrinsic 기준의 grasp-selection evidence가 아니며 수치를 이월하지 않는다. Checksummed ancestry 때문에 이전 screening을 새 config와 섞으면 verifier가 거부한다. 기존 2,000 BODex proposal은 후보 evidence라 재사용할 수 있지만, screening, full path, moving deployment, shortlist는 새 ID로 다시 계산해야 한다.</p>
+
+<h2>다음 envelope</h2>
+<p>현재 deployment context는 nominal yaw에서 세 intercept horizon뿐이다. 실제 입력은 object ID와 stable tabletop pose가 주어지고 초기 planar 위치·yaw는 측정되므로, 다음 offline artifact는 stable-pose symmetry의 fundamental yaw domain을 명시한 yaw×horizon atlas여야 한다. 각 cell은 같은 hard gate를 통과해야 하고, online은 resident atlas에서 측정 yaw와 covariance가 지지되는 후보만 읽은 뒤 최신 exact pose로 timed trajectory를 다시 검사한다. Atlas 밖이거나 yaw uncertainty가 크면 fallback grasp를 추측하지 않고 abort한다.</p>
+<p>기준 수정 후 회귀에서는 planning 환경의 실제 test 209개가 통과했고, OpenCV 전용 3개 module은 calibration 환경에서 14개가 통과해 총 223개 경로를 확인했다. 전체 Python 207개 파일 compile, PBS 9개 script shell syntax, 두 저장소의 Git whitespace 검사도 통과했다. Coverage-first positive test와 함께, 유일한 미커버 horizon을 제공해도 static-quality hard gate를 실패한 후보는 선택되지 않는 negative test를 추가했다.</p>
 
 <p><a href="../setup/modular-rebuild-audit.html">모듈 재구축 감사</a>와 <a href="../setup/initial-pose-tracking.html">초기 pose·tracking 연결</a>이 이 계획의 선행 기록이다.</p>
 </main>
