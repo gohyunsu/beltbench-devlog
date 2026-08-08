@@ -55,6 +55,8 @@
 <tr><td>첫 patch 확인에서 malformed tuple expression 발견</td><td>세 slack tuple을 합치는 수동 patch에 불필요한 comma가 남음</td><td>Target test 전에 diff를 다시 읽어 수정했고 Python 실행 전에 <code>git diff --check</code>를 통과시켰다.</td></tr>
 <tr><td>Schema patch가 잘못된 같은 문자열 위치를 먼저 변경</td><td><code>schema_version = 2.0</code>이 active execution과 runtime request에 모두 존재</td><td>Class context를 포함한 patch로 active execution은 2.0을 유지하고 request만 3.0으로 수정했다.</td></tr>
 <tr><td>Planning 전체 discovery의 OpenCV import 3건 실패</td><td>Planning과 calibration dependency를 의도적으로 분리</td><td>Planning 386개 중 383개를 통과하고 해당 세 module의 실제 14개 test는 calibration 환경에서 별도 통과했다.</td></tr>
+<tr><td>서버 집중 test 첫 SSH session이 exit 255로 종료</td><td>간헐적인 SSH reset으로 test output이 남지 않음</td><td>동일 exact commit과 command로 재시도해 45개 전체 통과를 확인했다. 첫 종료를 test failure로 해석하지 않았다.</td></tr>
+<tr><td>서버 첫 전체 discovery에서 상대 config 파일 3건을 찾지 못함</td><td><code>-s</code>에 absolute tests 경로만 주고 process working directory를 repository root로 두지 않음</td><td>Repository root에서 같은 suite를 다시 실행했다. 추가 3건은 사라지고 기존 <code>cv2</code> import 3건만 재현됐다.</td></tr>
 </table>
 
 <h2>검증 결과</h2>
@@ -63,6 +65,8 @@
 <li>Planning 전체 discovery는 새 반례를 포함해 386개 중 383개가 통과했다. 실패 3건은 기존과 동일한 <code>cv2</code> import 분리다.</li>
 <li>Calibration 환경에서 OpenCV 의존 test 14개가 모두 통과했다. 중복 import failure를 제외한 실제 고유 통과 수는 397개다.</li>
 <li>Missing grasp slack, duplicate metric, projection round-trip, exact atlas source vector와 combined maximin 선택을 각각 검사한다.</li>
+<li><code>junjinyong</code> server main을 untracked BODex native build를 보존한 채 exact <code>c820a2a</code>로 fast-forward했다. 집중 45개는 7.590초에 모두 통과했다.</li>
+<li>Server full discovery는 repository root에서 386개 중 383개를 118.445초에 통과했다. 실패는 local과 동일한 <code>cv2</code> import 3건뿐이다.</li>
 </ul>
 
 <h2>냉정한 현재 평가</h2>
