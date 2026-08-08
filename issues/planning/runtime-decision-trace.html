@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Runtime grasp 선택 trace와 Viser 재현 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-014 · 2026-08-08 · recorded runtime evidence</div>
+<h1>선택된 trajectory만 보지 않고, 어떤 grasp가 어느 gate를 통과했는지 함께 재현한다.</h1>
+<p class="lede">Rolling planner는 atlas, exact planning, dense validation 근거를 메모리에 갖고 있었지만 종료 후 재현 가능한 artifact는 없었다. Backend 객체를 pickle하거나 모든 후보 playback을 복제하지 않고, 한 observation generation의 필터 근거와 선택 playback의 무결성을 연결하는 trace 계약을 추가했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/7dc7953">revision <code>7dc7953</code></a>은 단일 runtime decision을 기록하고 Viser overlay로 반복 재생한다. 이는 recorded diagnostic이며 sensor stream, causal online scheduling, controller feedback, command dispatch를 재현하지 않는다.</div>
+
+<h2>문제 정의</h2>
+<ol>
+<li>저장된 <code>PickPlayback</code>만 보면 왜 다른 grasp와 intercept time이 탈락했는지 알 수 없었다.</li>
+<li><code>RuntimeInterceptDecision</code>은 exact-search backend 객체와 여러 playback을 포함해 장기 저장 계약으로 쓰기 부적합했다.</li>
+<li>Viser가 임의의 playback과 decision 설명을 함께 열 수 있으면 stale 또는 다른 후보를 선택 결과처럼 보일 수 있었다.</li>
+<li>계산 단계 표시가 execution authority처럼 해석되면 offline diagnostic의 안전 경계가 무너진다.</li>
+</ol>
+
+<h2>채택한 구조</h2>
+<table class="table">
+<tr><th>경계</th><th>기록 내용</th><th>의도적으로 제외한 내용</th></tr>
+<tr><td>Observation</td><td>immutable request, generation, measured yaw·variance, timestamped arm·hand state</td><td>mutable tracker 객체와 camera frame blob</td></tr>
+<tr><td>Prediction</td><td>timestamped <code>ObjectMotionPrediction</code> 전체</td><td>predictor 내부 cache와 vendor tensor</td></tr>
+<tr><td>Atlas</td><td>horizon별 accept/reject, required context, ordered grasp ID</td><td>resident index와 중복 grasp geometry</td></tr>
+<tr><td>Exact planning</td><td>bounded grasp-time pair, 평가 ID, robot/workcell-valid ID</td><td>모든 candidate playback 복제</td></tr>
+<tr><td>Dense refinement</td><td>robustness, authority failure, invalid frame·violation 수, playback digest</td><td>validator 내부 mesh/BVH 상태</td></tr>
+<tr><td>Selection</td><td>grasp·candidate·intercept ID, 상대 playback 경로, playback ID, canonical SHA-256</td><td><code>execution_ready</code> 또는 controller command</td></tr>
+</table>
+
+<h2>구현 절차</h2>
+<ol>
+<li><code>RuntimeInterceptTrace</code>와 단계별 typed summary를 별도 contract로 정의했다. Boolean을 integer로 허용하지 않고, timestamp·rank·digest·identity·accepted/rejected 불변식을 load 시 다시 검사한다.</li>
+<li><code>build_runtime_intercept_trace</code>가 in-memory decision을 compact trace로 변환한다. Accepted decision은 선택 playback 상대 경로가 반드시 필요하고, rejected decision은 어떤 fallback playback도 참조할 수 없다.</li>
+<li><code>write_runtime_intercept_trace</code>는 기존 파일을 덮어쓰지 않는다. Playback은 canonical JSON payload의 SHA-256으로 연결해 경로나 ID만 맞는 다른 파일을 거부한다.</li>
+<li><code>serve_pick_playback.py --runtime-trace</code>가 trace의 상대 경로, playback ID, digest를 모두 확인한 후 atlas query, exact planning, full-frame validation, 최종 diagnostic 상태와 필터 수를 표시한다.</li>
+<li>계산 구간은 기록된 duration을 candidate playback 시간축 위에 overlay한다. 실제 sensor 도착과 robot dispatch를 재현한 것처럼 표현하지 않도록 화면에 command authority가 없음을 계속 표시한다.</li>
+</ol>
+
+<h2>발생한 문제, 원인, 해결, 결과</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>기본 Python에서 test import 실패</td><td>셸의 Python 3.13 환경에 NumPy가 없었음</td><td>저장소의 Python 3.10 planning lock 환경을 직접 사용</td><td>코드 오류와 환경 오류를 분리</td></tr>
+<tr><td>conda wrapper가 임시 디렉터리를 만들지 못함</td><td>검증 sandbox에서 writable temp가 없었음</td><td>승인된 격리 실행에서 environment Python을 직접 호출</td><td>TemporaryDirectory 기반 path·digest negative test 실행</td></tr>
+<tr><td>서버의 private GitHub HTTPS pull 불가</td><td>서버 checkout에 GitHub credential이 없음</td><td>검증된 local commit만 담은 증분 Git bundle로 fast-forward</td><td>서버 source를 <code>7dc7953</code>과 일치시킴</td></tr>
+<tr><td>모든 exact playback을 저장할 위험</td><td>decision 객체를 그대로 직렬화하려는 설계</td><td>단계별 summary와 선택 playback의 상대 reference·ID·digest만 저장</td><td>backend 결합과 artifact 중복을 피하면서 선택 근거 보존</td></tr>
+<tr><td>임의 playback을 선택 결과로 표시할 위험</td><td>viewer 입력 사이 provenance 검증이 없었음</td><td>path, playback ID, canonical SHA-256을 모두 hard gate로 검사</td><td>stale·변조·다른 candidate playback을 fail closed</td></tr>
+</table>
+
+<h2>검증 결과</h2>
+<p>Accepted/rejected round-trip, overwrite 거부, playback path·ID·digest 검증, non-boolean 거부, recorded stage 구간을 포함한 집중 test 17개가 통과했다. 전체 planning 환경에서는 OpenCV 전용 세 module을 제외한 실제 test 241개가 통과했고, 그 세 module을 calibration 환경에서 실행한 14개도 통과해 총 255개를 확인했다. 전체 <code>compileall</code>, staged diff whitespace 검사, viewer CLI import도 통과했다.</p>
+<p>관리형 planning 환경을 사용하는 서버 checkout에서도 source revision과 NumPy·SciPy·Trimesh·Pinocchio·HPP-FCL 버전을 확인하고 같은 집중 test 17개를 재실행해 모두 통과했다. 이 결과는 contract 재현성 검사이며 GPU latency 또는 real-time 성능 측정이 아니다.</p>
+
+<h2>남은 한계와 다음 단계</h2>
+<ul>
+<li>현재 trace는 한 observation generation의 decision이다. 여러 generation의 arrival, supersession, cancellation을 하나의 append-only session으로 기록하지 않는다.</li>
+<li>Viser stage는 recorded compute duration을 candidate timeline 위에 표시한다. 실제 wall-clock sensor·planner·controller causal replay가 아니다.</li>
+<li>CPU exact planner와 full-frame validator는 여전히 offline oracle이다. Accelerated backend와 reference agreement benchmark가 필요하다.</li>
+<li>Controller commit, feedback, abort, hand closing state와 hardware outcome은 별도 실행 trace 계약이 필요하다.</li>
+</ul>
+<p>다음 구현은 여러 request·prediction·decision trace를 순서대로 묶는 append-only session과 deterministic observation replay다. 그 위에서 latest-generation cancellation과 deadline miss를 실제 기록 시간으로 반복 재생하고, 이후에만 accelerated backend의 p50/p95/p99와 reference 불일치를 측정한다.</p>
+
+<p><a href="runtime-grasp-selection.html">AutoDex 필터 감사와 rolling 선택 구현</a>이 이 trace가 기록하는 판정 규칙이다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>

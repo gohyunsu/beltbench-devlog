@@ -68,11 +68,11 @@
 <ul>
 <li>Reference continuation IK는 시작 endpoint와 sampled target을 검사하지만 연속 collision-free motion, velocity·acceleration·jerk, controller tracking을 증명하지 않는다.</li>
 <li>CPU full-mesh validator는 online backend가 아니다. 동일 contract의 accelerated checker와 reference agreement benchmark가 필요하다.</li>
-<li><code>EvidenceRecorder</code>, recorded observation/replanning replay, 실제 시간축 Viser overlay는 아직 rolling decision과 연결되지 않았다.</li>
+<li>단일-generation <code>RuntimeInterceptTrace</code>와 Viser overlay는 <a href="runtime-decision-trace.html">ISSUE-014</a>에서 연결했다. Append-only observation session과 causal replanning replay는 아직 없다.</li>
 <li>Controller commit coordinator, abort/stop semantics, xArm·Inspire feedback adapter는 hardware 복귀 후 별도 구현·검증해야 한다.</li>
 <li>Pepsi upside-down stable pose, intrinsic protocol, calibration, connector metrology, latency와 moving-pick hardware scope가 provisional이므로 실행은 계속 차단한다.</li>
 </ul>
-<p>다음 구현은 recorded observation stream을 동일 rolling contract에 넣고, generation·atlas support·exact candidate·rejection·selected diagnostic을 실제 시간으로 Viser에 반복 재생하는 evidence path다. 그 뒤 accelerated backend를 교체해 reference 결과와 차이를 측정하며, planning core를 다시 설계하지 않고 hardware adapter와 commit gate를 추가한다.</p>
+<p>다음 구현은 여러 recorded observation generation을 append-only session으로 묶고 supersession·deadline miss를 기록 시간으로 반복 재생하는 evidence path다. 그 뒤 accelerated backend를 교체해 reference 결과와 차이를 측정하며, planning core를 다시 설계하지 않고 hardware adapter와 commit gate를 추가한다.</p>
 
 <p><a href="offline-planning-viser-plan.html#yaw-context-atlas">Full-yaw atlas 기록</a>과 <a href="intrinsic-grasp-evaluation.html">intrinsic grasp 평가 기록</a>이 이 구현의 선행 evidence다.</p>
 </main>
