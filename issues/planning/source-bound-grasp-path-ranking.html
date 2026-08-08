@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Source-bound grasp/path robust ranking · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-026 · 2026-08-09 · source-bound robust ranking</div>
+<h1>Atlas에서 통과한 grasp의 여유를 최종 path 선택까지 잃지 않는다.</h1>
+<p class="lede">AutoDex의 grasp filtering 순서와 BeltBench의 intrinsic, deployment, atlas, path-family gate를 다시 코드 기준으로 감사했다. 각 단계의 hard gate는 분리되어 있었지만, live atlas query가 계산한 grasp별 최악 normalized slack이 projection 이후 사라져 최종 latch·switch·warm-start 순위에는 path와 correction margin만 남는 문제를 발견했다. Trusted projection 계약을 확장하고 전체 순위를 하나의 lexicographic maximin 규칙으로 통일했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/c820a2aba3f8c6e2c5e1e05473ba6079bf13e1d4"><code>c820a2a</code></a>가 구현한다. 이는 bounded diagnostic selection의 무결성을 높인 것이며 continuous path, measured reliability, controller commit 권한을 새로 만들지 않는다.</div>
+
+<h2>AutoDex 원본에서 다시 확인한 기준</h2>
+<p>감사 기준은 <code>willi19/autodex-code:main</code>의 <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. Public <a href="https://arxiv.org/abs/2606.23689">AutoDex paper</a>가 설명하는 reusable physical outcome과 로컬 source의 실제 구현을 구분했다.</p>
+<table class="table">
+<tr><th>단계</th><th>실제 기준</th><th>BeltBench 판단</th></tr>
+<tr><td>BODex 생성</td><td>Optimizer feasibility, grasp residual 0.001, mean distance residual 0.01, residual order</td><td>동일 모델이 만든 convergence provenance이며 독립 acceptance나 최종 순위로 사용하지 않는다.</td></tr>
+<tr><td>정적 filter</td><td>한 pregrasp의 sphere world/self collision, zero activation distance</td><td>Named geometry와 양의 pair margin을 endpoint와 path 전체에서 다시 계산한다.</td></tr>
+<tr><td>Squeeze와 hold</td><td><code>2 * grasp - pregrasp</code> overlap, 0.1 kg, 한 gravity 방향, 5 cm/15도 이탈</td><td>Contact identity, penetration, task wrench, moving timing, 실제 reliability를 분리한다.</td></tr>
+<tr><td>Cross-pose order</td><td>Binary collision·MuJoCo survivor의 greedy set cover</td><td>Hard gate 뒤 bounded portfolio coverage에만 사용한다.</td></tr>
+<tr><td>Runtime</td><td>Coverage order, endpoint collision, fixed-start IK, 3 cm lift IK, 첫 plan success와 retry</td><td>Latest state, uncertainty, complete timed path, dynamics, cutoff, deadline 뒤 robust margin으로 선택한다.</td></tr>
+</table>
+
+<h2>발견한 문제</h2>
+<table class="table">
+<tr><th>현상</th><th>원인</th><th>위험</th></tr>
+<tr><td>Projector의 bounded truncation은 grasp+path+correction slack을 사용하지만 coordinator는 path+correction만 사용</td><td><code>_PreparedProjection</code>의 atlas candidate가 serialized <code>RuntimePathFamilyProjection</code>으로 전달되지 않음</td><td>서로 다른 grasp의 path가 모두 hard gate를 통과하면 약한 contact·deployment bottleneck이 최종 latch 순위에서 숨겨질 수 있음</td></tr>
+<tr><td>Projection artifact에서 최종 grasp ranking 근거를 재현할 수 없음</td><td>Required atlas context ID만 남고 각 context 교집합의 worst-case margin은 소실</td><td>왜 한 grasp/path가 다른 후보보다 앞섰는지 event replay에서 설명할 수 없음</td></tr>
+<tr><td>기존 schema가 새 의미를 구분하지 못함</td><td>필수 ranking evidence 추가가 backward-compatible하지 않음</td><td>이전 request를 새 선택 의미로 잘못 해석할 수 있음</td></tr>
+</table>
+
+<h2>구현한 수정</h2>
+<ul>
+<li><code>RuntimePathFamilyProjection</code>에 <code>grasp_context_normalized_slacks</code>를 필수로 추가했다. 값은 projector가 live yaw covariance와 intercept horizon으로 질의한 모든 required atlas cell의 grasp별 worst case다.</li>
+<li>Metric은 정렬된 고유 ID, finite value와 hard-gate slack <code>&gt;= 1</code>을 강제한다. 누락, 중복, threshold 미달은 projection contract에서 거부한다.</li>
+<li>Resident evaluator는 grasp metric을 <code>grasp_context/...</code> namespace로 보존하고 path validation, live correction vector와 합친다.</li>
+<li>Candidate truncation, latch, switch hysteresis와 warm-start seed ranking이 모두 합쳐진 벡터를 worst-to-best로 정렬한 lexicographic maximin을 사용한다. Weighted sum, provider order, first success는 사용하지 않는다.</li>
+<li>Projection batch schema를 <code>2.0</code>, runtime request schema를 <code>3.0</code>으로 올렸다. <code>decide_projected</code>의 exact batch/request equality가 source vector mutation과 splicing을 계속 차단한다.</li>
+</ul>
+
+<h2>반례로 검증한 선택 변화</h2>
+<p>두 path가 모두 support, correction과 latch gate를 통과하는 fixture를 만들었다. <code>path-b</code>의 path slack은 1.8로 <code>path-a</code>의 1.2보다 좋지만, <code>path-b</code> grasp의 live atlas bottleneck을 1.05로 두었다. 이전 coordinator라면 <code>path-b</code>를 선택했지만 수정 후에는 combined bottleneck 1.2의 <code>path-a</code>를 선택한다. 이는 grasp quality로 실패를 보상하는 규칙이 아니라, 모든 독립 hard gate를 먼저 통과한 후보 사이에서 가장 약한 실행 여유를 숨기지 않는 규칙이다.</p>
+
+<h2>발생한 문제, 원인과 해결</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결과 결과</th></tr>
+<tr><td>첫 patch 확인에서 malformed tuple expression 발견</td><td>세 slack tuple을 합치는 수동 patch에 불필요한 comma가 남음</td><td>Target test 전에 diff를 다시 읽어 수정했고 Python 실행 전에 <code>git diff --check</code>를 통과시켰다.</td></tr>
+<tr><td>Schema patch가 잘못된 같은 문자열 위치를 먼저 변경</td><td><code>schema_version = 2.0</code>이 active execution과 runtime request에 모두 존재</td><td>Class context를 포함한 patch로 active execution은 2.0을 유지하고 request만 3.0으로 수정했다.</td></tr>
+<tr><td>Planning 전체 discovery의 OpenCV import 3건 실패</td><td>Planning과 calibration dependency를 의도적으로 분리</td><td>Planning 386개 중 383개를 통과하고 해당 세 module의 실제 14개 test는 calibration 환경에서 별도 통과했다.</td></tr>
+</table>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Path-family runtime, projection, engine, warm-start 집중 test 45개가 통과했다.</li>
+<li>Planning 전체 discovery는 새 반례를 포함해 386개 중 383개가 통과했다. 실패 3건은 기존과 동일한 <code>cv2</code> import 분리다.</li>
+<li>Calibration 환경에서 OpenCV 의존 test 14개가 모두 통과했다. 중복 import failure를 제외한 실제 고유 통과 수는 397개다.</li>
+<li>Missing grasp slack, duplicate metric, projection round-trip, exact atlas source vector와 combined maximin 선택을 각각 검사한다.</li>
+</ul>
+
+<h2>냉정한 현재 평가</h2>
+<p>이번 수정은 이미 계산한 독립 grasp evidence를 최종 선택에서 버리는 논리 결함을 제거했다. <a href="https://arxiv.org/abs/2103.10562">Dynamic Grasping with Reachability and Motion Awareness</a>의 coarse-to-fine filtering과 previous-plan reuse 원칙에도 부합하지만, 논문의 learned motion quality를 검증 없이 hard gate로 가져오지는 않았다.</p>
+<p>Atlas margin은 sampled yaw/horizon context의 worst case이지 continuous-yaw certificate가 아니다. Path margin도 현재 실제 생성된 Pepsi/xArm/Inspire continuous family가 아니라 contract와 reference evidence 단계다. 실제 controller limit, swept collision, calibration, connector metrology, moving-pick reliability와 watchdog가 없으므로 실행 권한은 계속 차단한다.</p>
+
+<h2>다음 구현</h2>
+<ol>
+<li>같은 combined metric vector를 runtime event/session에 명시적으로 표시해 actual-time Viser에서 선택 bottleneck의 시간 변화를 재생한다.</li>
+<li>실제 sampled task/stop path artifact 생산 경로를 하나의 offline compiler command로 연결하고, sampled 결과를 continuous로 승격하지 않는다.</li>
+<li>가속 backend는 offline mesh oracle과 zero false-accept agreement, p50/p95/p99, deadline miss와 cancellation latency를 기록한 뒤에만 online 후보가 된다.</li>
+<li>Controller simulation과 measured reliability gate가 준비되기 전에는 commit adapter를 추가하지 않는다.</li>
+</ol>
+
+<p><a href="sampled-path-family-reference-oracle.html">Sampled path oracle</a>, <a href="runtime-grasp-selection.html">AutoDex selection 감사</a>, <a href="realtime-conveyor-architecture.html">실시간 아키텍처</a>에서 앞 단계 근거를 확인할 수 있다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
