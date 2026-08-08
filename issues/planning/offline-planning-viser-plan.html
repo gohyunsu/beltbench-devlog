@@ -416,6 +416,33 @@
 <p>현재 deployment context는 nominal yaw에서 세 intercept horizon뿐이다. 실제 입력은 object ID와 stable tabletop pose가 주어지고 초기 planar 위치·yaw는 측정되므로, 다음 offline artifact는 stable-pose symmetry의 fundamental yaw domain을 명시한 yaw×horizon atlas여야 한다. 각 cell은 같은 hard gate를 통과해야 하고, online은 resident atlas에서 측정 yaw와 covariance가 지지되는 후보만 읽은 뒤 최신 exact pose로 timed trajectory를 다시 검사한다. Atlas 밖이거나 yaw uncertainty가 크면 fallback grasp를 추측하지 않고 abort한다.</p>
 <p>기준 수정 후 회귀에서는 planning 환경의 실제 test 209개가 통과했고, OpenCV 전용 3개 module은 calibration 환경에서 14개가 통과해 총 223개 경로를 확인했다. 전체 Python 207개 파일 compile, PBS 9개 script shell syntax, 두 저장소의 Git whitespace 검사도 통과했다. Coverage-first positive test와 함께, 유일한 미커버 horizon을 제공해도 static-quality hard gate를 실패한 후보는 선택되지 않는 negative test를 추가했다.</p>
 
+<h2 id="yaw-context-atlas">2026-08-08 · full-yaw grasp context atlas와 resident query</h2>
+<p>nominal yaw 한 곳의 세 horizon에서 동일한 77개 grasp가 가능했으므로 horizon coverage만으로는 실제 입력 변화에 대한 일반화를 검증할 수 없었다. 물체 종류와 stable tabletop pose는 지정되지만 초기 planar 위치와 yaw는 측정해야 하며, belt 위에서는 그 orientation을 유지한 채 평행이동한다. 따라서 online deadline 안에서 117개 전체를 다시 훑는 대신, stable pose의 yaw와 intercept horizon을 명시적 deployment context로 갖는 bounded atlas를 offline에서 만들기로 했다.</p>
+
+<h2>설계 결정</h2>
+<ol>
+<li>Pepsi 외형이 원통에 가깝더라도 label, grasp command, workcell collision까지 대칭이라는 근거가 없으므로 symmetry reduction을 사용하지 않는다. 예제는 전체 <code>2*pi</code>를 30도 간격 12개 yaw로 샘플한다. <code>none</code>뿐 아니라 <code>provisional</code> symmetry도 전체 주기를 강제하고, 축소는 독립 검증된 <code>validated</code> 상태에서만 허용한다.</li>
+<li>각 yaw의 planar observation과 constant-orientation motion prediction을 immutable batch로 생성한다. Manifest는 policy, stable pose, observation template, conveyor calibration, pose composer, motion predictor와 12개 prediction의 checksum을 보존하며 verifier가 수치적으로 모두 재생성한다.</li>
+<li>각 yaw deployment는 자기 yaw의 prediction만 소비한다. Compiler는 선언 yaw와 실제 <code>arm_base_from_object</code> rotation을 다시 비교하고, intrinsic·robot·object·workcell·collision semantics와 policy ancestry가 모두 같은지 확인한다.</li>
+<li>atlas cell은 yaw×horizon마다 assembly clearance, non-contact object clearance, joint-limit margin, length-normalized Jacobian singular value, static quality, support clearance hard gate를 다시 적용한다. 모든 cell이 비어 있지 않아야 하며 후보는 threshold-normalized bottleneck slack의 deterministic maximin 순서로 저장한다.</li>
+<li>startup에서 atlas 전체를 re-hash·재생성한 뒤 immutable map으로 index한다. Runtime query는 측정 yaw의 configured sigma support를 둘러싸는 모든 sampled cell에서 공통인 후보만 반환한다. 지원하지 않는 horizon, 큰 yaw uncertainty, 빈 교집합은 명시적 rejection이고 nominal-yaw shortlist나 오래된 결과로 fallback하지 않는다.</li>
+</ol>
+
+<h2>발견한 문제, 원인과 수정</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>수정</th><th>결과</th></tr>
+<tr><td>첫 query 구현이 매 요청마다 atlas 전체를 검증</td><td>artifact validation과 deadline lookup 경계를 분리하지 않음</td><td><code>ResidentGraspContextAtlas</code>가 startup에서 한 번 검증하고 read-only grasp·cell map을 구성</td><td>online path는 bounded intersection과 maximin order만 수행</td></tr>
+<tr><td>검증되지 않은 symmetry로 yaw domain 축소 가능</td><td><code>provisional</code> 상태의 period 제한이 빠짐</td><td><code>validated</code>가 아닌 모든 상태에 <code>2*pi</code> 강제와 negative test 추가</td><td>Pepsi 예제는 12 yaw 전체를 유지</td></tr>
+<tr><td>12 assessment 검증 때 약 1만 record ancestry를 반복 hashing</td><td>단일 deployment verifier를 그대로 반복 호출</td><td>첫 assessment를 완전 검증하고 이후에는 exact same full-evaluation path와 이미 검증된 transitive record만 재사용</td><td>공통 ancestry는 한 번만 검사하며 verified record 누락 시 path 추정 없이 실패</td></tr>
+<tr><td>CPU Pinocchio/HPP-FCL deployment가 GPU를 요청</td><td>queue 이름을 실제 계산 자원과 혼동</td><td>PBS에서 GPU와 <code>nvidia-smi</code>를 제거하고 CPU scope 기록</td><td>GPU 사용을 주장하지 않는 재현 가능한 CPU job</td></tr>
+</table>
+
+<div class="callout"><strong>중요한 한계:</strong> atlas에서 양쪽 yaw sample을 통과했다는 사실은 그 사이 연속 yaw의 feasibility certificate가 아니다. Query는 exact online planning에 보낼 후보를 줄이는 prefilter일 뿐이다. 최신 timestamp pose, intercept time, robot state, uncertainty-inflated collision, deadline, continuous trajectory와 controller gate는 반드시 다시 계산해야 한다.</div>
+
+<h2>현재 검증 상태</h2>
+<p>source revision <code>464923d</code>에서 prediction batch, atlas contract·compiler·transitive verifier, resident query와 lookup-only benchmark command를 추가했다. Atlas와 기존 shortlist/deployment/object pose를 함께 검사한 targeted test 31개가 통과했다. 전체 discovery의 planning 경로 222개가 통과했고, planning 환경에 의도적으로 없는 OpenCV 때문에 import되지 않은 calibration·pickplace·pose artifact 3개 module은 calibration 환경에서 14개가 별도로 통과했다. Python compile, 세 PBS script syntax와 Git whitespace도 통과했다.</p>
+<p>현재 12-yaw prediction batch는 12개 prediction과 23개 direct source를 수치 재현 검증했다. 각 yaw의 robot deployment와 최종 atlas compile은 CPU server에서 진행 중이다. 완료 전에는 atlas candidate 수나 lookup latency를 결과로 기록하지 않으며, synthetic lookup timing을 전체 실시간 pipeline latency로 해석하지 않는다.</p>
+
 <p><a href="../setup/modular-rebuild-audit.html">모듈 재구축 감사</a>와 <a href="../setup/initial-pose-tracking.html">초기 pose·tracking 연결</a>이 이 계획의 선행 기록이다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
