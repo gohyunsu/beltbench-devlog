@@ -77,6 +77,26 @@
 </ul>
 <p>다음 단계는 기존 path-family/latch/cutoff 계약 뒤에 물리 simulator adapter를 붙여 command와 measured state를 독립 생성하고, bounded async recorder로 deadline miss·supersession·stop까지 기록하는 것이다. 그 기록에서 desired/measured tracking error, accelerated backend의 reference agreement, p50/p95/p99, worst case와 cancellation latency를 측정한다.</p>
 
+<h2>2026-08-09 · event log와 causal authority 분리</h2>
+<div class="callout"><strong>업데이트 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/0450e96">revision <code>0450e96</code></a>은 immutable session 자체와 별도의 <code>RuntimeCausalityAssessment</code>를 추가했다. Viser는 exact session manifest digest에 대해 재현된 assessment가 있을 때만 causal accepted를 표시한다. 이는 저장된 기록의 인과성을 검사하는 offline authority이며 hard real-time recorder는 아니다.</div>
+
+<h3>문제, 원인, 해결, 결과</h3>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>Timestamp와 hash chain이 있어도 query가 prediction 뒤에 실행됐는지 증명하지 못함</td><td>Generic log schema에 task state-machine 순서가 없음</td><td>Observation→track→prediction→query start/finish→trajectory start/finish→terminal prerequisite와 duration pair를 별도 assessor에서 재현</td><td>Use-before-produce, stage-order, measured duration, stage budget, total deadline 위반을 failure code로 보존</td></tr>
+<tr><td>새 observation 뒤 이전 generation이 selection 또는 commit을 출력할 수 있음</td><td>Append-only 순서만으로 latest-generation authority를 정의하지 않음</td><td>새 generation 관측 뒤 이전 generation은 <code>plan_superseded</code>만 허용하고 accepted query·trajectory·selection·commit을 거부</td><td>늦은 계산 결과가 최신 계획처럼 replay되는 경로 차단</td></tr>
+<tr><td>Generation 2 event가 generation 1의 prediction 또는 trajectory ID를 소비해도 type check는 통과</td><td>Artifact 생산 sequence만 기록하고 생산 generation을 비교하지 않음</td><td>Conveyor motion state만 명시적으로 재사용 가능하게 두고 나머지 planning artifact는 producer와 consumer generation 일치를 요구</td><td>교차-generation request/batch splice를 독립 negative test로 검출</td></tr>
+<tr><td>Conveyor publish만 있는 session이 planning run으로 accepted될 수 있음</td><td>Conveyor source event도 내부 generation state를 만들기 때문에 nonempty session 조건을 만족</td><td>최소 한 개의 <code>observation_received</code>가 있는 observed generation을 요구하고 policy generation 수에도 observed generation만 계산</td><td>Sensor heartbeat를 causal planning 실행으로 오인하지 않음</td></tr>
+<tr><td>Contract schema와 runtime 알고리즘이 한 module에 섞일 가능성</td><td>초기 구현에서 assessment dataclass와 traversal logic을 함께 배치</td><td><code>beltbench.contracts.runtime_causality</code>에는 schema/I-O만, <code>beltbench.runtime.causal_assessment</code>에는 상태기계와 재현 검증만 배치</td><td>향후 ROS 2 trace importer가 planning core와 visualization을 바꾸지 않고 같은 contract를 생성 가능</td></tr>
+</table>
+
+<p>예제 policy는 event 512개, observed generation 32개, observation-to-terminal 100 ms, deployment query 15 ms, trajectory update 30 ms를 draft 상한으로 둔다. 이 수치는 요구사항이며 달성 latency가 아니다. 현재 Python assessor는 저장된 session을 offline에서 검사하고, Viser는 assessment가 없으면 <code>unassessed</code>, 실패하면 failure code를 명시한다.</p>
+
+<h3>검증과 남은 경계</h3>
+<p>두 generation 중 첫 generation이 superseded되고 두 번째가 diagnostic으로 끝나는 정상 chain, stale output, future artifact use, duration 변조, budget 초과, 교차-generation splice, terminal 누락, observation 없는 session, assessment write-once·round-trip·tamper, Viser accepted/rejected label을 검사했다. 이 test는 위의 전체 359개 실제 local test와 마지막 집중 67개에 포함된다.</p>
+<p>동일 revision의 server 검증은 <code>junjinyong</code> planning 환경에서 grasp·path-family·runtime focused 95개를 모두 통과했다. 최초 중복 실행에서 발생한 한 import subprocess의 <code>SIGTERM</code>은 단독 test와 중복 없는 전체 suite 재실행으로 통과를 확인했으며, causal assertion 실패나 import exception은 재현되지 않았다.</p>
+<p>아직 실제 online module의 non-blocking tracepoint producer, bounded queue, drop accounting, crash-safe chunk writer가 없다. Python JSON과 hash 계산은 controller deadline에 넣지 않는다. 다음 단계는 ROS 2 tracing 또는 동등한 native adapter가 같은 session contract를 생성하게 하고, accelerated backend의 p50/p95/p99·worst case·deadline miss·cancellation latency와 controller tracking/stop evidence를 기록하는 것이다.</p>
+
 <p><a href="realtime-conveyor-architecture.html">실시간 conveyor architecture ADR</a>과 <a href="runtime-decision-trace.html">single-generation decision trace</a>가 이 session의 상위 방향과 입력 근거다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>

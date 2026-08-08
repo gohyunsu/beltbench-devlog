@@ -383,7 +383,7 @@
 <p>다음 단계는 free-space segment planner를 같은 fail-closed contract 아래 분리하고, time parameterizer와 controller capability를 artifact에 명시한 뒤, GPU batched backend가 reference 결과와 같은 acceptance decision을 내는지 representative replay로 비교하는 것이다. 이후에만 측정된 conveyor·camera·robot calibration과 latency distribution을 넣고, 정적 hardware grasp에서 moving grasp와 상자 위 ballistic release 순으로 scope를 승격한다.</p>
 
 <h2>2026-08-07 · AutoDex grasp 선택 기준 재감사</h2>
-<p>AutoDex 최신 main과 fork main, 더 오래된 interactive visualization branch를 모두 비교했다. Fork main은 upstream main과 동일하지만 interactive branch는 동일한 tree가 아니었다. 다만 핵심 grasp filter에서 확인된 branch 차이는 scene 경로 해석과 generator 인자 수준이며, 아래 선택 규칙과 임계값은 최신 main을 기준으로 다시 읽었다. Gallery/site 저장소가 아니라 실제 선택 코드는 <code>autodex-code</code>의 BODex solver, <code>sim_filter</code>, <code>order</code>, runtime planner에 있다.</p>
+<p>2026-08-09에 branch 관계를 다시 확인했다. Public <code>willi19/autodex-code</code>는 <code>main</code> 하나를 노출했고 HEAD는 <code>5ada1c0</code>이다. 로컬 <code>gohyunsu/autodex-code:main</code>의 <code>350b1b1</code>은 이 source와 merge base가 없는 site/document history이며, <code>interactive-3d-glb-export</code>는 더 오래된 source ancestor에서 갈라진 시각화 branch다. 아래 선택 규칙은 checkout 이름이 아니라 로컬 commit object <code>upstream/main=5ada1c0</code>을 직접 읽어 감사했다. 실제 코드는 그 revision의 BODex solver, <code>sim_filter</code>, <code>order</code>, runtime planner에 있다.</p>
 <table class="table">
 <tr><th>AutoDex 단계</th><th>실제 판정</th><th>BeltBench 판단</th></tr>
 <tr><td>BODex solver</td><td>optimizer feasibility, grasp residual 0.001, mean contact-distance residual 0.01</td><td>후보 생성 evidence로만 보존하고 독립 acceptance로 사용하지 않음</td></tr>
