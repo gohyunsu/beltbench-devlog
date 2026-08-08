@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Grasp shortlist hard-gate decision ledger · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-027 · 2026-08-09 · grasp hard-gate evidence</div>
+<h1>통과한 grasp만 저장하지 않고, 모든 후보가 왜 탈락했는지 재현한다.</h1>
+<p class="lede">AutoDex의 생성, simulation filter, runtime planner와 hardware 통계 순서를 pinned source에서 다시 확인하고 BeltBench의 intrinsic, deployment, shortlist 기준과 대조했다. 기존 BeltBench는 기준 자체는 더 엄격했지만 horizon coverage 또는 endpoint threshold에서 탈락한 후보를 <code>continue</code>로 버려, 최종 shortlist만으로는 어떤 기준이 후보를 제거했는지 설명할 수 없었다. 후보별 normalized hard-gate vector를 보존하는 schema 2.0 decision ledger를 구현하고, hard gate와 coverage·maximin·diversity ranking을 계약 수준에서 분리했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/9f26612c4266d64328f2e76f3b9d45e35e46c5db"><code>9f26612</code></a>이 complete candidate ledger와 schema authority 경계를 구현했고, 후속 <a href="https://github.com/gohyunsu/beltbench/commit/2962269d8f37761376e3ef73d289f9318fc22a71"><code>2962269</code></a>이 normalized horizon coverage를 redundancy maximin에 포함했다. 이는 offline diagnostic selection의 추적성을 높인 변경이다. 실제 Pepsi schema-2 shortlist, continuous trajectory, hardware reliability와 controller commit 권한은 아직 없다.</div>
+
+<h2>AutoDex에서 실제로 거르는 기준</h2>
+<p>감사 기준은 cached <code>willi19/autodex-code:origin/main</code>의 exact commit <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. 로컬 checkout <code>52add68</code>은 이 ref보다 5커밋 뒤이며 사용자 작업으로 dirty하므로 수정하지 않았다. 이번 세션의 live <code>ls-remote</code>는 DNS 제한으로 실패했기 때문에 오늘 원격을 새로 확인했다고 주장하지 않고, 기존에 fetch된 checksummed commit object를 직접 읽었다.</p>
+<table class="table">
+<tr><th>단계</th><th>source에서 확인한 실제 판정</th><th>BeltBench 채택 여부</th></tr>
+<tr><td>BODex 생성</td><td>Optimizer feasibility, grasp residual과 distance residual threshold, residual 순서</td><td>깨진 generator output을 거르는 provenance로만 보존한다. 동일 모델의 수렴값을 독립 품질이나 최종 순위로 쓰지 않는다.</td></tr>
+<tr><td>Pregrasp collision</td><td>Hand/world와 self collision, activation distance 0</td><td>개념만 채택한다. Named mesh pair, 양의 required margin, endpoint와 sampled path로 다시 계산한다.</td></tr>
+<tr><td>Squeeze contact</td><td><code>2 * grasp - pregrasp</code> posture의 hand sphere가 object와 하나라도 overlap하면 통과</td><td>Acceptance evidence로 거부한다. Contact identity·개수·penetration·non-contact clearance·task wrench를 별도 gate로 요구한다.</td></tr>
+<tr><td>MuJoCo hold</td><td>0.1 kg, 고정 simulator/controller, tabletop gravity 한 방향, 5 cm 또는 15도 초과 실패</td><td>Optional diagnostic만 허용한다. 선언된 6 force direction과 <code>MAX_PENE</code>는 실제 판정 loop에서 사용되지 않는다.</td></tr>
+<tr><td>Cross-pose order</td><td>Collision과 MuJoCo binary survivor matrix의 greedy set cover</td><td>모든 hard gate 뒤 bounded portfolio가 context를 먼저 덮는 개념으로만 채택한다.</td></tr>
+<tr><td>Runtime filter</td><td>Target mesh를 제거한 hand/table collision, Inspire에서는 비활성인 backward heuristic, fixed-start batch IK, arm 좌표 <code>±π</code>, 3 cm lift IK</td><td>Collision·IK·lift 필요성은 채택하지만 explicit robot limits, 양의 margin, latest state, uncertainty와 complete path로 재검증한다.</td></tr>
+<tr><td>Runtime 선택</td><td>Coverage/stat priority 또는 shuffle 순서에서 첫 <code>plan_single_js</code> 성공을 반환</td><td>거부한다. Search order는 robustness가 아니므로 hard gate 뒤 deterministic lexicographic maximin을 사용한다.</td></tr>
+<tr><td>Hardware 통계</td><td><code>(successes + 1) / (attempts + 2)</code> Laplace point estimate</td><td>다음 실험 우선순위로만 쓸 수 있다. 실행 권한은 exact moving context, 최소 표본 수와 one-sided Wilson lower bound로 분리한다.</td></tr>
+</table>
+
+<h2>BeltBench가 채택한 filtering funnel</h2>
+<ol>
+<li><strong>Identity와 provenance:</strong> object, stable pose, hand, provider revision, command joint, source checksum과 non-pickled schema가 정확히 일치해야 한다.</li>
+<li><strong>Intrinsic endpoint:</strong> named intended contact, 최소 contact 수, allowed penetration, non-contact object clearance, hand self-clearance, support clearance와 12-direction task-wrench margin을 검사한다.</li>
+<li><strong>Intrinsic path:</strong> object-relative approach, fixed-pose closure와 task-required release를 sampled path 전체에서 검사한다. 이 단계 실패는 geometry-clear worklist에 들어올 수 없다.</li>
+<li><strong>Robot deployment:</strong> sampled moving-object horizon마다 multi-seed pregrasp/grasp IK, arm·hand·connector assembly·workcell collision, non-intentional robot/object clearance를 검사한다.</li>
+<li><strong>Shortlist hard gate:</strong> 최소 horizon coverage, task-wrench quality, support, assembly·object clearance, normalized joint-limit margin과 characteristic-length-normalized Jacobian singular value를 모두 threshold 이상으로 요구한다.</li>
+<li><strong>Portfolio ranking:</strong> 통과 후보만 대상으로 새 context 수를 먼저 최대화한다. 동률과 redundancy는 normalized horizon coverage, endpoint, intrinsic-path slack의 lexicographic maximin과 configured grasp/hand diversity로 정한다.</li>
+<li><strong>Online narrowing:</strong> resident yaw/horizon atlas 교집합, exact latest observation, path-family evidence, correction·deadline·stop gate로 다시 좁힌다. Shortlist 통과는 실행 권한이 아니다.</li>
+</ol>
+<p><code>static_quality</code>는 normalized contact-force budget을 사용한 접촉 기하 비교이며 실제 payload capacity가 아니다. Finger force, actuator torque, object mass·acceleration, compliance와 friction uncertainty는 hardware-context gate에 남는다. 어떤 weighted sum도 collision 또는 timing 실패를 품질 점수로 보상하지 않는다.</p>
+
+<h2>발견한 핵심 문제</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>위험</th></tr>
+<tr><td>Coverage 또는 endpoint threshold 탈락 후보가 결과에서 사라짐</td><td>Compiler가 조건 실패에서 바로 <code>continue</code>하고 eligible 수와 selected entry만 반환</td><td>어떤 gate가 몇 번 탈락시켰는지 알 수 없고 threshold 변경의 영향을 재현할 수 없음</td></tr>
+<tr><td>선택 엔트리의 endpoint/path 값과 후보 판정이 별도 권위가 될 수 있음</td><td>Candidate-level typed decision이 없고 selected payload만 검증</td><td>Ledger를 나중에 추가해도 selected rank와 다른 수치로 splice될 수 있음</td></tr>
+<tr><td>Schema 1.0 파일 사이에도 field 차이가 존재</td><td>과거 shortlist가 같은 version에서 <code>intrinsic_path_normalized_slacks</code> 추가 전후로 생성됨</td><td>과거 파일을 아예 열지 못하거나, 반대로 current authority로 오인할 수 있음</td></tr>
+<tr><td>Coverage hard gate는 기록하지만 redundancy order에는 반영되지 않음</td><td>기존 <code>_shortlist_order_key</code>가 endpoint와 path slack만 결합</td><td>물리 여유가 같은 경우 한 horizon만 지원하는 후보가 ID tie-break로 universal 후보보다 먼저 선택될 수 있음</td></tr>
+</table>
+
+<h2>구현한 schema 2.0 decision ledger</h2>
+<p>Compiler는 deployment worklist의 source order를 보존해 모든 후보에 <code>ScreenedGraspShortlistCandidateDecision</code>을 하나씩 만든다. 각 metric은 dimensionless slack이며 <code>1</code>이 hard-gate 경계다.</p>
+<table class="table">
+<tr><th>Namespace</th><th>저장 내용</th><th>판정</th></tr>
+<tr><td><code>horizon_coverage</code></td><td>Feasible horizon fraction / policy minimum fraction</td><td><code>&gt;= 1</code>일 때만 eligible</td></tr>
+<tr><td><code>intrinsic_path/*</code></td><td>Configured positive approach, closure, self, support와 required release margin</td><td>Geometry-clear ancestry이므로 하나라도 1 미만이면 shortlist 탈락이 아니라 upstream integrity failure</td></tr>
+<tr><td><code>endpoint/*</code></td><td>Static quality, support, assembly, non-contact object, joint-limit, singularity의 complete set</td><td>Feasible horizon이 하나라도 있으면 여섯 metric을 모두 요구</td></tr>
+</table>
+<ul>
+<li><code>eligible</code>, coverage fraction과 <code>failure_metric_ids</code>는 저장값을 신뢰하지 않고 vector에서 다시 계산한다.</li>
+<li>Zero-horizon 후보는 endpoint configuration이 없으므로 coverage와 intrinsic path만 저장한다. Horizon별 IK·collision 상세 실패는 source deployment assessment에 남긴다.</li>
+<li>Feasible horizon이 있는데 endpoint set을 비우거나 일부만 넣으면 contract가 거부한다.</li>
+<li>모든 decision의 total horizon 수와 policy-derived coverage slack이 일치해야 한다.</li>
+<li>Selected entry의 horizon, endpoint와 intrinsic path 수치는 같은 candidate decision과 tight numeric tolerance로 결속한다.</li>
+<li>Transitive verifier는 eligible count나 top-K만 믿지 않고 compiler를 다시 실행해 rejected candidate를 포함한 decision payload 전체를 비교한다.</li>
+<li>Schema 1.0은 누락된 path field까지 원문 그대로 load/round-trip할 수 있지만 verifier가 명시적으로 거부한다. 열람 가능성과 현재 authority를 분리했다.</li>
+</ul>
+
+<h2>Coverage와 robustness ranking 보완</h2>
+<p>집합 coverage와 개별 robustness는 다른 역할이다. 먼저 각 iteration에서 아직 덮이지 않은 context 수가 가장 큰 후보를 고른다. 같은 수를 추가하거나 모든 context가 이미 덮인 뒤에는 각 후보의 normalized coverage, endpoint와 path slack을 작은 값부터 비교하는 lexicographic maximin을 적용한다. 마지막에만 deterministic grasp ID를 사용한다.</p>
+<p>반례 test에는 세 horizon을 모두 지원하는 <code>universal-a</code>, <code>universal-z</code>와 첫 horizon만 지원하는 <code>narrow-a</code>를 같은 물리 margin으로 구성했다. 이전 order라면 첫 universal 뒤에 ID가 앞선 narrow 후보가 redundancy가 될 수 있었다. 수정 후에는 <code>universal-a</code>, <code>universal-z</code>가 선택된다. Coverage는 threshold 실패를 보상하지 않고, 이미 통과한 후보 사이에서 더 넓은 재사용 범위를 보존한다.</p>
+
+<h2>실제 production-v1 재생성 시도</h2>
+<div class="callout warn"><strong>Fail-closed 결과:</strong> 기존 Pepsi production-v1 bundle로 schema-2 shortlist를 임시 생성하려 했지만 compiler는 첫 ancestry 검사에서 <code>artifact source checksum changed: intrinsic_config</code>로 중단했다. 이를 우회하지 않았고 새 production artifact를 만들지 않았다.</div>
+<p>Deployment assessment가 요구한 intrinsic config SHA-256은 <code>e6f91618...e71d1c8</code>이지만 현재 repository config는 <code>643fdd25...e4a85c</code>다. 이전 source commit <code>0be698e</code>의 파일은 요구 checksum과 정확히 일치한다. 과거 shortlist policy도 artifact가 요구한 <code>3a5dbfd4...fa16a8</code>에서 현재 <code>9ac5a843...764ce</code>로 변경됐다. Bundle의 <code>server-home/projects/beltbench</code>가 현재 source tree를 가리키는 symlink이므로 immutable artifact가 source mutation을 올바르게 감지한 것이다.</p>
+<p>해당 production-v1 shortlist의 82 eligible·top-8은 이전 protocol chain이다. 현재 문서의 12-direction chain에서 기록한 117 geometry-clear·74 eligible·top-8과 합치거나 이름만 schema 2로 바꿀 수 없다. 새 artifact를 얻으려면 current intrinsic config로 full evaluation과 deployment부터 같은 ancestry 아래 다시 생성해야 한다.</p>
+
+<h2>발생한 문제, 원인, 해결과 결과</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결과 결과</th></tr>
+<tr><td>첫 named endpoint 구현에서 metric 이름과 value 순서가 달라질 가능성 발견</td><td>정렬된 이름 tuple과 기존 positional metric tuple을 zip하면 static quality가 assembly 이름에 연결될 수 있음</td><td>각 field와 threshold를 explicit mapping으로 만들고 그 뒤 metric ID로 정렬했다. Support와 static-quality 단독 실패 test가 정확한 이름을 검증한다.</td></tr>
+<tr><td>Feasible horizon이 있는 rejected decision에서 endpoint vector를 생략할 수 있었음</td><td>Endpoint set이 empty 또는 complete인지만 검사하고 horizon 존재와 양방향 결속하지 않음</td><td><code>bool(feasible_horizons) == bool(endpoint_metrics)</code>를 강제하고 omission tamper test를 추가했다.</td></tr>
+<tr><td><code>total_horizon_count=0</code> payload가 derived coverage 계산에서 나눗셈 오류 가능</td><td>Child validation보다 derived field 비교를 먼저 수행</td><td>구조 validation을 먼저 실행해 명시적 invalid-decision 오류로 fail closed한다.</td></tr>
+<tr><td>Schema 1.0을 문서상 diagnostic이라고 했지만 verifier가 명시적으로 차단하지 않음</td><td>Candidate ledger 비교만 schema 2 조건부였음</td><td>Loader는 legacy inspection을 지원하고 transitive verifier는 schema 2.0만 허용하도록 권한 경계를 분리했다.</td></tr>
+<tr><td>Broad local regression 첫 실행에서 TemporaryDirectory 관련 18건 오류</td><td>기본 sandbox가 workspace write를 막았고 test assertion 실패가 아니었음</td><td>Workspace <code>.tmp</code>를 명시하고 허용된 write context로 재실행해 affected 137개가 모두 통과했다.</td></tr>
+<tr><td>실제 bundle compile이 intrinsic checksum에서 중단</td><td>Historical evidence가 old config checksum을 요구하지만 symlink는 current repository를 가리킴</td><td>Old Git object와 hash를 비교해 원인을 확인했다. Source reference를 바꾸거나 checksum을 갱신하지 않고 full-chain regeneration 필요사항으로 남겼다.</td></tr>
+<tr><td>서버 후속 bundle 첫 SCP가 key exchange에서 reset</td><td>간헐적인 SSH 연결 reset</td><td>동일 검증 bundle을 재전송해 fast-forward하고 최신 focused test를 통과했다.</td></tr>
+</table>
+
+<h2>검증 결과</h2>
+<ul>
+<li>최신 local shortlist unit test 17개가 0.895초에 모두 통과했다. Coverage-only, support-only, static-quality-only rejection과 schema/metric tamper를 포함한다.</li>
+<li>최신 local planning discovery는 389개 중 386개가 62.702초에 통과했다. 실패 3건은 planning 환경에 <code>cv2</code>가 없는 기존 dependency 분리다.</li>
+<li>같은 세 OpenCV module의 실제 calibration test 14개가 별도 환경에서 2.727초에 모두 통과했다. 중복 import placeholder를 제외하면 실제 고유 test 400개가 통과했다.</li>
+<li><code>git diff --check</code>, 88자 초과 audit와 수정 Python 5개 AST parse가 통과했다.</li>
+<li>Server는 ledger commit에서 shortlist 16개, 전체 discovery 388개 중 385개를 통과했다. 실패는 local과 같은 <code>cv2</code> import 3건이며 서버에는 별도 calibration env가 없다.</li>
+<li>후속 coverage commit의 server shortlist test 17개가 1.989초에 통과했다. Server main은 exact <code>2962269</code>이며 기존 BODex build 두 디렉터리와 compiled <code>.so</code>만 untracked로 보존됐다.</li>
+</ul>
+
+<h2>냉정한 현재 평가</h2>
+<p>이번 변경은 AutoDex보다 threshold 수를 늘린 것이 핵심이 아니다. 필터의 소유 단계, 단위, pass boundary와 탈락 근거를 분리하고 모든 worklist 후보에 대해 재현 가능하게 만든 것이 핵심이다. AutoDex의 first-success와 binary coverage는 데이터 수집과 정적 실험에는 실용적이지만 conveyor deadline, uncertainty와 moving contact를 다루는 최종 선택 규칙으로는 부족하다.</p>
+<p>반대로 현재 BeltBench도 실제 동작이 증명된 것은 아니다. Endpoint와 sampled intrinsic path evidence는 continuous moving trajectory가 아니고, horizon grid는 continuous yaw/time certificate가 아니다. 실제 Pepsi schema-2 shortlist도 checksum mismatch 때문에 아직 생산하지 못했다. Stable pose 측정, current protocol full-chain regeneration, sampled task/stop family, accelerated oracle agreement, measured latency, connector metrology와 hardware moving-pick reliability가 모두 남아 있다.</p>
+
+<h2>다음 구현</h2>
+<ol>
+<li>Current 12-direction intrinsic config와 exact source revision으로 full intrinsic evaluation, deployment와 schema-2 shortlist를 한 chain에서 재생성한다.</li>
+<li>생성된 shortlist를 yaw/horizon atlas와 sampled task/stop path-family compiler에 연결하고 candidate decision completeness를 startup에서 다시 검증한다.</li>
+<li>Reference mesh oracle와 accelerated backend의 zero-false-accept agreement, p50/p95/p99, deadline miss와 cancellation latency를 기록한다.</li>
+<li>실제 robot이 돌아오기 전에는 controller commit을 추가하지 않고 actual-time Viser에서 rejection ledger와 path decision을 함께 재생한다.</li>
+</ol>
+
+<p><a href="runtime-grasp-selection.html">AutoDex selection 감사</a>, <a href="source-bound-grasp-path-ranking.html">grasp/path combined ranking</a>, <a href="sampled-path-family-reference-oracle.html">sampled path oracle</a>가 앞뒤 evidence 경계를 설명한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
