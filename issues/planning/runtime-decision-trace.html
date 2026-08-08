@@ -16,7 +16,7 @@
 <h1>선택된 trajectory만 보지 않고, 어떤 grasp가 어느 gate를 통과했는지 함께 재현한다.</h1>
 <p class="lede">Rolling planner는 atlas, exact planning, dense validation 근거를 메모리에 갖고 있었지만 종료 후 재현 가능한 artifact는 없었다. Backend 객체를 pickle하거나 모든 후보 playback을 복제하지 않고, 한 observation generation의 필터 근거와 선택 playback의 무결성을 연결하는 trace 계약을 추가했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/7dc7953">revision <code>7dc7953</code></a>은 단일 runtime decision을 기록하고 Viser overlay로 반복 재생한다. 이는 recorded diagnostic이며 sensor stream, causal online scheduling, controller feedback, command dispatch를 재현하지 않는다.</div>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/7dc7953">trace 구현 <code>7dc7953</code></a>과 <a href="https://github.com/gohyunsu/beltbench/commit/e89f666">교차-stage 검증 <code>e89f666</code></a>은 단일 runtime decision을 기록하고 Viser overlay로 반복 재생한다. 이는 recorded diagnostic이며 sensor stream, causal online scheduling, controller feedback, command dispatch를 재현하지 않는다.</div>
 
 <h2>문제 정의</h2>
 <ol>
@@ -39,7 +39,7 @@
 
 <h2>구현 절차</h2>
 <ol>
-<li><code>RuntimeInterceptTrace</code>와 단계별 typed summary를 별도 contract로 정의했다. Boolean을 integer로 허용하지 않고, timestamp·rank·digest·identity·accepted/rejected 불변식을 load 시 다시 검사한다.</li>
+<li><code>RuntimeInterceptTrace</code>와 단계별 typed summary를 별도 contract로 정의했다. Boolean을 integer로 허용하지 않고, timestamp·rank·digest·identity·accepted/rejected 불변식을 load 시 다시 검사한다. 또한 pair가 해당 atlas query에, exact horizon이 해당 pair 집합에, refinement가 해당 exact candidate에 속하는지 단계 사이 관계도 재검증한다.</li>
 <li><code>build_runtime_intercept_trace</code>가 in-memory decision을 compact trace로 변환한다. Accepted decision은 선택 playback 상대 경로가 반드시 필요하고, rejected decision은 어떤 fallback playback도 참조할 수 없다.</li>
 <li><code>write_runtime_intercept_trace</code>는 기존 파일을 덮어쓰지 않는다. Playback은 canonical JSON payload의 SHA-256으로 연결해 경로나 ID만 맞는 다른 파일을 거부한다.</li>
 <li><code>serve_pick_playback.py --runtime-trace</code>가 trace의 상대 경로, playback ID, digest를 모두 확인한 후 atlas query, exact planning, full-frame validation, 최종 diagnostic 상태와 필터 수를 표시한다.</li>
@@ -54,11 +54,12 @@
 <tr><td>서버의 private GitHub HTTPS pull 불가</td><td>서버 checkout에 GitHub credential이 없음</td><td>검증된 local commit만 담은 증분 Git bundle로 fast-forward</td><td>서버 source를 <code>7dc7953</code>과 일치시킴</td></tr>
 <tr><td>모든 exact playback을 저장할 위험</td><td>decision 객체를 그대로 직렬화하려는 설계</td><td>단계별 summary와 선택 playback의 상대 reference·ID·digest만 저장</td><td>backend 결합과 artifact 중복을 피하면서 선택 근거 보존</td></tr>
 <tr><td>임의 playback을 선택 결과로 표시할 위험</td><td>viewer 입력 사이 provenance 검증이 없었음</td><td>path, playback ID, canonical SHA-256을 모두 hard gate로 검사</td><td>stale·변조·다른 candidate playback을 fail closed</td></tr>
+<tr><td>개별적으로 유효한 filter record를 다른 decision에 끼울 수 있음</td><td>query·pair·exact search·refinement가 자기 schema만 검증하고 단계 사이 소속 관계를 검사하지 않았음</td><td>decision과 serialized trace 양쪽에 cross-stage evidence-chain hard gate 추가</td><td>candidate ID나 grasp ID를 바꿔 끼운 artifact를 load 단계에서 거부</td></tr>
 </table>
 
 <h2>검증 결과</h2>
-<p>Accepted/rejected round-trip, overwrite 거부, playback path·ID·digest 검증, non-boolean 거부, recorded stage 구간을 포함한 집중 test 17개가 통과했다. 전체 planning 환경에서는 OpenCV 전용 세 module을 제외한 실제 test 241개가 통과했고, 그 세 module을 calibration 환경에서 실행한 14개도 통과해 총 255개를 확인했다. 전체 <code>compileall</code>, staged diff whitespace 검사, viewer CLI import도 통과했다.</p>
-<p>관리형 planning 환경을 사용하는 서버 checkout에서도 source revision과 NumPy·SciPy·Trimesh·Pinocchio·HPP-FCL 버전을 확인하고 같은 집중 test 17개를 재실행해 모두 통과했다. 이 결과는 contract 재현성 검사이며 GPU latency 또는 real-time 성능 측정이 아니다.</p>
+<p>Base trace 구현에서 accepted/rejected round-trip, overwrite 거부, playback path·ID·digest 검증, non-boolean 거부, recorded stage 구간을 포함한 집중 test 17개가 통과했다. 전체 planning 환경에서는 OpenCV 전용 세 module을 제외한 실제 test 241개가 통과했고, 그 세 module을 calibration 환경에서 실행한 14개도 통과해 총 255개를 확인했다. 전체 <code>compileall</code>, staged diff whitespace 검사, viewer CLI import도 통과했다. Cross-stage 변조 negative test를 추가한 뒤 집중 범위는 19개로 늘었고 모두 통과했다.</p>
+<p>관리형 planning 환경을 사용하는 서버 checkout에서도 source revision과 NumPy·SciPy·Trimesh·Pinocchio·HPP-FCL 버전을 확인했다. Base 17개와 cross-stage 보강 후 19개를 각각 재실행해 모두 통과했다. 이 결과는 contract 재현성 검사이며 GPU latency 또는 real-time 성능 측정이 아니다.</p>
 
 <h2>남은 한계와 다음 단계</h2>
 <ul>
