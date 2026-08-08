@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Execution-blocked conveyor path-family bundle · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap"><a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a><nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav></div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-018 · 2026-08-08 · reusable path contract</div>
+<h1>Grasp endpoint가 아니라 완전한 reusable path 증거가 있을 때만 online 후보로 남긴다.</h1>
+<p class="lede">기존 yaw atlas는 특정 grasp가 sampled endpoint context에서 유효했음을 보이지만 현재 robot state에서 contact·lift·drop·stop까지 이어지는 경로를 보장하지 않는다. Atlas를 곧바로 online exact planner에 전달하는 구조 대신, atlas를 절대로 넓히지 않는 execution-blocked path-family deployment bundle 계약을 추가했다.</p>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/f7a0046"><code>f7a0046</code></a>은 compiler 출력 schema와 startup source/atlas verification을 정의한다. 실제 path compiler, report 재계산, resident runtime query, controller commit은 없으므로 real-time path execution이 구현된 상태가 아니다.</div>
+
+<h2>AutoDex에서 moving interception으로 넘어갈 때 추가한 gate</h2>
+<table class="table">
+<tr><th>근거</th><th>유지한 역할</th><th>추가로 필요한 BeltBench 근거</th></tr>
+<tr><td>AutoDex/BODex object-relative grasp</td><td>Offline grasp 후보·정적 intrinsic evidence</td><td>정확한 atlas context와 complete moving path에 연결</td></tr>
+<tr><td>Atlas endpoint IK·collision margin</td><td>Yaw/horizon hard-gated prefilter</td><td>Lateral position, belt speed, intercept position/horizon envelope</td></tr>
+<tr><td>Dense reference playback</td><td>Offline sampled oracle</td><td>Reusable/stop path source, continuous path-tube scope와 재현 검증</td></tr>
+<tr><td>Runtime current state</td><td>Latest measured generation</td><td>Velocity·acceleration latch region, cutoff 이전 연결</td></tr>
+<tr><td>Moving grasp timing</td><td>Predicted contact horizon</td><td>Hand-close start/complete, contact, lift/terminal/stop phase 전체</td></tr>
+</table>
+
+<h2>구현한 bundle</h2>
+<ol>
+<li><code>ConveyorPathSupportEnvelope</code>는 family가 실제 지지하는 atlas context 교집합과 lateral·speed·intercept·horizon closed interval을 명시한다.</li>
+<li><code>PathValidationEvidence</code>는 self/environment/nonintentional-object clearance, joint·singularity margin, normalized dynamics·timing slack, phase와 validator report source를 분리한다.</li>
+<li><code>CompiledConveyorPathFamily</code>는 exact grasp, complete task phase, reusable/stop path, hand-close/contact timing, cutoff 이전 latch region과 post-cutoff correction tube를 묶는다.</li>
+<li><code>PathFamilyDeploymentPolicy</code>는 resident/query family 수, robot-state age, warm-start 1회와 fixed compute budget, switching improvement를 bounded config로 고정한다.</li>
+<li><code>PathFamilyDeploymentBundle</code>은 arm·hand·connector·object·stable pose·task·calibration·workcell·atlas identity를 고정하며 항상 execution-blocked다.</li>
+</ol>
+
+<h2>검증과 fail-closed 규칙</h2>
+<ul>
+<li>Path family는 atlas registry의 grasp만 사용하고, 지원한다고 선언한 모든 context에서 그 grasp가 실제 candidate였어야 한다.</li>
+<li>Unknown context, neighboring context borrowing, interval relaxation, missing phase, sampled/continuous scope mismatch를 거부한다.</li>
+<li>Latch region의 tolerance까지 cutoff 이전에 끝나야 하며 hand-close start &lt; completion ≤ contact &lt; path end 순서를 강제한다.</li>
+<li>Warm start attempt는 정확히 1회이고 compute duration은 policy에 고정된다.</li>
+<li>Bundle·family·latch·path·stop·tube·validation source를 re-hash하고 exact policy와 atlas source를 다시 확인한다.</li>
+</ul>
+
+<h2>발생한 문제, 원인, 해결</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td><code>path_authority_eligible</code> 명칭이 과도함</td><td>Report의 scope 문자열을 실제 권한처럼 표현</td><td><code>declares_continuous_path_tube_scope</code>로 낮춤</td><td>선언과 재현된 authority를 구분</td></tr>
+<tr><td>Latch center만 cutoff 이전이고 tolerance는 이후일 수 있음</td><td>Region 폭을 timing gate에서 누락</td><td><code>path_time + maximum_error ≤ cutoff</code> 강제</td><td>Late latch 경계 폐쇄</td></tr>
+<tr><td>Direct constructor boolean numeric 가능성</td><td>Python bool이 int/float subtype</td><td>Integer·floating policy field를 strict 검사</td><td>가짜 bounded policy 거부</td></tr>
+<tr><td>Server pull 출력이 FETCH_HEAD에서 끊김</td><td>일시적 SSH 종료</td><td>Revision을 별도 확인한 후 test session 재실행</td><td><code>f7a0046</code> 및 41개 test 확인</td></tr>
+</table>
+
+<h2>검증 결과와 남은 위험</h2>
+<p>Bundle round-trip/write-once, policy example, support intersection, unknown context/grasp, context-grasp substitution, timing, cutoff, bounded warm start, source checksum mutation을 검사했다. Path-family·robot-motion·atlas 집중 test 29개가 통과했다.</p>
+<p>전체 planning 수집 275개 중 OpenCV 전용 import 3개를 제외한 실제 272개와 calibration 14개, 총 286개가 통과했다. <code>junjinyong</code> 서버 고정 환경에서도 관련 41개가 통과했다.</p>
+<p>아직 실제 path file이나 continuous tube report는 생성되지 않았다. 다음 runtime query에서 active path retain은 latch box가 아니라 별도 continuous tracking-tube evidence를 요구해야 한다. Cutoff 전에는 retain→latch→fixed-budget warm start, cutoff 후에는 bounded phase correction 또는 abort만 허용한다.</p>
+<p><a href="robot-motion-latch-state.html">Controller-grade latch state</a>가 이 bundle의 current-state 입력이며, <a href="realtime-conveyor-architecture.html">architecture ADR</a>이 다음 runtime query의 권한 순서를 정의한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
