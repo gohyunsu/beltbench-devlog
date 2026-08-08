@@ -16,7 +16,7 @@
 <h1>Atlas에서 통과한 grasp의 여유를 최종 path 선택까지 잃지 않는다.</h1>
 <p class="lede">AutoDex의 grasp filtering 순서와 BeltBench의 intrinsic, deployment, atlas, path-family gate를 다시 코드 기준으로 감사했다. 각 단계의 hard gate는 분리되어 있었지만, live atlas query가 계산한 grasp별 최악 normalized slack이 projection 이후 사라져 최종 latch·switch·warm-start 순위에는 path와 correction margin만 남는 문제를 발견했다. Trusted projection 계약을 확장하고 전체 순위를 하나의 lexicographic maximin 규칙으로 통일했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/c820a2aba3f8c6e2c5e1e05473ba6079bf13e1d4"><code>c820a2a</code></a>가 구현한다. 이는 bounded diagnostic selection의 무결성을 높인 것이며 continuous path, measured reliability, controller commit 권한을 새로 만들지 않는다.</div>
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/b1fd1a0625a8ec09e8a6ba4e39bb8e154d38733e"><code>b1fd1a0</code></a>이 combined ranking evidence를 typed event artifact와 actual-time Viser까지 보존한다. 이는 bounded diagnostic selection의 무결성을 높인 것이며 continuous path, measured reliability, controller commit 권한을 새로 만들지 않는다.</div>
 
 <h2>AutoDex 원본에서 다시 확인한 기준</h2>
 <p>감사 기준은 <code>willi19/autodex-code:main</code>의 <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. Public <a href="https://arxiv.org/abs/2606.23689">AutoDex paper</a>가 설명하는 reusable physical outcome과 로컬 source의 실제 구현을 구분했다.</p>
@@ -44,10 +44,21 @@
 <li>Resident evaluator는 grasp metric을 <code>grasp_context/...</code> namespace로 보존하고 path validation, live correction vector와 합친다.</li>
 <li>Candidate truncation, latch, switch hysteresis와 warm-start seed ranking이 모두 합쳐진 벡터를 worst-to-best로 정렬한 lexicographic maximin을 사용한다. Weighted sum, provider order, first success는 사용하지 않는다.</li>
 <li>Projection batch schema를 <code>2.0</code>, runtime request schema를 <code>3.0</code>으로 올렸다. <code>decide_projected</code>의 exact batch/request equality가 source vector mutation과 splicing을 계속 차단한다.</li>
+<li>Planning 내부에 있던 evaluation과 decision dataclass를 <code>beltbench.contracts.path_family_decision</code>의 schema <code>1.0</code> typed contract로 이동했다. Declared bottleneck은 저장 vector의 실제 최솟값과 일치해야 한다.</li>
+<li>Recorder의 익명 <code>asdict</code> dump를 제거하고 projection batch, request, decision을 교차 검증하는 <code>RuntimePathFamilyDeploymentQuery</code>를 저장한다.</li>
 </ul>
 
 <h2>반례로 검증한 선택 변화</h2>
 <p>두 path가 모두 support, correction과 latch gate를 통과하는 fixture를 만들었다. <code>path-b</code>의 path slack은 1.8로 <code>path-a</code>의 1.2보다 좋지만, <code>path-b</code> grasp의 live atlas bottleneck을 1.05로 두었다. 이전 coordinator라면 <code>path-b</code>를 선택했지만 수정 후에는 combined bottleneck 1.2의 <code>path-a</code>를 선택한다. 이는 grasp quality로 실패를 보상하는 규칙이 아니라, 모든 독립 hard gate를 먼저 통과한 후보 사이에서 가장 약한 실행 여유를 숨기지 않는 규칙이다.</p>
+
+<h2>Actual-time session과 Viser 연결</h2>
+<p>선택 계산과 표시가 다시 분리되지 않도록 <code>deployment_query_finished</code> event마다 checksummed typed query artifact를 정확히 하나 결속했다. Startup loader는 artifact hash, event status와 generation, request·batch identity, selected family·grasp와 normalized vector를 모두 검사한다. Viser는 이 검증된 배열을 decision timestamp로 한 번 index하고 frame마다 <code>O(log N)</code>으로 조회한다.</p>
+<ul>
+<li>선택된 action, generation/request, path family, grasp, combined bottleneck 값과 limiting metric namespace를 표시한다.</li>
+<li>Warm start는 실제 coordinator가 사용한 grasp-context+intrinsic-path seed vector를, reusable path는 grasp-context+intrinsic-path+live-correction vector를 표시한다.</li>
+<li>Viewer는 family를 다시 정렬하거나 선택하지 않는다. Planner rejection 또는 stop에 selected eligible vector가 없으면 margin을 만들지 않고 unavailable로 표시한다.</li>
+<li>Downstream trajectory adapter rejection은 planner rejection과 구분한다. 예를 들어 backend가 없는 <code>warm_start_required</code> cycle은 trajectory는 거부되지만 planner가 사용한 selected seed bottleneck은 여전히 유효한 기록이다.</li>
+</ul>
 
 <h2>발생한 문제, 원인과 해결</h2>
 <table class="table">
@@ -57,16 +68,20 @@
 <tr><td>Planning 전체 discovery의 OpenCV import 3건 실패</td><td>Planning과 calibration dependency를 의도적으로 분리</td><td>Planning 386개 중 383개를 통과하고 해당 세 module의 실제 14개 test는 calibration 환경에서 별도 통과했다.</td></tr>
 <tr><td>서버 집중 test 첫 SSH session이 exit 255로 종료</td><td>간헐적인 SSH reset으로 test output이 남지 않음</td><td>동일 exact commit과 command로 재시도해 45개 전체 통과를 확인했다. 첫 종료를 test failure로 해석하지 않았다.</td></tr>
 <tr><td>서버 첫 전체 discovery에서 상대 config 파일 3건을 찾지 못함</td><td><code>-s</code>에 absolute tests 경로만 주고 process working directory를 repository root로 두지 않음</td><td>Repository root에서 같은 suite를 다시 실행했다. 추가 3건은 사라지고 기존 <code>cv2</code> import 3건만 재현됐다.</td></tr>
+<tr><td>첫 typed query wrapper가 정상 cycle을 거부</td><td>Projection 단계와 deployment bundle 단계의 서로 다른 execution-block reason을 동일 문자열이어야 한다고 과도하게 가정</td><td>공유 identity와 각 단계의 독립 block semantics를 분리했다. 실제 producer가 보장하는 batch/request/decision invariant만 강제한 뒤 기존 50개 focused test가 통과했다.</td></tr>
+<tr><td>첫 negative 표시 test가 backend 없는 cycle에 bottleneck이 없어야 한다고 기대</td><td>Planner의 <code>warm_start_required</code> 선택과 downstream trajectory candidate rejection을 혼동</td><td>Planner rejection fixture로 no-vector 검증을 옮기고, trajectory rejection에는 저장된 planner bottleneck이 남는 것을 별도로 검사했다.</td></tr>
+<tr><td>Incremental bundle 첫 생성이 empty bundle로 거부</td><td>Positive tip으로 named ref가 아닌 commit hash만 지정</td><td><code>main</code>을 tip, <code>c820a2a</code>를 prerequisite로 다시 만들어 16 KB bundle을 검증 후 전달했다.</td></tr>
+<tr><td>서버 전체 discovery 첫 호출이 output 없이 exit 255</td><td>간헐적인 SSH reset</td><td>동일 exact commit과 command로 재실행해 387개 전체 결과를 확보했다.</td></tr>
 </table>
 
 <h2>검증 결과</h2>
 <ul>
-<li>Path-family runtime, projection, engine, warm-start 집중 test 45개가 통과했다.</li>
-<li>Planning 전체 discovery는 새 반례를 포함해 386개 중 383개가 통과했다. 실패 3건은 기존과 동일한 <code>cv2</code> import 분리다.</li>
-<li>Calibration 환경에서 OpenCV 의존 test 14개가 모두 통과했다. 중복 import failure를 제외한 실제 고유 통과 수는 397개다.</li>
-<li>Missing grasp slack, duplicate metric, projection round-trip, exact atlas source vector와 combined maximin 선택을 각각 검사한다.</li>
-<li><code>junjinyong</code> server main을 untracked BODex native build를 보존한 채 exact <code>c820a2a</code>로 fast-forward했다. 집중 45개는 7.590초에 모두 통과했다.</li>
-<li>Server full discovery는 repository root에서 386개 중 383개를 118.445초에 통과했다. 실패는 local과 동일한 <code>cv2</code> import 3건뿐이다.</li>
+<li>최종 path-family runtime, projection, engine, session, Viser 집중 test 51개가 local 5.334초, server 7.388초에 통과했다.</li>
+<li>Local planning 전체 discovery는 387개 중 384개가 75.055초에 통과했다. 실패 3건은 기존과 동일한 <code>cv2</code> import 분리다.</li>
+<li>Calibration 환경에서 OpenCV 의존 test 14개가 3.273초에 모두 통과했다. 중복 import failure를 제외한 실제 고유 통과 수는 398개다.</li>
+<li>Grasp-context bottleneck 표시, decision round-trip, scalar/vector tamper, incomplete query set, planner rejection의 no-vector 표시와 materialized session loader를 검사한다.</li>
+<li><code>junjinyong</code> server main을 untracked BODex native build 3개를 보존한 채 exact <code>b1fd1a0</code>으로 fast-forward했다.</li>
+<li>Server full discovery는 repository root에서 387개 중 384개를 131.515초에 통과했다. 실패는 local과 동일한 <code>cv2</code> import 3건뿐이다.</li>
 </ul>
 
 <h2>냉정한 현재 평가</h2>
@@ -75,7 +90,6 @@
 
 <h2>다음 구현</h2>
 <ol>
-<li>같은 combined metric vector를 runtime event/session에 명시적으로 표시해 actual-time Viser에서 선택 bottleneck의 시간 변화를 재생한다.</li>
 <li>실제 sampled task/stop path artifact 생산 경로를 하나의 offline compiler command로 연결하고, sampled 결과를 continuous로 승격하지 않는다.</li>
 <li>가속 backend는 offline mesh oracle과 zero false-accept agreement, p50/p95/p99, deadline miss와 cancellation latency를 기록한 뒤에만 online 후보가 된다.</li>
 <li>Controller simulation과 measured reliability gate가 준비되기 전에는 commit adapter를 추가하지 않는다.</li>
