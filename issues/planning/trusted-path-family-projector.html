@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Trusted path-family projector · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap"><a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a><nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav></div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-020 · 2026-08-08 · trusted projection</div>
+<h1>측정 track을 수기로 꾸민 runtime 후보가 아니라 검증 가능한 path-family projection으로 변환한다.</h1>
+<p class="lede">AutoDex grasp filter는 정적 proposal을 줄이는 근거이고, conveyor grasp 실행 가능성은 아니다. Fused planar track, encoder, calibration, yaw uncertainty와 고정된 path schedule을 한 projection evidence로 묶고, 고려한 모든 resident family가 통과 또는 명시적 거부 중 하나에만 속하도록 만들었다.</p>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/c077029"><code>c077029</code></a>은 continuous horizon bracket을, <a href="https://github.com/gohyunsu/beltbench/commit/ef1ab88"><code>ef1ab88</code></a>은 trusted projector를 구현한다. 여전히 execution-blocked이며 controller 명령 권한은 없다.</div>
+
+<h2>AutoDex 기준 재감사</h2>
+<table class="table">
+<tr><th>AutoDex 기준</th><th>BeltBench에서의 효력</th><th>moving grasp에 그대로 쓰지 않는 이유</th></tr>
+<tr><td>BODex convergence residual과 provider 순서</td><td>Generator provenance</td><td>후보를 만든 동일 모델의 자기 평가이며 robot, timing, uncertainty를 보지 않는다.</td></tr>
+<tr><td>Pregrasp sphere collision</td><td>개념만 채택하고 mesh·positive margin·path 검사로 교체</td><td>Zero activation distance의 sampled endpoint는 swept path clearance를 보장하지 않는다.</td></tr>
+<tr><td>Squeeze 자세의 object overlap</td><td>승인 근거에서 제외</td><td>의도한 contact link, 개수, penetration, non-contact clearance와 wrench 저항을 판별하지 않는다.</td></tr>
+<tr><td>고정 0.1 kg, 단일 gravity-direction MuJoCo hold</td><td>선택적 diagnostic</td><td>이동 접촉의 force·torque, 마찰·질량 변화, closing timing을 포괄하지 않는다.</td></tr>
+<tr><td>Scene set cover와 first-success</td><td>Hard gate 이후 bounded portfolio coverage만 채택</td><td>Binary coverage와 탐색 순서는 collision, singularity, timing slack을 대신할 수 없다.</td></tr>
+<tr><td>Runtime IK·collision·lift·motion planning</td><td>필수지만 불충분한 deployment/path gate</td><td>최신 track·robot state·deadline·uncertainty와 controller acceptance를 추가해야 한다.</td></tr>
+</table>
+
+<h2>현재 선택 규칙</h2>
+<ol>
+<li>Object, stable pose, hand, provider revision과 source checksum이 정확히 일치하지 않으면 grasp proposal을 사용하지 않는다.</li>
+<li>Named contact, allowed penetration, non-contact·self·support clearance, signed force·moment task wrench, approach·closure·release를 arm-independent intrinsic hard gate로 검사한다.</li>
+<li>Robot deployment atlas는 yaw uncertainty와 continuous planning horizon을 둘러싼 모든 yaw × horizon cell의 grasp 교집합만 허용한다.</li>
+<li>Path family는 atlas보다 좁은 lateral·speed·intercept·horizon support, complete phase, collision·joint·singularity·timing slack, latch·correction·stop evidence를 가져야 한다.</li>
+<li>Runtime은 fresh fused track·encoder·calibration과 robot position·velocity·acceleration을 검사하고, active retain → certified latch → 한 번의 bounded warm-start admission 순서만 허용한다.</li>
+<li>모든 hard gate 통과 후에만 전체 normalized slack을 작은 값부터 정렬한 lexicographic maximin으로 비교하고, switch에는 bottleneck hysteresis를 추가한다.</li>
+</ol>
+<p>Provider score, grasp residual, coverage count, 거리상 가장 먼 intercept 또는 첫 successful plan은 어떤 hard gate도 보상하지 못한다.</p>
+
+<h2>발생한 문제, 원인, 해결</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>Rolling query의 horizon이 atlas sample과 거의 항상 불일치</td><td>Exact float sample만 허용해 실제 시간에서는 대부분 unsupported 처리</td><td>Measured yaw support와 양쪽 horizon bracket의 Cartesian product를 구하고 candidate 교집합을 사용</td><td>Feasibility interpolation이나 extrapolation 없이 continuous query를 보수적으로 처리</td></tr>
+<tr><td>Support midpoint가 nominal 설계점처럼 암묵적으로 사용될 위험</td><td>Family에 nominal context와 numeric anchor가 없었음</td><td><code>ConveyorPathNominalAnchor</code>로 atlas cell, yaw, lateral, speed, intercept, planning horizon을 명시</td><td>Correction이 실제 compiler anchor를 기준으로 계산되며 midpoint 추론이 사라짐</td></tr>
+<tr><td>Caller가 residual과 schedule을 직접 채울 수 있음</td><td>Runtime request가 projection의 출처와 계산 과정을 증명하지 못함</td><td><code>TrustedPathFamilyProjectionBatch</code>가 track generation, conveyor state, calibration, policy, prediction과 family별 통과·거부 partition을 고정</td><td><code>decide_projected</code>가 request/batch mutation과 splicing을 거부</td></tr>
+<tr><td>Active path의 contact 시간이 관측마다 이동할 수 있음</td><td>매 generation마다 새 crossing을 schedule로 사용</td><td>Commit 후 path start와 contact timestamp를 고정하고 새 crossing과의 차이만 timing·longitudinal correction으로 계산</td><td>Cutoff 뒤 topology와 contact를 바꾸지 않는 실행 의미가 유지됨</td></tr>
+<tr><td>Path 시작 전 phase를 0으로 clamp할 위험</td><td>Prestart와 path-time zero를 같은 숫자로 표현</td><td>Prestart는 <code>requested_path_time_s=None</code>, 시작 후에만 schedule에서 exact phase를 계산</td><td>Latch가 아직 시작하지 않은 path를 phase zero로 오인하지 않음</td></tr>
+<tr><td>초기 8-family projection p95가 22.95 ms</td><td>동일 atlas bracket·scheduled horizon과 startup-verified static tube를 family마다 반복 검증</td><td>Batch-local exact cache를 사용하고 startup 검증을 runtime loop에서 중복하지 않음</td><td>Local 500회에서 projector p50 5.71 ms, p95 7.77 ms, p99 9.32 ms, max 11.84 ms</td></tr>
+<tr><td>Projection이 늦어도 후보가 남을 수 있음</td><td>Runtime query budget과 projection budget이 분리되지 않음</td><td>예시 policy에 15 ms projection hard budget을 두고 초과 시 모든 family를 budget rejection으로 전환</td><td>늦은 candidate를 fallback으로 사용하지 않음</td></tr>
+<tr><td>junjinyong 검증 session이 인증 후 간헐적으로 정지</td><td>TCP·key 인증은 성공하지만 remote command session 생성이 불안정</td><td>짧은 health check와 단일 session 재시도를 분리하고 local 결과를 server 결과로 표기하지 않음</td><td>Health check는 회복했으나 <code>ef1ab88</code> 동기화·회귀 재현은 아직 완료하지 못함</td></tr>
+</table>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Continuous horizon, explicit anchor, fixed active contact, prestart phase, identity/tracking failure, request mutation, cutoff, active-family priority, compute-budget failure를 테스트했다.</li>
+<li>관련 tracking·atlas·path-family·runtime 54개가 로컬에서 통과했다.</li>
+<li>Planning discovery 300개 중 OpenCV 전용 import 3개를 제외한 297개와 calibration 환경 14개, 실제 총 311개가 통과했다.</li>
+<li>Projector와 resident evaluator를 합친 local 8-family 500회는 p50 6.30 ms, p95 8.30 ms, p99 10.09 ms, max 11.73 ms였다.</li>
+</ul>
+
+<h2>남은 판단과 다음 구현</h2>
+<p>현재 빠른 부분은 이미 compile된 family를 측정 상태에 투영하고 고르는 단계뿐이다. Fixture의 reusable path, tracking tube, continuous report를 실제 compiler와 독립 validator가 아직 생성·재현하지 않는다. <code>TrustedPathFamilyProjectionBatch</code>도 직렬화 가능한 evidence이므로 최종 시스템에서는 임의 caller가 만든 객체를 신뢰하지 않고 projector와 coordinator를 소유하는 runtime session 경계가 필요하다.</p>
+<p>다음 단계는 grasp 점수를 추가하는 것이 아니다. 한 번만 허용된 warm-start admission이 deadline 안에 complete trajectory, dynamics, continuous collision, correction support와 stop path evidence를 반환하거나 명시적으로 실패하는 계약을 구현한다. 그 뒤 post-contact lift·bin drop handoff, controller commit·watchdog, actual-time closed-loop simulation을 연결한다.</p>
+<p><a href="bounded-path-family-runtime.html">Bounded runtime state machine</a>이 다음 권한 계층이고, <a href="realtime-conveyor-architecture.html">real-time architecture ADR</a>이 전체 순서를 정의한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
