@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Production-shaped path-family runtime harness · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-022 · 2026-08-09 · runtime vertical slice</div>
+<h1>검증된 grasp와 path-family를 최신 관측에서 실제 시간 순서로 선택한다.</h1>
+<p class="lede">문서와 개별 계약만 연결해 놓고 real-time pipeline이라고 부르지 않는다. 실제 projector, coordinator, bounded warm-start 경계, capacity-one scheduler와 causal recorder를 한 실행 경로로 묶고, 선택되거나 거부된 결과를 발생 시간 그대로 Viser가 재생할 수 있는 첫 production-shaped vertical slice를 구현했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/3e3de99"><code>3e3de99</code></a>이 runtime engine, latest-generation mailbox와 deferred causal session을 구현한다. <a href="https://github.com/gohyunsu/beltbench/commit/09df7f4"><code>09df7f4</code></a>는 서버에서 발견한 non-usrmerge Linux test 결함을 수정한다. 모든 trajectory는 계속 <code>execution_blocked</code>이며 controller command 권한이 없다.</div>
+
+<h2>Grasp 선택 기준을 다시 연결한 결론</h2>
+<p>AutoDex source 감사 결과는 바뀌지 않았다. BODex residual과 provider 순서, zero-margin sampled sphere collision, squeeze overlap, 한 방향 gravity hold, scene set cover, coverage 순서의 첫 planning 성공은 proposal 생성과 static diagnostic에는 유용하지만 moving conveyor command의 승인 기준은 아니다.</p>
+<table class="table">
+<tr><th>경계</th><th>이번 runtime이 소비하는 기준</th><th>허용하지 않는 우회</th></tr>
+<tr><td>Intrinsic grasp</td><td>Named contact·penetration, non-contact/self/support clearance, signed force·moment wrench, approach·closure·release path</td><td>Provider success, AutoDex rank, squeeze overlap만으로 승격</td></tr>
+<tr><td>Robot deployment</td><td>Exact arm·hand·connector·object·stable pose·workcell에서 IK, assembly/workcell/object clearance, joint와 singularity margin</td><td>특정 xArm/Inspire heuristic 또는 nominal-yaw fallback</td></tr>
+<tr><td>Yaw × horizon atlas</td><td>측정 yaw uncertainty가 걸치는 모든 cell의 hard-gated grasp 교집합</td><td>빈 교집합에서 이웃 cell, stale shortlist 또는 보간 후보 사용</td></tr>
+<tr><td>Compiled path family</td><td>Complete phase, swept/continuous collision scope, dynamics, hand timing, stop path, latch와 correction tube</td><td>Endpoint IK나 grasp pose만으로 moving path 승인</td></tr>
+<tr><td>Live runtime</td><td>Fresh fused track·encoder·robot state, numeric support, deadline, latest generation, complete normalized slack vector</td><td>가장 먼 intercept, first success, 늦은 이전 generation 결과</td></tr>
+</table>
+<p>모든 hard gate 뒤 후보 비교는 complete normalized-slack vector의 lexicographic maximin이다. 현재 active family가 유효하면 유지하고, switch는 certified latch와 hysteresis 개선을 모두 요구한다. Cutoff 뒤에는 grasp와 topology를 바꾸지 않으며 bounded correction을 벗어나면 stop을 권고한다.</p>
+
+<h2>실제로 연결한 실행 경로</h2>
+<ol>
+<li><code>RuntimePlanningObservation</code>이 같은 generation의 fused planar track, conveyor motion, stable pose, calibration, tracking policy, named robot motion snapshot과 commit deadline을 묶는다.</li>
+<li><code>PathFamilyRuntimeEngine</code>이 실제 <code>ResidentPathFamilyProjector</code>를 호출하고 그 exact batch로 <code>PathFamilyRuntimeCoordinator</code>를 호출한다. 다른 bundle에 결합된 projector는 시작 시 거부한다.</li>
+<li>Retain·correct·latch·switch만 exact compiled path digest를 노출한다. <code>stop_active</code>는 stop 대상 identity가 있어도 reusable candidate를 노출하지 않는다.</li>
+<li>Warm start가 필요하면 한 번만 admission한다. Backend가 없거나 실패하면 artifact 없이 거부하고, 성공 결과도 exact trajectory·stop-path digest의 독립 validation을 통과해야 한다.</li>
+<li><code>LatestGenerationRuntimeHarness</code>의 mailbox는 capacity one이다. 더 최신 observation은 pending과 in-flight generation을 supersede하고, 늦게 끝난 stale result를 recorder나 selection으로 되돌리지 않는다.</li>
+<li><code>RuntimePlanningSessionRecorder</code>는 measured interval 동안 bounded object reference와 tracepoint만 메모리에 둔다. JSON, SHA-256과 filesystem write는 종료 뒤 수행한다.</li>
+<li>모든 generation이 selected, rejected, superseded 또는 failed terminal을 가진 뒤에만 전체 session과 causal assessment를 만들고 staging tree를 atomic rename한다.</li>
+</ol>
+
+<h2>Scheduler와 evidence 불변식</h2>
+<ul>
+<li>새 observation과 그것이 supersede하는 generation은 하나의 preflighted transaction이다. Event capacity가 부족하면 recorder와 mailbox 모두 바뀌지 않는다.</li>
+<li>Harness 시작 시 <code>8 × maximum_generation_count + 1</code> event를 담을 수 있어야 한다. 이전 generation이 complete trajectory rejection으로 끝나고 마지막 generation이 diagnostic selection되는 최악 경로를 예약한다.</li>
+<li>Blocking Python backend를 강제 중단할 수 있다고 주장하지 않는다. Production solver는 cancellation latency를 측정한 nonblocking process/worker 뒤에 있어야 하며 late return은 폐기한다.</li>
+<li>Observation artifact는 camera ID와 fused-track source를 기록하지만 raw sensor payload를 포함했다고 주장하지 않는다.</li>
+<li>Viser playback은 arm, end effector, object, stable pose와 workcell이 runtime request와 모두 같아야 한다. Startup hash를 종료 시 다시 검사하며 중간 변조 시 session directory를 만들지 않는다.</li>
+<li>거부만 발생한 session도 fake playback 없이 보존한다. Playback이 있어도 <code>planned_only</code>이며 measured robot/object feedback으로 표시하지 않는다.</li>
+</ul>
+
+<h2>발생한 문제, 원인, 해결, 결과</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>개별 projector·coordinator 계약은 있었지만 실제 runtime producer가 없음</td><td>Ideal playback과 offline trace가 production route를 대신하고 있었음</td><td>한 generation을 실제 public interface 순서로 실행하는 engine 추가</td><td>Fixture helper가 아닌 projector→coordinator→validator 호출과 exact evidence를 테스트</td></tr>
+<tr><td><code>stop_active</code> decision의 selected family ID가 trajectory candidate처럼 보임</td><td>Stop 대상 identity와 reusable path authority를 같은 field에서 해석</td><td>허용 action을 retain·correct·latch·switch로 명시적으로 제한</td><td>Stop 권고가 stale active path 선택으로 승격되지 않음</td></tr>
+<tr><td>Warm-start backend 실패 결과를 validator에 넘길 수 있음</td><td>Admission 존재와 candidate 생성 성공을 구분하지 않음</td><td><code>candidate_generated</code> 뒤에서만 독립 validator 호출</td><td>실패 result는 reason code만 남기고 trajectory evidence를 만들지 않음</td></tr>
+<tr><td>첫 wall-clock run이 20 ms robot-state freshness gate에서 실패</td><td>Fixture를 조립한 뒤 오래된 timestamp로 observation을 생성</td><td>Gate를 완화하지 않고 track·encoder·robot state를 engine 호출 직전에 같은 clock으로 stamp</td><td>Fresh-state 가정을 지킨 성공 run만 기록</td></tr>
+<tr><td>새 observation 기록 뒤 supersession event capacity가 부족하면 반쪽 generation이 남을 수 있음</td><td>두 recorder 호출을 별도 transaction으로 수행</td><td>Observation과 모든 supersession을 합쳐 사전 검증 후 한 번에 append</td><td>Capacity failure 뒤 원래 generation만 정상 terminal·materialize 가능</td></tr>
+<tr><td>Engine 성공 뒤 recorder가 event limit에서 실패할 수 있음</td><td>Policy가 worst-case lifecycle보다 작아도 harness가 시작됨</td><td>시작 시 worst-case event 수를 강제하고 recording exception을 terminal failure로 닫음</td><td>유효 plan을 계산한 뒤 evidence를 잃는 구성 제거</td></tr>
+<tr><td>Startup 뒤 playback 파일이 바뀌어도 저장 직전 확인하지 않음</td><td>초기 hash binding만 신뢰</td><td>Materialization 전에 external source를 다시 SHA-256 검사</td><td>변조 시 staging/output directory 없이 fail-closed</td></tr>
+<tr><td>다른 workcell playback을 같은 arm·object ID로 결합할 수 있음</td><td>Viewer binding이 complete context를 비교하지 않음</td><td>Arm·hand·object·stable pose·workcell을 runtime request와 exact 비교</td><td>다른 scene의 자연스러운 animation을 causal result로 보이는 splice 차단</td></tr>
+<tr><td>Local <code>/tmp</code>가 read-only remount되어 TemporaryDirectory가 전부 실패</td><td>Filesystem 오류이며 planning 로직과 무관</td><td>Workspace의 별도 test temp를 명시하고 같은 suite 재실행</td><td>환경 failure와 code failure를 분리, 관련 66개 모두 통과</td></tr>
+<tr><td>Server 전체 test에서 <code>bash</code>를 찾지 못함</td><td>기존 test가 non-usrmerge Linux에서 스스로 <code>PATH=/usr/bin</code>만 설정</td><td><code>/usr/bin:/bin</code>을 사용하도록 portable expectation 수정</td><td>Local과 server에서 activation test 2개 통과</td></tr>
+<tr><td>Server <code>git pull</code>이 HTTPS credential 부재로 실패</td><td>Compute server에 GitHub token을 배포하지 않음</td><td>Local authenticated commit을 최소 Git bundle로 전송하고 <code>--ff-only</code> 적용</td><td>Private credential 범위를 넓히지 않고 untracked BODex build를 보존</td></tr>
+</table>
+
+<h2>Actual-time smoke와 Viser</h2>
+<p>한 local smoke는 synthetic continuous-path certificate와 precompiled active family를 사용하되 engine, projector, coordinator, monotonic recorder와 causal assessor는 실제 구현을 사용했다. Object는 upside-down stable pose의 Pepsi Light이며 actual xArm6 URDF, Inspire-left URDF, 양쪽 CAD mount mesh connector, conveyor, 고정 table과 open drop bin을 가진 schema-2 playback 301 frame을 연결했다.</p>
+<table class="table">
+<tr><th>구간</th><th>한 번 관측한 wall duration</th></tr>
+<tr><td>Resident projection</td><td><code>6.134 ms</code></td></tr>
+<tr><td>Coordinator wall / compute</td><td><code>0.371 / 0.371 ms</code></td></tr>
+<tr><td>Observation → diagnostic terminal</td><td><code>8.694 ms</code></td></tr>
+</table>
+<p>9개 event와 7개 artifact가 causal assessment를 통과했고 Viser는 <code>causal_replay=true</code>로 실제 mesh와 session을 load해 1x 자동 반복했다. 이 값은 단 한 번의 orchestration smoke다. Camera transport, pose estimation, ROS callback, warm solve, continuous validation, dispatch, controller response가 빠졌으며 p95·p99나 real-time 보장이 아니다.</p>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Runtime engine, projection, coordination, warm start, causality, session과 Viser 집중 test 66개가 local과 <code>junjinyong</code>에서 모두 통과했다. Server 집중 실행은 1.874초였다.</li>
+<li>Planning discovery는 최종 362개 항목을 수집했다. OpenCV가 없는 planning 환경의 3개 import module을 제외한 359개 실제 test가 통과했다.</li>
+<li>그 3개 module은 OpenCV가 있는 calibration 환경에서 실제 test 14개가 모두 통과했다. 중복 import placeholder를 제외한 총 실제 통과 수는 373개다.</li>
+<li>Bundle/projector mismatch, missing backend, failed warm start, stop action, stale supersession, capacity transaction, undersized policy, context splice, playback mutation, rejection-only session을 negative test로 고정했다.</li>
+<li>Source HEAD <code>09df7f4</code>와 server HEAD가 같고 server의 기존 untracked BODex native build는 수정하거나 삭제하지 않았다.</li>
+</ul>
+
+<h2>남은 신뢰 경계와 다음 순서</h2>
+<p><code>ResidentPathFamilyProjector</code> 생성자는 bundle과 atlas의 구조적 상속을 검사하고 engine은 exact bundle 결합을 검사한다. 그러나 이것만으로 source file을 다시 hash하지 않는다. Production bootstrap은 timing 시작 전에 <code>verify_path_family_deployment_bundle_sources()</code>로 atlas, compiler/policy, reusable/tracking/stop path, latch certificate와 validation report를 모두 재검증해야 한다. 이번 synthetic fixture는 그 production source evidence가 아니다.</p>
+<ol>
+<li>실제 checksummed atlas에서 complete reusable path와 stop path를 만드는 production path compiler를 구현한다.</li>
+<li>Reference oracle과 비교 가능한 accelerated warm-start solver와 별도 continuous validator를 nonblocking worker로 연결한다.</li>
+<li>Recorded camera·encoder·controller snapshot을 원래 cadence로 replay해 p50/p95/p99, worst case, miss, supersession, cancellation과 memory high-water를 측정한다.</li>
+<li>ROS 2 경계에는 Python JSON recorder 대신 LTTng/<code>ros2_tracing</code> 또는 동등한 low-overhead tracepoint adapter를 둔다.</li>
+<li>Controller simulation에서 commit, setpoint, measured robot/object, watchdog, stop과 bin containment를 독립 feedback으로 기록한다.</li>
+<li>실제 calibration·connector metrology·hardware reliability lower bound가 준비된 뒤에만 physical commit authority를 추가한다.</li>
+</ol>
+<p><a href="runtime-grasp-selection.html">AutoDex와 BeltBench grasp authority 감사</a>, <a href="bounded-warm-start-boundary.html">bounded warm-start 경계</a>, <a href="runtime-event-session.html">causal session 계약</a>이 각각 이 runtime의 offline 입력, update 권한과 evidence 의미를 설명한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
