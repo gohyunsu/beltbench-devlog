@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Path-family validation authority · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-023 · 2026-08-09 · path validation authority</div>
+<h1>Path-family 검증 보고서를 파일 이름이 아니라 의미와 배치 맥락으로 검증한다.</h1>
+<p class="lede">AutoDex의 grasp 필터와 BeltBench의 moving-path gate를 다시 대조하는 과정에서, <code>continuous_path_tube</code>라는 문자열과 파일 SHA-256만 맞으면 임의 보고서도 runtime 입력이 될 수 있는 결함을 발견했다. 보고서를 typed contract로 바꾸고 robot·object·workcell부터 실제 path까지 정확히 결속했다. 다만 실제 continuous validator를 구현한 것처럼 주장하지 않는다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/2a31d72"><code>2a31d72</code></a>가 typed report, exact metric schema, startup semantic verifier와 negative test를 구현한다. Bundle schema는 <code>3.0</code>, policy schema는 <code>4.0</code>으로 올렸다. 모든 결과는 계속 <code>execution_blocked</code>다.</div>
+
+<h2>AutoDex에서 실제로 거르는 기준</h2>
+<p>감사 기준은 public <code>willi19/autodex-code:main</code> <code>5ada1c0</code>이다. 이름이 비슷한 site repository나 오래된 fork branch를 구현 source로 간주하지 않았다.</p>
+<table class="table">
+<tr><th>AutoDex 단계</th><th>실제 기준</th><th>BeltBench 판단</th></tr>
+<tr><td>BODex</td><td>Optimizer feasibility, 최대 grasp residual ≤ 0.001, 평균 distance residual ≤ 0.01, residual 순서</td><td>후보 생성 provenance로만 보존한다. 같은 모델이 생성하고 평가한 값은 독립 승인 근거가 아니다.</td></tr>
+<tr><td>Static simulation filter</td><td>Pregrasp hand/world와 hand self-collision, zero activation distance</td><td>개념은 채택하되 named mesh, 양의 pair별 margin, endpoint와 path 검사로 교체한다.</td></tr>
+<tr><td>Squeeze</td><td><code>2 × grasp - pregrasp</code>에서 hand sphere와 object overlap 존재</td><td>접촉 identity·개수·침투·비접촉 clearance가 없어 승인 근거로 폐기한다.</td></tr>
+<tr><td>MuJoCo hold</td><td>고정 질량·마찰·controller에서 tabletop gravity 한 방향, 5 cm·15° threshold</td><td>선택적 diagnostic으로만 둔다. Moving contact timing, torque와 parameter uncertainty를 보장하지 않는다.</td></tr>
+<tr><td>Cross-pose order</td><td>Binary collision/MuJoCo matrix 교집합 뒤 greedy scene set cover</td><td>Hard gate 통과 뒤 bounded portfolio coverage에만 적용한다. Clearance나 timing failure를 coverage가 덮을 수 없다.</td></tr>
+<tr><td>Runtime planner</td><td>Coverage order, hand/table endpoint collision, fixed-state IK, 3 cm lift IK, 첫 planning 성공</td><td>필요하지만 불충분하다. Exact latest state, complete path, uncertainty, deadline와 독립 validation을 추가한다.</td></tr>
+<tr><td>Hardware statistics</td><td>Laplace-smoothed point estimate와 scene coverage feedback</td><td>Geometry와 분리한 exact-context Wilson lower bound로 대체하며 hardware가 없을 때는 권한을 만들지 않는다.</td></tr>
+</table>
+
+<h2>우리 방법론에서 채택한 filter</h2>
+<ol>
+<li>Exact object·stable pose·hand·task·source identity가 맞지 않으면 proposal 단계에서 거부한다.</li>
+<li>Intrinsic 단계에서 named contact, bounded penetration, non-contact/self/support clearance, signed force·moment task wrench, approach·closure·release path를 독립 검사한다.</li>
+<li>Robot deployment 단계에서 선택한 manifest의 arm·hand·connector·workcell에 대해 IK, assembly/workcell/object clearance, joint와 singularity margin을 검사한다.</li>
+<li>Yaw×horizon atlas는 측정 yaw uncertainty가 걸치는 모든 cell의 hard-gated grasp 교집합만 반환한다. 빈 교집합은 unsupported다.</li>
+<li>Compiled path family는 complete phases, fixed contact/hand timing, correction support, latch, reusable/stop path와 exact 13개 continuous margin을 모두 요구한다.</li>
+<li>Live runtime은 fresh track·encoder·named robot motion state, support, correction, deadline, latest generation을 다시 검사한다.</li>
+<li>모든 hard gate 뒤에만 full normalized-slack vector의 lexicographic maximin으로 비교한다. Provider order, first success, weighted sum, 가장 먼 intercept는 선택 기준이 아니다.</li>
+<li>향후 physical commit은 moving-pick reliability lower bound, controller capability, watchdog와 stop authority를 별도로 요구한다.</li>
+</ol>
+
+<h2>발견한 결함</h2>
+<p>기존 <code>verify_path_family_deployment_bundle_sources()</code>는 validation report 파일의 SHA-256만 다시 계산했다. 파일 내용을 load하지 않았고, family summary와 비교하지 않았다. 따라서 공격자나 잘못된 compiler가 다음 순서로 거짓 certificate를 만들 수 있었다.</p>
+<ol>
+<li>아무 텍스트 파일을 <code>path_validation_report</code>로 만든다.</li>
+<li>그 파일의 새 SHA-256을 <code>PathValidationEvidence</code>에 기록한다.</li>
+<li><code>validation_scope="continuous_path_tube"</code>라고 선언한다.</li>
+<li>Startup hash 검사를 통과한 뒤 production-shaped coordinator에 family를 전달한다.</li>
+</ol>
+<p>더 나쁘게는 유효한 report를 다른 trajectory, latch, workcell 또는 robot bundle에 끼워 넣어도 report 자체가 그 맥락을 결속하지 않았다. 파일 무결성은 보장했지만 의미 무결성은 보장하지 않은 상태였다.</p>
+
+<h2>구현한 신뢰 경계</h2>
+<p><code>PathFamilyValidationReport</code>와 <code>PathFamilyValidationBinding</code>을 별도 contract module로 만들었다. Canonical JSON SHA-256으로 다음 항목을 정확히 결속한다.</p>
+<ul>
+<li>Bundle ID, schema, policy, arm, hand, connector, object, stable pose, conveyor calibration, workcell, atlas ID와 정렬된 전체 deployment source evidence</li>
+<li>Family ID, grasp, task, support envelope, nominal anchor, complete phase timing과 correction tube</li>
+<li>전체 latch-region payload와 순서가 보존된 latch certificate digest</li>
+<li>Reusable path, tracking tube, stop path digest</li>
+<li>Validator backend와 pinned validator source digest</li>
+<li>Validated phases, clearance minima, joint/singularity minima, exact normalized-slack vector와 frame count</li>
+<li>Temporal coverage, parameter coverage, validated segment 수와 parameter cell 수</li>
+</ul>
+
+<table class="table">
+<tr><th>보고서 scope</th><th>필수 coverage</th><th>충돌 metric</th><th>Runtime 효력</th></tr>
+<tr><td><code>sampled_reference</code></td><td>Reference frame와 design point만, continuous segment 수 0</td><td><code>sampled_collision</code></td><td>Diagnostic만 가능, coordinator가 거부</td></tr>
+<tr><td><code>continuous_path_tube</code></td><td>모든 인접 시간 segment와 선언한 correction tube 전체</td><td><code>swept_collision</code></td><td>필요조건일 뿐 command 권한은 아님</td></tr>
+</table>
+<p>Continuous report의 exact 13 metrics는 assembly clearance, correction support, joint position·velocity·acceleration·jerk, non-intentional object clearance, self clearance, singularity, stop path, swept collision, timing, workcell clearance다. Warm-start 독립 validator도 같은 공통 집합을 import해 두 계약이 조용히 달라지지 않게 했다.</p>
+
+<h2>발생한 문제, 원인, 해결, 결과</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>세 개의 <code>collision/dynamics/timing</code> slack만으로 continuous fixture를 구성</td><td>초기 orchestration test가 complete safety vector보다 편의를 우선함</td><td>Scope별 exact metric schema를 contract에서 강제</td><td>Continuous family는 13개 중 하나라도 빠지면 load 전에 거부</td></tr>
+<tr><td>Sampled 결과에 <code>swept_collision</code>을 쓰면 연속 검증처럼 보임</td><td>같은 ranking vector를 모든 scope에 재사용하려 함</td><td>Sampled schema는 <code>sampled_collision</code>으로 분리</td><td>Scope 문자열만 바꾸는 relabel이 metric과 coverage 양쪽에서 실패</td></tr>
+<tr><td>임의 텍스트도 새 checksum과 함께 통과 가능</td><td>Startup verifier가 report를 parse하지 않음</td><td>Typed JSON load와 exact summary 비교 추가</td><td>Checksum을 다시 맞춰도 malformed report는 거부</td></tr>
+<tr><td>다른 trajectory와 summary를 report에 splice 가능</td><td>Report가 family artifact digest와 minima를 결속하지 않음</td><td>Path·latch·support·timing·summary의 canonical binding 추가</td><td>다른 reusable path 또는 clearance 변경이 의미 검증에서 실패</td></tr>
+<tr><td>같은 family ID를 다른 workcell bundle에 재사용 가능</td><td>첫 binding이 family 내부만 포함</td><td>Bundle policy, deployment identity와 전체 source set digest 추가</td><td>Cross-workcell·cross-robot report 재사용을 차단</td></tr>
+<tr><td>기존 schema version이 새 의미를 모름</td><td>필수 source와 policy semantics가 breaking change</td><td>Bundle <code>2.0→3.0</code>, policy <code>3.0→4.0</code> 승격</td><td>오래된 artifact를 새 계약으로 조용히 읽지 않음</td></tr>
+<tr><td>Local 전체 suite의 OpenCV module import 실패</td><td>Planning 환경을 CPU core dependency로 제한해 <code>cv2</code>가 없음</td><td>Planning 362개와 calibration 환경 14개를 분리 실행</td><td>Dependency 경계를 훼손하지 않고 총 376개 실제 test 통과</td></tr>
+<tr><td>첫 server discovery가 start directory import error로 즉시 종료</td><td>절대 <code>-s/-t</code> 조합이 package가 아닌 <code>tests/</code>를 요구</td><td>GNU <code>env -C</code>로 checkout을 working directory로 지정</td><td>서버에서 365개 수집, planning 362개 통과</td></tr>
+</table>
+
+<h2>Negative test</h2>
+<ul>
+<li>Arbitrary text를 쓰고 report checksum까지 갱신해도 JSON/contract load가 실패한다.</li>
+<li>다른 reusable trajectory digest를 넣고 checksum을 갱신해도 family binding 비교가 실패한다.</li>
+<li>Minimum environment clearance 요약값 하나를 바꾸고 checksum을 갱신해도 exact summary 비교가 실패한다.</li>
+<li>정상 sampled report에서 scope 문자열만 continuous로 바꾸면 coverage, capability와 metric schema가 맞지 않아 실패한다.</li>
+<li>같은 family를 다른 workcell ID의 bundle에 붙이면 deployment-context digest가 달라 실패한다.</li>
+<li>Policy가 13개보다 작은 normalized-slack capacity를 선언하거나 예전 schema version을 사용하면 fail-closed한다.</li>
+</ul>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Path-family, projection, runtime, warm-start와 engine 집중 test 56개가 local에서 통과했다.</li>
+<li>Local full discovery는 365개를 수집했고 OpenCV import module 3개를 제외한 planning test 362개가 통과했다.</li>
+<li>OpenCV가 있는 calibration 환경에서 해당 3개 module의 실제 test 14개가 통과했다. 총 실제 통과 수는 376개다.</li>
+<li><code>junjinyong</code> server를 source commit <code>2a31d72</code>로 fast-forward한 뒤 동일하게 365개를 수집하고 planning 362개를 통과했다. 기존 untracked BODex native build는 변경하지 않았다.</li>
+</ul>
+
+<h2>아직 해결하지 않은 것</h2>
+<p>Typed report는 필요한 신뢰 경계지만 validator 계산을 증명하지 않는다. 현재 Python Coal/hpp-fcl binding과 Pinocchio 경로는 discrete frame collision·distance query를 제공하며, 기존 301-frame playback validation도 sampled oracle이다. Capability 문자열을 썼다고 continuous swept collision이나 correction-tube 전체가 계산되는 것은 아니다.</p>
+<ol>
+<li>Checksummed atlas와 robot/workcell manifest에서 complete approach·chase·close·attach·lift·transfer·release·contain·return·stop path를 생성하는 production path compiler를 구현한다.</li>
+<li>Reference sampled oracle와 대조 가능한 conservative continuous validator backend를 선택하고, 시간 segment와 correction parameter cell마다 zero false-accept 기준을 검증한다.</li>
+<li>Startup에서 pinned validator를 실제 재실행해 typed report를 재생성하거나 독립적으로 재현하고, 저장된 report와 exact 비교한다.</li>
+<li>그 뒤에만 recorded cadence latency와 cancellation을 측정한다. Source hashing과 report 재현은 startup/offline에 두고 online loop에는 resident bounded query만 남긴다.</li>
+<li>Controller simulation, calibration/metrology와 physical reliability evidence가 없으면 controller commit은 계속 구현하지 않는다.</li>
+</ol>
+<p><a href="runtime-grasp-selection.html">AutoDex와 BeltBench grasp authority 감사</a>, <a href="runtime-path-family-harness.html">production-shaped runtime harness</a>, <a href="path-family-deployment-bundle.html">path-family bundle 계약</a>이 각각 앞 단계의 기준과 runtime 의미를 설명한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
