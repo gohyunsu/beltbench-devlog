@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Path-family metric evidence와 sampled compiler · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-024 · 2026-08-09 · reproducible path evidence</div>
+<h1>AutoDex의 grasp filter를 제안 근거와 실행 근거로 분리하고, path margin을 재현 가능한 계약으로 만든다.</h1>
+<p class="lede">AutoDex의 정적 grasp 선택 기준을 다시 읽고 BeltBench가 실제로 채택한 기준을 코드까지 대조했다. 정규화 점수만 남기면 어떤 단위와 임계값으로 계산했는지 재현할 수 없고, 기존 301-frame playback을 continuous path 증거로 오인할 위험이 있었다. Policy가 요구한 실제 margin·단위·검증 capability를 보고서와 warm start에 결속하고, 명시적 sampled validator 결과만 조립하는 fail-closed compiler를 구현했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/2abb8403fbc7ac8f257baec28ada4f74c24621a6"><code>2abb840</code></a>이 구현한다. Sampled compiler의 출력은 항상 <code>execution_blocked</code>이며 production runtime coordinator가 거부한다. 실제 continuous compiler·validator와 controller commit은 아직 없다.</div>
+
+<h2>AutoDex에서 확인한 선택 기준</h2>
+<p>감사 기준은 <code>willi19/autodex-code:main</code>의 <code>5ada1c0</code>이다. 사이트 저장소나 관련 없는 fork history를 구현 근거로 사용하지 않았다.</p>
+<table class="table">
+<tr><th>단계</th><th>AutoDex의 실제 기준</th><th>BeltBench 판단</th></tr>
+<tr><td>BODex 생성</td><td>Optimizer feasibility, 최대 grasp residual 0.001 이하, 평균 distance residual 0.01 이하와 residual 순서</td><td>후보 생성 provenance로만 보존한다. 생성 모델 자신의 score는 독립 승인 근거가 아니다.</td></tr>
+<tr><td>Static filter</td><td>한 pregrasp endpoint의 hand/world·self collision, sphere 근사와 zero activation distance</td><td>충돌 검사의 개념만 채택하고 named mesh, 양의 pair별 margin, endpoint와 전체 path 검사로 교체한다.</td></tr>
+<tr><td>Squeeze</td><td><code>2 × grasp - pregrasp</code>에서 hand sphere와 object overlap이 하나라도 존재</td><td>접촉 identity·개수·침투·비접촉 clearance가 없으므로 acceptance evidence로 쓰지 않는다.</td></tr>
+<tr><td>MuJoCo hold</td><td>0.1 kg 고정 물체와 한 tabletop gravity 방향에서 5 cm·15도 threshold</td><td>선택적 diagnostic만 허용한다. Torque, moving timing, 마찰·질량·controller uncertainty를 보장하지 않는다.</td></tr>
+<tr><td>Adaptive pool</td><td>Scene마다 simulation survivor가 최소 5개가 될 때까지 후보를 확장</td><td>Pool sufficiency일 뿐 개별 grasp hard gate가 아니다.</td></tr>
+<tr><td>Cross-pose order</td><td>Binary collision/hold 교집합 뒤 greedy scene set cover</td><td>모든 hard gate 뒤 portfolio coverage에만 사용한다. 실패한 clearance나 timing을 coverage로 보상하지 않는다.</td></tr>
+<tr><td>Runtime</td><td>Coverage 순서, endpoint collision, fixed-start IK, 3 cm lift IK 뒤 첫 planning 성공</td><td>필요하지만 불충분하다. Latest state, complete path, uncertainty, dynamics, deadline와 독립 validation을 추가한다.</td></tr>
+<tr><td>Hardware 통계</td><td>Laplace-smoothed point estimate</td><td>Geometry와 분리한 exact-context Wilson lower bound를 요구한다. 현재 hardware evidence가 없으므로 실행 권한도 없다.</td></tr>
+</table>
+
+<h2>BeltBench가 채택한 기준</h2>
+<ol>
+<li>Object, stable tabletop pose, hand, task, source identity가 정확히 일치하는 proposal만 받는다.</li>
+<li>Named intended contact, 최소 contact 수, 제한된 penetration, non-contact·self·support clearance, signed force·moment task wrench, approach·closure·release path를 intrinsic hard gate로 검사한다.</li>
+<li>선택한 arm·hand·connector·workcell에서 IK, assembly·workcell·object clearance, joint position margin과 singularity margin을 deployment hard gate로 검사한다.</li>
+<li>측정 yaw uncertainty와 intercept horizon이 걸치는 모든 atlas cell에서 공통으로 살아남은 grasp만 반환한다. 빈 교집합은 fallback 없이 unsupported다.</li>
+<li>Compiled path는 complete phase, contact와 hand timing, latch, correction support, reusable/stop path, collision·dynamics·timing metric 전체를 요구한다.</li>
+<li>Runtime은 fresh track·encoder·named robot position/velocity/acceleration, support, correction, cutoff, deadline와 latest generation을 다시 검사한다.</li>
+<li>모든 hard gate를 통과한 뒤에만 전체 normalized-slack vector의 lexicographic maximin으로 비교한다. Provider order, first success, weighted sum, 가장 먼 intercept는 선택 규칙이 아니다.</li>
+<li>Physical commit은 별도 moving-pick reliability lower bound, controller capability, watchdog와 stop authority가 생길 때까지 구현하지 않는다.</li>
+</ol>
+
+<h2>발견한 문제와 원인</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>위험</th></tr>
+<tr><td><code>normalized_slack</code>만 저장</td><td>Observed margin과 required threshold, unit가 policy 밖에 흩어짐</td><td>낮춘 임계값으로 같은 ratio를 만들거나 계산을 재현하지 못할 수 있음</td></tr>
+<tr><td>Warm validator가 ratio만 제출</td><td>Admission이 정확한 policy threshold를 전달하지 않음</td><td>독립 validator가 다른 기준을 사용해도 accepted처럼 보일 수 있음</td></tr>
+<tr><td>기존 playback을 path bundle로 옮길 compiler 부재</td><td>Planner output, validator output과 deployment context 경계가 없음</td><td>301 sampled frame에서 빠진 metric을 추정하거나 continuous로 잘못 승격할 수 있음</td></tr>
+<tr><td>같은 path ID만으로 결과 연결</td><td>Plan 전체와 workcell·policy source의 canonical identity가 없음</td><td>다른 trajectory 또는 deployment 결과를 splice할 수 있음</td></tr>
+</table>
+
+<h2>구현한 해결</h2>
+<ul>
+<li><code>PathValidationMetricRequirement</code>은 metric ID, 양의 required margin과 고정 unit를 policy에 선언한다. Policy schema는 <code>5.0</code>이다.</li>
+<li><code>PathValidationMetricEvidence</code>는 observed margin, required margin, unit, 해당 metric을 검증한 capability와 파생 normalized slack을 함께 저장한다. Report schema는 <code>2.0</code>이다.</li>
+<li>Startup verifier는 보고서 임계값이 deployment policy와 정확히 같은지, metric과 capability가 scope별 exact set인지, compact minima가 raw metric에서 재현되는지 검사한다. Bundle schema는 <code>4.0</code>이다.</li>
+<li>Warm-start admission과 independent validation schema를 <code>2.0</code>으로 올리고, admission이 continuous policy의 13개 metric 요구를 그대로 전달하게 했다. 결과의 threshold·unit가 하나라도 다르면 acceptance가 실패한다.</li>
+<li><code>SampledPathFamilyPlan</code>과 <code>SampledPathFamilyValidationResult</code>를 분리하고 plan 전체 SHA-256과 deployment-context SHA-256을 validator 결과에 결속했다.</li>
+<li><code>compile_sampled_path_family_bundle</code>은 sampled capability와 metric 전체, policy threshold, artifact, latch, correction, atlas grasp/context 상속이 모두 있을 때만 report와 bundle을 조립한다.</li>
+<li>Sampled report는 segment 수 0과 <code>sampled_collision</code>을 유지한다. <code>swept_collision</code>으로 relabel하지 않으며 runtime coordinator는 sampled bundle을 명시적으로 거부한다.</li>
+</ul>
+
+<h2>기존 301-frame 결과를 자동 변환하지 않은 이유</h2>
+<p>현재 playback report는 reference animation의 frame별 진단에는 유효하지만 assembly·self·workcell collision을 독립 항목으로 분리하지 않고, non-intentional object clearance, joint acceleration·jerk, singularity, correction support, stop path와 timing margin 전체를 제공하지 않는다. 없는 값을 visual clearance나 하나의 generic collision 값에서 추론하면 검증 근거를 새로 만들어내는 셈이다. 따라서 compiler는 실제 sampled validator가 13개 sampled metric과 capability를 명시적으로 제출할 때만 동작하며, 기존 playback은 그대로 historical diagnostic으로 남긴다.</p>
+
+<h2>발생한 문제, 원인, 해결, 결과</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>Sampled capability 집합에 path collision이 없음</td><td>Frame collision 결과를 generic summary로만 취급</td><td><code>sampled_path_collision</code> capability와 <code>sampled_collision</code> metric을 1:1 연결</td><td>Collision 계산을 하지 않은 validator의 capability overclaim을 거부</td></tr>
+<tr><td>Report summary가 raw metric과 분리</td><td>Compact runtime vector와 source evidence 역할이 혼재</td><td>Raw metric을 authority로 두고 minima와 normalized slack을 파생·교차검증</td><td>요약값이나 ratio만 바꾸는 forgery가 실패</td></tr>
+<tr><td>Plan ID 재사용 가능</td><td>Family ID가 trajectory 전체를 대표한다고 가정</td><td>Support, anchor, timing, latch, correction과 path artifact를 canonical hash</td><td>같은 ID의 변조된 duration·artifact splice를 거부</td></tr>
+<tr><td>다른 workcell 결과 재사용 가능</td><td>Validator 결과에 deployment source 전체가 결속되지 않음</td><td>Robot/hand/connector/object/task/calibration/workcell/atlas/policy/source context hash 추가</td><td>Workcell이나 policy 변경 시 compiler가 fail-closed</td></tr>
+<tr><td>특정 xArm·Inspire·Pepsi 의존 우려</td><td>현재 demo asset과 production contract를 혼동할 수 있음</td><td>새 compiler와 metric contract는 ID와 manifest만 사용하고 특정 모델명·joint 수·fallback을 두지 않음</td><td>다른 arm·hand·object에도 동일한 검증 backend 계약을 적용 가능</td></tr>
+</table>
+
+<h2>Negative test와 검증 결과</h2>
+<ul>
+<li>Continuous policy를 sampled compiler에 넣거나 policy threshold를 낮추면 거부한다.</li>
+<li>Capability 하나를 빼거나 required metric이 threshold 아래면 거부한다.</li>
+<li>Atlas에 없는 grasp, 변경된 plan SHA-256, 다른 workcell의 context SHA-256을 거부한다.</li>
+<li>Sampled bundle은 report byte SHA-256과 일치하지만 production coordinator 생성은 실패한다.</li>
+<li>Local path-family 집중 test 65개가 16.833초에 통과했다.</li>
+<li>Local planning discovery는 374개 중 371개가 통과했고, planning 환경에 <code>cv2</code>가 없어 calibration 관련 module import 3건만 실패했다. 별도 calibration 환경에서 해당 module의 실제 test 14개가 모두 통과해 총 실제 통과 수는 385개다.</li>
+<li><code>junjinyong</code> server를 source commit <code>2abb840</code>으로 fast-forward했다. Path-family 65개가 13.811초에 통과했고 전체 374개 중 371개가 통과했으며, 같은 <code>cv2</code> import 3건만 남았다.</li>
+<li>서버의 기존 untracked BODex build와 native extension은 변경하지 않았다.</li>
+</ul>
+
+<h2>남은 한계와 다음 구현</h2>
+<ol>
+<li>현재 compiler는 real planner나 validator backend가 아니라 명시적 evidence를 fail-closed하게 조립하는 경계다. 실제 sampled validator부터 13개 metric을 계산하도록 구현한다.</li>
+<li>Reference sampled oracle과 대조할 continuous swept-collision·correction-tube validator를 선택하고 zero false-accept 기준의 backend 검증을 만든다.</li>
+<li>Complete phase trajectory와 latch/correction/stop artifact를 생성하는 arm·hand-neutral continuous compiler를 구현한다. Draft policy 수치는 metrology와 controller spec 없이 승인값으로 사용하지 않는다.</li>
+<li>가속 backend는 offline/reference 결과와 exact gate decision을 비교한 뒤에만 채택한다. Online loop에는 resident atlas/path lookup, bounded retain/latch와 최대 한 번의 warm start만 둔다.</li>
+<li>Controller simulation, current calibration, connector metrology와 physical moving-pick reliability가 생기기 전에는 command authority를 추가하지 않는다.</li>
+</ol>
+<p><a href="runtime-grasp-selection.html">AutoDex grasp authority 감사</a>, <a href="path-family-validation-authority.html">typed validation report 경계</a>, <a href="runtime-path-family-harness.html">production-shaped runtime harness</a>가 각각 앞 단계의 근거와 실행 한계를 설명한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
