@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Controller-grade robot motion state와 latch gate · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-017 · 2026-08-08 · path latching prerequisite</div>
+<h1>관절 위치가 가깝다는 이유만으로 움직이는 path에 연결하지 않는다.</h1>
+<p class="lede">기존 <code>RuntimeRobotState</code>는 arm과 hand의 위치만 기록한다. 같은 위치에서도 속도와 가속도가 다르면 필요한 제동 거리, collision timing, controller limit가 달라지므로 reusable path retain/latch/commit의 시작 상태로는 불충분하다. Path-family 구현 전에 controller-grade motion state와 state-box gate를 분리했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/eaf6136">revision <code>eaf6136</code></a>은 robot/hand 중립 motion-state와 latch membership 검사를 구현한다. 이 membership은 필요조건일 뿐이며 certificate source, path tube, dynamics, correction과 cutoff 검증이 없으므로 command authority가 아니다.</div>
+
+<h2>문제, 원인, 결정</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>결정</th></tr>
+<tr><td>Position-only state가 dynamic path와 맞는지 판단 불가</td><td>Planner 시작 frame 계약을 controller state에도 재사용</td><td>Position·velocity·acceleration을 한 monotonic snapshot으로 묶음</td></tr>
+<tr><td>xArm 관절 수나 Inspire 명칭으로 latch가 고정될 위험</td><td>예시 robot/hand를 production schema로 일반화</td><td>Manifest가 제공하는 named joint sequence를 exact identity로 사용</td></tr>
+<tr><td>누락 derivative를 zero로 채우면 정지 상태처럼 보임</td><td>편의 fallback이 측정 evidence를 대체</td><td>Arm과 end-effector derivative 전체가 없으면 state 자체를 거부</td></tr>
+<tr><td>State box 통과를 path 안전 증명으로 오해할 위험</td><td>근접 상태와 collision/dynamics certificate를 같은 gate로 취급</td><td>Membership과 path certificate authority를 명시적으로 분리</td></tr>
+</table>
+
+<h2>구현한 경계</h2>
+<ol>
+<li><code>JointMotionDerivatives</code>는 각 joint의 native SI velocity·acceleration과 정확한 순서를 보존한다.</li>
+<li><code>RuntimeRobotMotionState</code>는 기존 timestamped position snapshot에 arm과 end-effector derivative를 결합하고 joint identity 불일치를 거부한다.</li>
+<li><code>JointMotionTarget</code>과 <code>JointMotionTolerance</code>는 특정 robot joint 수를 가정하지 않는 path-phase 중심과 양의 per-joint 허용 오차를 정의한다.</li>
+<li><code>CertifiedRobotLatchRegion</code>은 path family ID, path time, 허용 time error, arm/hand motion target·tolerance와 checksummed certificate reference를 가진다.</li>
+<li><code>latch_region_failures</code>는 stale·future state, wrong path phase, joint substitution, position·velocity·acceleration 이탈을 한 번에 반환한다.</li>
+</ol>
+
+<h2>발생한 문제와 해결</h2>
+<table class="table">
+<tr><th>발생한 문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>첫 집중 test 1개 오류</td><td>Negative test가 field <code>position_si</code>를 <code>position</code>으로 잘못 지정</td><td>Dataclass 실제 schema에 맞게 fixture 수정</td><td>관련 27개 전부 통과</td></tr>
+<tr><td>JSON boolean이 float로 변환될 수 있음</td><td><code>float(True)</code>가 1.0을 반환</td><td>Joint value와 path time을 변환 전에 strict boolean 검사</td><td>가짜 numeric payload 거부</td></tr>
+<tr><td>Certificate reference만 있고 source 검증은 아직 없음</td><td>Deployment bundle·compiler가 미구현</td><td>Membership docstring과 AGENTS에 authority 분리 명시</td><td>State box 단독 실행 승격 방지</td></tr>
+</table>
+
+<h2>검증 결과</h2>
+<p>Round-trip, exact derivative identity, boolean payload, fresh/stale/future time, path phase, position·velocity·acceleration 이탈, arm joint substitution, positive tolerance를 검사했다. 관련 test 27개와 compile이 통과했다.</p>
+<p>전체 planning 수집 267개 중 OpenCV 전용 import 3개를 제외한 실제 264개가 통과했고, calibration 환경 14개도 통과해 총 278개를 확인했다. <code>junjinyong</code> 서버의 고정 planning 환경에서도 관련 33개가 통과했다.</p>
+
+<h2>다음 단계</h2>
+<ul>
+<li>Grasp·yaw context·lateral position·belt speed·intercept cell을 reusable path family에 연결한다.</li>
+<li>Latch certificate file의 schema와 source digest를 deployment-bundle startup에서 검증한다.</li>
+<li>Uncertainty-inflated path tube, collision·joint·singularity·tracking margin, hand-close timing과 stop segment를 hard gate로 추가한다.</li>
+<li>Cutoff 전 retain/latch/한 번의 bounded warm start, cutoff 후 phase correction 또는 abort만 허용한다.</li>
+</ul>
+<p><a href="realtime-conveyor-architecture.html">실시간 conveyor architecture ADR</a>의 R2 prerequisite이며, <a href="runtime-event-session.html">runtime event session</a>은 이후 latch·abort 결정을 기록한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
