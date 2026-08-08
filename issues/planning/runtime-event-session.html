@@ -16,7 +16,7 @@
 <h1>계획 애니메이션과 실제로 발생한 event를 같은 것으로 보이지 않는다.</h1>
 <p class="lede">기존 runtime trace는 한 grasp-selection decision을 설명하지만 observation 도착, supersession, command와 feedback의 실제 순서를 재현하지 못했다. Ideal <code>PickPlayback</code>에서 그 event를 역으로 만들어 내지 않고, monotonic timestamp와 typed evidence를 가진 독립 session 계약과 Viser 시간축을 구현했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/1ecfa0b">revision <code>1ecfa0b</code></a>은 event/session 계약, source 검증 CLI와 planned-layer replay를 제공한다. 실제 recorder, desired/measured joint·object stream, controller adapter는 아직 없으므로 hardware execution replay나 real-time 완료 상태가 아니다.</div>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/e9c56c9">revision <code>e9c56c9</code></a>은 event/session 계약에 synchronized command robot, measured robot, measured object stream과 measured-layer Viser replay를 연결한다. 다만 제공된 simulation adapter는 계획 kinematics를 그대로 복사하는 plumbing fixture다. Dynamics, contact, tracking, controller와 hardware execution evidence는 없으며 실행은 계속 차단된다.</div>
 
 <h2>문제와 판단</h2>
 <table class="table">
@@ -33,14 +33,18 @@
 <li><code>RuntimeArtifactEvidence</code>가 observation, belt state, fused track, prediction, trajectory, playback, command, measured state와 outcome evidence를 통제된 type·role로 참조한다.</li>
 <li><code>RuntimeEvent</code>는 contiguous sequence, monotonic timestamp, generation, module, event type, 허용 status, duration, input/output artifact와 reason code를 가진다.</li>
 <li>각 event SHA-256은 이전 event digest를 포함한다. Session은 terminal event digest와 전체 manifest digest를 다시 검사해 순서 변경·중간 삽입·payload 변조를 거부한다.</li>
-<li><code>planned_only</code>는 commit·setpoint·feedback·contact·release event를 금지한다. <code>command_only</code>는 command가 있지만 measured feedback이 없음을 뜻한다. Feedback session은 measured robot state와 simulation/hardware evidence role이 일치해야 한다.</li>
+<li><code>planned_only</code>는 commit·setpoint·feedback·contact·release event를 금지한다. <code>command_only</code>는 command가 있지만 measured feedback이 없음을 뜻한다. Feedback session은 command robot, measured robot, measured object artifact를 정확히 하나씩 요구하며 simulation/hardware evidence role이 일치해야 한다.</li>
 <li>Published observation·belt·track·prediction, accepted query·trajectory, controller setpoint, measured state와 outcome event는 각자 요구되는 output artifact type이 없으면 실패한다.</li>
 <li><code>validate_runtime_event_session.py</code>가 hash chain과 모든 source를 검증하고, <code>serve_pick_playback.py --runtime-session</code>은 trace 모드와 상호 배타적으로 session 시간을 재생한다.</li>
+<li>Robot stream은 arm과 end effector의 named position·velocity·acceleration을 한 timestamp에 묶는다. 독립 hand stream을 두어 두 장치가 동기화된 것처럼 보이는 경로는 허용하지 않는다.</li>
+<li>Object stream은 object·stable pose·generation·SE(3) pose·physical state와 evidence basis를 기록한다. Hardware stream은 simulation ground truth를 사용할 수 없고, <code>attached</code>와 <code>contained</code>는 각각 attachment 또는 containment 근거가 필요하다.</li>
+<li>Playback request와 결과 schema 2.0은 object와 stable-pose identity를 직접 보존한다. Intercept template, motion prediction, resident atlas, runtime trace와 measured stream 중 하나라도 이 identity와 다르면 startup 또는 load 단계에서 실패한다.</li>
 </ol>
 
 <h2>Viser 시간 의미</h2>
-<p><code>RuntimeSessionTimeline</code>은 viewer startup에서 playback activation과 최대 1 ms GUI step을 계산한다. 재생 시간은 <code>event.timestamp_s - session.started_timestamp_s</code>이며 기본 1x·자동 반복이다. 현재 event는 binary search로 찾으므로 frame당 log 전체를 순회하지 않는다.</p>
-<p>선택 playback은 정확히 한 <code>diagnostic_selected</code> 또는 <code>plan_committed</code> event가 출력한 artifact여야 한다. 그 이전에는 planned mesh를 숨긴다. Feedback session이라도 현재 mesh는 계속 “selected planned playback”으로 표시하며, 측정 geometry를 생성해 내지 않는다.</p>
+<p><code>RuntimeSessionTimeline</code>은 viewer startup에서 playback activation과 최대 1 ms GUI step을 계산한다. 재생 시간은 <code>event.timestamp_s - session.started_timestamp_s</code>이며 기본 1x·자동 반복이다. 현재 event와 stream sample은 각각 binary search로 찾으므로 frame당 전체 기록을 순회하지 않는다.</p>
+<p>선택 playback은 정확히 한 <code>diagnostic_selected</code> 또는 <code>plan_committed</code> event가 출력한 artifact여야 한다. Planned·command-only mode에서는 그 event 이전 mesh를 숨긴다. Feedback mode에서는 검증된 measured arm·end-effector·object sample만 zero-order hold로 표시하고, robot/object stream의 겹치는 시간 밖에서는 geometry를 숨긴다. 측정하지 않은 중간 상태를 보간하지 않으며 planned object path도 감춘다.</p>
+<p><code>simulate_ideal_kinematic_feedback.py</code>는 이 measured 경로를 실제 장치 없이 검사하기 위해 playback의 301개 frame을 command와 measured-simulation stream으로 변환한다. Source는 <code>no-dynamics-no-contact</code>를 명시하고 object state 근거는 simulation ground truth로 제한한다. 화면에서 자연스럽게 움직여도 tracking error, contact stability, actuator response 또는 real-time 성능을 검증한 것이 아니다.</p>
 
 <h2>발생한 문제, 원인, 해결, 결과</h2>
 <table class="table">
@@ -49,21 +53,29 @@
 <tr><td>Sandbox에서 TemporaryDirectory 생성 실패</td><td>검증 process에 writable temp가 없음</td><td>승인된 격리 실행으로 test 수행</td><td>file overwrite·digest mismatch negative test 실행</td></tr>
 <tr><td>초기 helper가 매 frame 전체 session 검증</td><td>안전 검사를 조회 함수 안에 반복 배치</td><td>startup-validated <code>RuntimeSessionTimeline</code>으로 교체</td><td>render lookup을 <code>O(log N)</code>으로 제한</td></tr>
 <tr><td>Feedback 전에 abort한 run을 표현할 mode가 없음</td><td>planned 또는 feedback 두 상태만 정의</td><td><code>command_only</code>를 별도 증거 상태로 추가</td><td>명령 존재를 성공이나 측정 실행으로 오해하지 않음</td></tr>
-<tr><td>서버 bundle 첫 전송과 첫 test SSH가 reset</td><td>일시적인 원격 SSH 연결 종료</td><td>BatchMode 연결 확인 후 동일 bundle·test 재시도</td><td>source fast-forward와 34개 server test 완료</td></tr>
+<tr><td>Arm과 hand를 별도 stream으로 두면 실제 동기화 여부가 불명확함</td><td>장치별 로그 구조를 그대로 내부 계약으로 가져오려 함</td><td>arm과 end effector motion을 하나의 synchronized named state로 통합</td><td>joint identity·timestamp·source가 같은 sample에서만 measured robot을 표시</td></tr>
+<tr><td>Playback phase label을 measured object state로 재사용할 위험</td><td>object pose와 attachment·containment 근거가 분리되지 않음</td><td>physical state와 evidence basis를 typed object sample에 함께 기록하고 state transition을 제한</td><td>hardware에서 simulation ground truth를 주장하거나 vision만으로 attachment를 확정하는 record를 거부</td></tr>
+<tr><td>Playback에 stable-pose identity가 없어 다른 tabletop pose 결과를 결합할 수 있음</td><td>object ID만 결과 artifact에 남김</td><td>request·playback schema를 2.0으로 올리고 template·prediction·atlas·trace·stream을 동일 context에 결속</td><td>Pepsi <code>upside_down</code> ancestry가 generation부터 viewer까지 보존됨</td></tr>
+<tr><td>외부 JSON의 boolean timestamp와 joint value가 <code>1.0</code>으로 변환됨</td><td>Python의 <code>bool</code>이 numeric subtype이고 parser가 바로 <code>float()</code>를 호출</td><td>runtime numeric·joint parser에서 boolean과 non-finite 값을 변환 전에 거부</td><td>잘못된 최신 robot state가 online gate에 들어가는 경로 제거</td></tr>
+<tr><td>Measured stream 없이 planned frame을 feedback처럼 그릴 수 있음</td><td>event role만 확인하고 geometry source는 항상 playback을 사용</td><td>feedback mode에서 typed stream을 필수화하고 overlap 밖을 숨기는 별도 timeline 구현</td><td>planned animation과 measured replay의 시각적 권한을 분리</td></tr>
+<tr><td>서버 fast-forward와 첫 test SSH가 출력 없이 종료</td><td>일시적인 원격 SSH 호출 불완전</td><td>BatchMode와 명시적 timeout으로 HEAD와 test를 재확인</td><td>source <code>e9c56c9</code> fast-forward와 79개 server test 완료</td></tr>
 </table>
 
 <h2>검증 결과</h2>
-<p>Round-trip, write-once, event/manifest digest 변조, sequence reorder, unknown artifact, strict boolean, source·playback digest와 ID, planned/command/feedback role, required output type, exact event boundary와 activation 전후 표시를 검사했다. Runtime 집중 test 16개와 전체 compile이 통과했다.</p>
-<p>전체 planning 수집 261개 중 OpenCV 전용 import 3개를 제외한 실제 258개가 통과했다. 그 세 module은 calibration 환경에서 14개가 모두 통과해 총 272개를 확인했다. <code>junjinyong</code> 서버의 고정 planning 환경에서도 새 session과 기존 runtime·interception·conveyor 관련 34개가 통과했다.</p>
+<p>Round-trip, write-once, event/manifest digest 변조, orphan·unknown artifact, strict boolean, sample source와 joint identity, object state transition과 evidence basis, session·scene context, playback object/stable-pose ancestry, exact event boundary, measured stream overlap과 zero-order-hold를 검사했다. Grasp shortlist·yaw atlas·rolling planner까지 포함한 집중 test 79개가 로컬과 <code>junjinyong</code> 고정 planning 환경에서 각각 통과했다.</p>
+<p>전체 planning discovery는 326개 항목 중 OpenCV가 없는 planning 환경의 세 module import만 실패했고 나머지는 모두 통과했다. 그 세 module의 실제 14개 test는 calibration 환경에서 모두 통과했다. <code>git diff --check</code>, schema-2.0 playback 생성, 301-sample ideal feedback session 생성, 네 artifact의 hash/context 검증과 실제 xArm·Inspire·Pepsi·workcell asset을 사용하는 Viser 기동도 통과했다.</p>
+<p>Smoke session은 10.000001초, event 4개, artifact 4개를 기록했다. 이는 runtime evidence plumbing의 구조적 검증 결과다. Ideal measured state가 command와 동일하므로 tracking 정확도나 contact 성공률 수치로 보고하지 않는다.</p>
 
 <h2>남은 한계</h2>
 <ul>
 <li>현재 최종 session JSON은 write-once contract다. Control loop를 막지 않는 bounded queue/async recorder와 crash-safe chunk writer는 아직 없다.</li>
-<li>Desired setpoint, measured robot/hand state와 measured object pose의 stream schema와 Viser 별도 geometry layer가 없다.</li>
+<li>Typed desired/measured stream과 Viser measured layer는 구현됐지만 실제 simulator physics·controller·camera·encoder adapter가 아직 없다.</li>
 <li>Deadline miss, supersession, cutoff, watchdog와 abort의 recorded simulation fixture가 없다.</li>
+<li>Attachment와 containment의 hardware evidence schema는 개념적 basis만 정의한다. Force/tactile/vision sensor별 판정 protocol과 false-positive 측정이 필요하다.</li>
+<li>Desired와 measured trajectory를 동시에 겹쳐 tracking error를 비교하는 viewer layer와 정량 metric은 아직 없다.</li>
 <li>Event replay는 증거 시각화다. Planner·controller deadline이나 hard real-time 성능을 증명하지 않는다.</li>
 </ul>
-<p>다음 단계는 path-family/latch/cutoff 계약과 함께 closed-loop simulation의 state stream·async evidence recorder를 구현하는 것이다. 그 기록을 사용해 accelerated backend의 reference agreement, p50/p95/p99, worst case, deadline miss와 cancellation latency를 측정한다.</p>
+<p>다음 단계는 기존 path-family/latch/cutoff 계약 뒤에 물리 simulator adapter를 붙여 command와 measured state를 독립 생성하고, bounded async recorder로 deadline miss·supersession·stop까지 기록하는 것이다. 그 기록에서 desired/measured tracking error, accelerated backend의 reference agreement, p50/p95/p99, worst case와 cancellation latency를 측정한다.</p>
 
 <p><a href="realtime-conveyor-architecture.html">실시간 conveyor architecture ADR</a>과 <a href="runtime-decision-trace.html">single-generation decision trace</a>가 이 session의 상위 방향과 입력 근거다.</p>
 </main>
