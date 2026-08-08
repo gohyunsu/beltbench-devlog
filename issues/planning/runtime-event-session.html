@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Causal runtime event session과 Viser 재생 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-016 · 2026-08-08 · causal runtime evidence</div>
+<h1>계획 애니메이션과 실제로 발생한 event를 같은 것으로 보이지 않는다.</h1>
+<p class="lede">기존 runtime trace는 한 grasp-selection decision을 설명하지만 observation 도착, supersession, command와 feedback의 실제 순서를 재현하지 못했다. Ideal <code>PickPlayback</code>에서 그 event를 역으로 만들어 내지 않고, monotonic timestamp와 typed evidence를 가진 독립 session 계약과 Viser 시간축을 구현했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/1ecfa0b">revision <code>1ecfa0b</code></a>은 event/session 계약, source 검증 CLI와 planned-layer replay를 제공한다. 실제 recorder, desired/measured joint·object stream, controller adapter는 아직 없으므로 hardware execution replay나 real-time 완료 상태가 아니다.</div>
+
+<h2>문제와 판단</h2>
+<table class="table">
+<tr><th>관찰한 문제</th><th>잘못된 접근</th><th>채택한 경계</th></tr>
+<tr><td>Single-generation trace만으로 여러 observation과 cancellation의 순서를 알 수 없음</td><td>선택 playback의 phase에서 sensor/planner event를 추정</td><td>각 module이 monotonic timestamp의 typed event를 직접 기록</td></tr>
+<tr><td>파일 path나 ID만으로는 state·trajectory 변조를 검출하지 못함</td><td>viewer가 존재하는 파일이면 그대로 load</td><td>모든 외부 artifact의 type·role·content ID·SHA-256 검증</td></tr>
+<tr><td>계획 경로가 실제 명령·feedback처럼 보일 수 있음</td><td>planned frame을 measured state 대신 표시</td><td><code>planned_only</code>, <code>command_only</code>, simulation/hardware feedback을 분리</td></tr>
+<tr><td>긴 log를 매 render frame 전체 검사하면 viewer가 log 길이에 비례해 느려짐</td><td>매 frame <code>session.validate()</code>와 linear scan</td><td>startup 검증·activation 해석 후 불변 timeline에서 <code>O(log N)</code> event lookup</td></tr>
+<tr><td>선택 event 이전부터 frame zero가 보이면 causal timing이 틀림</td><td>session 시작 즉시 planned mesh 표시</td><td>선택/commit 전 arm·hand·connector·object·path를 숨기고 workcell만 표시</td></tr>
+</table>
+
+<h2>구현한 계약</h2>
+<ol>
+<li><code>RuntimeArtifactEvidence</code>가 observation, belt state, fused track, prediction, trajectory, playback, command, measured state와 outcome evidence를 통제된 type·role로 참조한다.</li>
+<li><code>RuntimeEvent</code>는 contiguous sequence, monotonic timestamp, generation, module, event type, 허용 status, duration, input/output artifact와 reason code를 가진다.</li>
+<li>각 event SHA-256은 이전 event digest를 포함한다. Session은 terminal event digest와 전체 manifest digest를 다시 검사해 순서 변경·중간 삽입·payload 변조를 거부한다.</li>
+<li><code>planned_only</code>는 commit·setpoint·feedback·contact·release event를 금지한다. <code>command_only</code>는 command가 있지만 measured feedback이 없음을 뜻한다. Feedback session은 measured robot state와 simulation/hardware evidence role이 일치해야 한다.</li>
+<li>Published observation·belt·track·prediction, accepted query·trajectory, controller setpoint, measured state와 outcome event는 각자 요구되는 output artifact type이 없으면 실패한다.</li>
+<li><code>validate_runtime_event_session.py</code>가 hash chain과 모든 source를 검증하고, <code>serve_pick_playback.py --runtime-session</code>은 trace 모드와 상호 배타적으로 session 시간을 재생한다.</li>
+</ol>
+
+<h2>Viser 시간 의미</h2>
+<p><code>RuntimeSessionTimeline</code>은 viewer startup에서 playback activation과 최대 1 ms GUI step을 계산한다. 재생 시간은 <code>event.timestamp_s - session.started_timestamp_s</code>이며 기본 1x·자동 반복이다. 현재 event는 binary search로 찾으므로 frame당 log 전체를 순회하지 않는다.</p>
+<p>선택 playback은 정확히 한 <code>diagnostic_selected</code> 또는 <code>plan_committed</code> event가 출력한 artifact여야 한다. 그 이전에는 planned mesh를 숨긴다. Feedback session이라도 현재 mesh는 계속 “selected planned playback”으로 표시하며, 측정 geometry를 생성해 내지 않는다.</p>
+
+<h2>발생한 문제, 원인, 해결, 결과</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>Base Python에서 test import 실패</td><td>Python 3.13 base에 NumPy가 없음</td><td>고정 <code>beltbench-planning</code> Python 3.10 사용</td><td>환경 오류와 구현 오류 분리</td></tr>
+<tr><td>Sandbox에서 TemporaryDirectory 생성 실패</td><td>검증 process에 writable temp가 없음</td><td>승인된 격리 실행으로 test 수행</td><td>file overwrite·digest mismatch negative test 실행</td></tr>
+<tr><td>초기 helper가 매 frame 전체 session 검증</td><td>안전 검사를 조회 함수 안에 반복 배치</td><td>startup-validated <code>RuntimeSessionTimeline</code>으로 교체</td><td>render lookup을 <code>O(log N)</code>으로 제한</td></tr>
+<tr><td>Feedback 전에 abort한 run을 표현할 mode가 없음</td><td>planned 또는 feedback 두 상태만 정의</td><td><code>command_only</code>를 별도 증거 상태로 추가</td><td>명령 존재를 성공이나 측정 실행으로 오해하지 않음</td></tr>
+<tr><td>서버 bundle 첫 전송과 첫 test SSH가 reset</td><td>일시적인 원격 SSH 연결 종료</td><td>BatchMode 연결 확인 후 동일 bundle·test 재시도</td><td>source fast-forward와 34개 server test 완료</td></tr>
+</table>
+
+<h2>검증 결과</h2>
+<p>Round-trip, write-once, event/manifest digest 변조, sequence reorder, unknown artifact, strict boolean, source·playback digest와 ID, planned/command/feedback role, required output type, exact event boundary와 activation 전후 표시를 검사했다. Runtime 집중 test 16개와 전체 compile이 통과했다.</p>
+<p>전체 planning 수집 261개 중 OpenCV 전용 import 3개를 제외한 실제 258개가 통과했다. 그 세 module은 calibration 환경에서 14개가 모두 통과해 총 272개를 확인했다. <code>junjinyong</code> 서버의 고정 planning 환경에서도 새 session과 기존 runtime·interception·conveyor 관련 34개가 통과했다.</p>
+
+<h2>남은 한계</h2>
+<ul>
+<li>현재 최종 session JSON은 write-once contract다. Control loop를 막지 않는 bounded queue/async recorder와 crash-safe chunk writer는 아직 없다.</li>
+<li>Desired setpoint, measured robot/hand state와 measured object pose의 stream schema와 Viser 별도 geometry layer가 없다.</li>
+<li>Deadline miss, supersession, cutoff, watchdog와 abort의 recorded simulation fixture가 없다.</li>
+<li>Event replay는 증거 시각화다. Planner·controller deadline이나 hard real-time 성능을 증명하지 않는다.</li>
+</ul>
+<p>다음 단계는 path-family/latch/cutoff 계약과 함께 closed-loop simulation의 state stream·async evidence recorder를 구현하는 것이다. 그 기록을 사용해 accelerated backend의 reference agreement, p50/p95/p99, worst case, deadline miss와 cancellation latency를 측정한다.</p>
+
+<p><a href="realtime-conveyor-architecture.html">실시간 conveyor architecture ADR</a>과 <a href="runtime-decision-trace.html">single-generation decision trace</a>가 이 session의 상위 방향과 입력 근거다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
