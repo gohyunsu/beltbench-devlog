@@ -16,7 +16,7 @@
 <h1>통과한 grasp만 저장하지 않고, 모든 후보가 왜 탈락했는지 재현한다.</h1>
 <p class="lede">AutoDex의 생성, simulation filter, runtime planner와 hardware 통계 순서를 pinned source에서 다시 확인하고 BeltBench의 intrinsic, deployment, shortlist 기준과 대조했다. 기존 BeltBench는 기준 자체는 더 엄격했지만 horizon coverage 또는 endpoint threshold에서 탈락한 후보를 <code>continue</code>로 버려, 최종 shortlist만으로는 어떤 기준이 후보를 제거했는지 설명할 수 없었다. 후보별 normalized hard-gate vector를 보존하는 schema 2.0 decision ledger를 구현하고, hard gate와 coverage·maximin·diversity ranking을 계약 수준에서 분리했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/9f26612c4266d64328f2e76f3b9d45e35e46c5db"><code>9f26612</code></a>이 complete candidate ledger와 schema authority 경계를 구현했고, 후속 <a href="https://github.com/gohyunsu/beltbench/commit/2962269d8f37761376e3ef73d289f9318fc22a71"><code>2962269</code></a>이 normalized horizon coverage를 redundancy maximin에 포함했다. <a href="https://github.com/gohyunsu/beltbench/commit/e3aeb7d"><code>e3aeb7d</code></a>은 0-margin penetration을 통과시킬 수 있던 unsigned FCL distance를 signed distance로 수정하고 intrinsic protocol을 revision 3으로 올렸다. 실제 Pepsi revision-3 schema-2 shortlist, continuous trajectory, hardware reliability와 controller commit 권한은 아직 없다.</div>
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/9f26612c4266d64328f2e76f3b9d45e35e46c5db"><code>9f26612</code></a>이 complete candidate ledger와 schema authority 경계를 구현했고, 후속 <a href="https://github.com/gohyunsu/beltbench/commit/2962269d8f37761376e3ef73d289f9318fc22a71"><code>2962269</code></a>이 normalized horizon coverage를 redundancy maximin에 포함했다. <a href="https://github.com/gohyunsu/beltbench/commit/e3aeb7d"><code>e3aeb7d</code></a>은 0-margin penetration을 통과시킬 수 있던 unsigned FCL distance를 signed distance로 수정하고 intrinsic protocol을 revision 3으로 올렸다. <a href="https://github.com/gohyunsu/beltbench/commit/c8da10c"><code>c8da10c</code></a>은 deployment contact semantics가 intrinsic gate를 약화하지 못하게 결속했다. 실제 Pepsi revision-3 schema-2 shortlist, continuous trajectory, hardware reliability와 controller commit 권한은 아직 없다.</div>
 
 <h2>AutoDex에서 실제로 거르는 기준</h2>
 <p>감사 기준은 cached <code>willi19/autodex-code:origin/main</code>의 exact commit <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. 로컬 checkout <code>52add68</code>은 이 ref보다 5커밋 뒤이며 사용자 작업으로 dirty하므로 수정하지 않았다. 이번 세션의 live <code>ls-remote</code>는 DNS 제한으로 실패했기 때문에 오늘 원격을 새로 확인했다고 주장하지 않고, 기존에 fetch된 checksummed commit object를 직접 읽었다.</p>
@@ -124,6 +124,16 @@
 <li>Source commit <code>e3aeb7d</code>는 GitHub main에 push했다. 수정 전 server run은 exit 0으로 보존하지만 revision-3 source와 config의 ancestry가 아니므로 새 deployment나 shortlist에 재사용하지 않는다.</li>
 <li>Revision-3 endpoint screening부터 full evaluation, yaw deployments와 schema-2 shortlist를 새 immutable run ID로 재생성해야 한다. Candidate 수는 새 chain이 끝나기 전까지 117 또는 74라고 가정하지 않는다.</li>
 </ul>
+
+<h2>추가 감사: intrinsic과 deployment contact gate 결속</h2>
+<p>기존 object-interaction config는 intrinsic endpoint가 최소 3 contact를 요구하는데 deployment에서 2 contact만 요구했다. Baseline nominal deployment의 실제 object-interaction evidence를 다시 집계하니 검사된 후보는 모두 3~5 contact였고, feasible 후보도 모두 3개 이상이었다. 즉 2-contact 완화는 계산 결과에 기여하지 않았고 ancestry만 느슨하게 만들었다.</p>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결과 결과</th></tr>
+<tr><td>Deployment semantics가 intrinsic contact definition보다 약해질 수 있음</td><td>Object ID만 비교하고 allowed hand geometry, minimum count와 contact distance를 cross-contract로 비교하지 않음</td><td>Allowed geometry set은 exact match, minimum count는 intrinsic 이상, contact-distance tolerance는 intrinsic 이하만 허용한다. 위반은 후보 rejection이 아니라 ancestry error다.</td></tr>
+<tr><td>Production object interaction이 2 contact를 허용</td><td>이전 static playback용 config가 intrinsic 3-contact protocol과 함께 갱신되지 않음</td><td>같은 named distal geometry에서 최소 3 contact로 통일했다. Baseline evidence에 2-contact feasible 후보가 없어 known survivor 보존을 위한 fallback은 아니다.</td></tr>
+<tr><td>Non-intentional object clearance의 총 gate가 불명확</td><td>Deployment base clearance 0과 shortlist residual 0.5 mm가 분리되어 문서상 절대 거리처럼 보일 수 있음</td><td>Base gate를 0.5 mm로 올리고 shortlist/atlas residual 0.5 mm를 추가해 retained endpoint의 total separation을 1 mm로 구성했다. 두 값은 독립 측정 두 개가 아니다.</td></tr>
+</table>
+<p>Allowed geometry 변경, minimum count 감소, contact-distance 증가를 각각 독립 subtest로 만들었고 모두 동일한 fail-closed ancestry 오류를 확인했다. Deployment·complete-path 소비자 54개 test와 downstream deployment·shortlist·atlas 40개 test가 통과했다. Source commit <code>c8da10c</code>은 GitHub main에 push했으며, 실행 중이던 revision-3 intrinsic run은 이 deployment-only source 변경을 입력으로 사용하지 않는다.</p>
 
 <h2>냉정한 현재 평가</h2>
 <p>이번 변경은 AutoDex보다 threshold 수를 늘린 것이 핵심이 아니다. 필터의 소유 단계, 단위, pass boundary와 탈락 근거를 분리하고 모든 worklist 후보에 대해 재현 가능하게 만든 것이 핵심이다. AutoDex의 first-success와 binary coverage는 데이터 수집과 정적 실험에는 실용적이지만 conveyor deadline, uncertainty와 moving contact를 다루는 최종 선택 규칙으로는 부족하다.</p>
