@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>실시간 conveyor interception 방향 재검토 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-015 · 2026-08-08 · architecture decision</div>
+<h1>매 frame의 전역 planning이 아니라, offline path compilation과 bounded online update로 전환한다.</h1>
+<p class="lede">현재 reference pipeline은 필터 근거와 fail-closed 동작을 검증하지만 coarse planning과 dense validation에 수백 초가 걸린다. 이를 평균적으로 빠르게 만드는 방식으로는 실시간 목표를 만족할 수 없다. Conveyor task의 제한된 운동을 명시적 runtime 가정으로 만들고, offline path family·online retain/latch/warm-start·replan cutoff·controller authority로 계산을 다시 나눴다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/b0c3c56">revision <code>b0c3c56</code></a>은 production 방향 ADR과 첫 constrained belt-state 계약을 구현한다. 실제 encoder adapter, multi-camera filter, path-family compiler, controller는 아직 없으므로 real-time 또는 hardware-ready 상태가 아니다.</div>
+
+<h2>냉정한 현재 상태</h2>
+<table class="table">
+<tr><th>현재 장점</th><th>현재 결함</th></tr>
+<tr><td>Object·stable pose·arm·hand·grasp identity가 명시적이고, intrinsic·deployment·atlas·trajectory·dense validation 권한이 분리됨</td><td>Accepted observation마다 fresh exact trajectory generation을 호출할 수 있어 작업량이 online deadline과 맞지 않음</td></tr>
+<tr><td>Yaw/horizon resident atlas lookup p95 약 1.8 ms, latest generation, measured robot start state, deadline gate가 있음</td><td>Atlas는 sampled endpoint context이며 current robot state에서의 continuous path tube나 latching 가능성을 보장하지 않음</td></tr>
+<tr><td>Nominal yaw·stale plan·first success·execution-ready fallback이 없음</td><td>Predictor가 timestamped encoder state가 아니라 scalar belt speed를 받을 수 있고 lateral/yaw residual history가 없음</td></tr>
+<tr><td>Single-generation decision trace와 playback digest 검증이 있음</td><td>Playback은 ideal candidate이며 observation·command·measured feedback을 실제 timestamp로 재현하지 않음</td></tr>
+<tr><td>CPU reference가 독립 collision/contact oracle 역할을 함</td><td>Coarse search와 dense refinement가 수백 초이므로 online backend로 사용할 수 없음</td></tr>
+</table>
+
+<h2>선행 연구에서 채택한 원리</h2>
+<table class="table">
+<tr><th>연구/도구</th><th>관찰</th><th>BeltBench 결정</th></tr>
+<tr><td><a href="https://willi19.github.io/AutoDex/">AutoDex</a></td><td>Object-relative grasp 생성·정적 filtering·실물 trial outcome 수집</td><td>Offline grasp compiler와 reliability evidence로 사용. Moving trajectory authority로 사용하지 않음</td></tr>
+<tr><td><a href="https://github.com/facebookresearch/foundpose">FoundPose</a></td><td>Single RGB image의 model-based coarse 6D pose. 공개 구현은 paper의 featuremetric refinement 미포함</td><td>초기 acquisition/relocalization 후보. High-rate temporal·multi-camera tracker로 사용하지 않음</td></tr>
+<tr><td><a href="https://github.com/NVlabs/FoundationPose">FoundationPose</a></td><td>6D estimation과 tracking을 지원하고 accelerated ROS 경로가 있음</td><td>교체 가능한 acquisition/tracking backend. Planner 입력 계약은 constrained planar fusion으로 고정</td></tr>
+<tr><td><a href="https://www.roboticsproceedings.org/rss16/p025.pdf">Constant-time conveyor planning, RSS 2020</a></td><td>Offline root path reuse, bounded latching, perception error bound, replan cutoff, static-before-cutoff 가정. 0.2 s query bound 사용</td><td>Precompiled path family·bounded query·cutoff 원리를 채택하되 아직 동일한 constant-time proof는 주장하지 않음</td></tr>
+<tr><td><a href="https://github.com/jingxixu/dynamic-grasping">Reachability/motion-aware dynamic grasping, IROS 2021</a></td><td>Reachability SDF로 grasp를 줄이고 이전 trajectory를 seed로 재사용. 예시는 pose 5 Hz와 별도 planning/ranking budget 사용</td><td>Coarse-to-fine filter, previous-plan warm start, switching hysteresis를 채택. Learned score는 독립 hard gate 없이 전이하지 않음</td></tr>
+<tr><td><a href="https://curobo.org/">cuRobo</a></td><td>GPU batch IK·collision·trajectory optimization의 낮은 평균 latency 보고</td><td>Accelerated backend 후보. 선택 GPU·workcell에서 p95/p99와 reference agreement를 측정하기 전에는 보장으로 사용하지 않음</td></tr>
+<tr><td><a href="https://moveit.picknik.ai/main/doc/examples/realtime_servo/realtime_servo_tutorial.html">MoveIt Servo</a> / <a href="https://docs.ruckig.com/tutorial.html">Ruckig</a></td><td>Servo safety 기능과 jerk-limited online state-to-state generation 제공</td><td>Controller-side correction/stop adapter 후보. Global collision-free path나 grasp timing을 대신하지 않음</td></tr>
+</table>
+
+<h2>확정한 hybrid 구조</h2>
+<ol>
+<li><strong>Offline compiler:</strong> grasp, yaw·lateral·speed·intercept cell, IK branch, path family, latch region, uncertainty-inflated path tube, hand-close timing, lift/drop/stop segment를 계산한다.</li>
+<li><strong>Startup:</strong> 모든 source를 한 번 검증하고 fixed-size atlas·path·collision field를 resident로 올리며 backend capability와 clock synchronization을 확인한다.</li>
+<li><strong>Online perception:</strong> expensive 6D method는 acquisition/recovery에 사용하고, multi-camera planar filter와 encoder가 `(x,y,yaw)`·belt phase·velocity·covariance·residual을 갱신한다.</li>
+<li><strong>Online planner:</strong> 현재 path retain, precompiled path latch, 한 번의 fixed-budget warm start 순서로만 갱신한다. Dynamic retry나 unbounded global search는 없다.</li>
+<li><strong>Commit/cutoff:</strong> cutoff 전에는 hard gate와 hysteresis를 만족할 때만 path를 바꾼다. Cutoff 후에는 prevalidated belt-direction phase correction만 허용하고 tube를 벗어나면 abort한다.</li>
+<li><strong>Controller:</strong> command generation, measured feedback, jerk/velocity limits, watchdog, stop, hand trigger를 별도 authority에서 확인한다.</li>
+<li><strong>Evidence:</strong> observation·prediction·planning·commit·setpoint·measured state·contact를 append-only timestamp event로 기록해 Viser가 실제 상대 시간에 재생한다.</li>
+</ol>
+
+<h2>R1: constrained belt state 구현</h2>
+<p><code>ConveyorMotionState</code>는 encoder-derived longitudinal position·velocity·acceleration, 3×3 covariance, calibration ID, sequence, monotonic timestamp를 갖는다. <code>FusedPlanarObjectTrack</code>은 object/stable pose identity, belt `(x,y,yaw)`, covariance, observed longitudinal/lateral velocity, yaw rate, contributing camera IDs와 camera disagreement를 갖는다.</p>
+<p><code>ConveyorTrackingPolicy</code>는 camera 수, track/state age, timestamp skew, covariance, camera disagreement, belt-speed residual, lateral slip, yaw rate, speed·acceleration, prediction horizon을 hard gate로 정의한다. <code>predict_fused_planar_conveyor_motion</code>은 gate를 모두 통과한 두 state를 timestamp 정렬하고 encoder velocity·acceleration에서 1D displacement와 covariance를 analytic하게 전파한다. Yaw와 lateral pose는 유지된다.</p>
+<p>기존 <code>predict_constant_orientation_belt_motion</code>과 <code>--belt-speed-m-s</code> 스크립트는 atlas·scenario용 offline utility로 명시했다. Runtime에서 새 계약을 우회하는 fallback으로 사용하지 않는다.</p>
+
+<h2>발생한 문제, 원인, 해결, 결과</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>Configured scalar speed가 measurement처럼 사용될 수 있음</td><td>Encoder state와 timestamp 계약이 없음</td><td>Sequence·timestamp·covariance를 가진 <code>ConveyorMotionState</code> 추가</td><td>Stale·future·reordered·mutated encoder state를 구분</td></tr>
+<tr><td>Object가 belt와 함께 움직인다는 가정이 검증되지 않음</td><td>Angular speed 하나만 검사하고 lateral/longitudinal residual이 없음</td><td>Observed velocity·yaw rate와 encoder-synchronized speed를 policy hard gate로 비교</td><td>Slip·rotation이면 general 6D fallback 없이 prediction 거부</td></tr>
+<tr><td>Multi-camera라는 이름만 있고 fusion quality 근거가 없음</td><td>Source string 외 camera identity와 disagreement가 없음</td><td>Contributing camera IDs, translation/yaw disagreement, minimum camera count 추가</td><td>단일 view 또는 view 불일치를 명시적으로 거부 가능</td></tr>
+<tr><td>Out-of-order encoder update가 최신 상태를 덮을 수 있음</td><td>Latest-value admission과 payload fingerprint 없음</td><td><code>LatestConveyorMotionState</code>가 sequence·timestamp·canonical fingerprint 검사</td><td>Older state 무시, same sequence mutation·non-increasing timestamp 오류</td></tr>
+<tr><td>Planar-to-6D covariance composition이 한 함수에 묻혀 재사용 불가</td><td>Observation→legacy moving track 변환에 직접 구현</td><td><code>compose_arm_base_object_distribution</code>으로 pose/covariance composition 분리</td><td>Legacy offline와 새 runtime predictor가 같은 transform 계산 사용</td></tr>
+</table>
+
+<h2>검증 결과</h2>
+<p>Contract round-trip, boolean-as-generation 거부, camera 수·불일치, lateral slip, yaw rate, speed residual, calibration status, timestamp skew·staleness, deterministic acceleration propagation, constant yaw/lateral pose, covariance growth, no general-motion fallback, encoder reorder/mutation을 검사했다.</p>
+<p>Planning 환경에서는 OpenCV 전용 세 module을 제외한 실제 test 249개가 통과했고, calibration 환경의 해당 14개도 통과해 총 263개를 확인했다. 관련 집중 test 34개와 전체 <code>compileall</code>, diff whitespace 검사도 통과했다. 관리형 서버 planning 환경에서 R1과 기존 runtime 관련 28개를 재실행해 모두 통과했다. GPU latency나 실제 camera/encoder throughput을 측정한 결과는 아니다.</p>
+
+<h2>남은 위험과 구현 순서</h2>
+<ul>
+<li>R1 publisher인 실제 encoder adapter와 multi-camera fuser가 없다. 현재는 contract와 deterministic predictor만 있다.</li>
+<li>Path-family deployment bundle, latch region, correction tube, replan cutoff와 hysteresis가 아직 없다.</li>
+<li>현재 sequential <code>RollingInterceptPlanner</code>는 diagnostic reference 이름과 역할을 더 명확히 분리해야 한다.</li>
+<li>Single-generation trace를 observation arrival·supersession·command·feedback event session으로 확장해야 actual-time replay가 된다.</li>
+<li>Accelerated backend는 reference false-accept 0 조건과 p50/p95/p99·worst-case·deadline miss를 측정해야 한다.</li>
+<li>Hardware 전에는 closed-loop simulation에서 jitter, bias, speed change, frame loss, saturation, abort를 검증해야 한다.</li>
+</ul>
+<p>다음 구현은 append-only runtime event session과 exact timestamp Viser replay다. 동시에 path-family contract를 설계하되, ideal animation을 실제 execution처럼 보이게 만드는 방식은 사용하지 않는다.</p>
+
+<p><a href="runtime-decision-trace.html">단일-generation runtime trace</a>와 <a href="runtime-grasp-selection.html">grasp filter 감사</a>가 이 ADR의 선행 기록이다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
