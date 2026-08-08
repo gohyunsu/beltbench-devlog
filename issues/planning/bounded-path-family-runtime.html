@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bounded path-family runtime · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap"><a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a><nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav></div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-019 · 2026-08-08 · bounded runtime update</div>
+<h1>정적 grasp 통과와 moving path 실행 가능성을 분리하고, retain → latch → one admission 순서를 고정한다.</h1>
+<p class="lede">AutoDex의 provider residual, scene collision, squeeze overlap, one-direction hold simulation, set-cover와 first-success 순서는 proposal 또는 정적 실험 근거이지 conveyor interception의 실행 기준이 아니다. Atlas를 통과한 grasp를 complete path-family로 다시 좁히고, runtime에는 fixed-size resident query와 cutoff 상태기계만 남겼다.</p>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/b84a168"><code>b84a168</code></a>은 execution-blocked R3 query boundary다. 실제 compiled path, trusted projector, warm-start solver, independently reproduced continuous report, controller commit이 없으므로 로봇 명령을 생성하지 않는다.</div>
+
+<h2>채택한 필터와 배제한 기준</h2>
+<table class="table">
+<tr><th>단계</th><th>hard gate</th><th>의도적으로 사용하지 않는 것</th></tr>
+<tr><td>Grasp intrinsic</td><td>Exact identity/provenance, contact geometry, task wrench, support·approach·closure·release evidence</td><td>Provider success, residual 순위, contact count만으로 승인</td></tr>
+<tr><td>Atlas</td><td>Measured yaw uncertainty가 덮는 모든 exact context의 candidate 교집합</td><td>Nominal yaw, 이웃 context 대여, grasp interpolation</td></tr>
+<tr><td>Path family</td><td>Lateral·speed·intercept·horizon envelope, complete phase, collision/dynamics/timing margin, reusable·stop·tracking tube source</td><td>Endpoint IK·collision 통과를 complete path로 승격</td></tr>
+<tr><td>Runtime retain</td><td>Fresh robot position·velocity·acceleration, exact execution/path/tube/report hash, 7개 numeric tracking residual, correction tube</td><td><code>inside_tube=true</code> 같은 boolean assertion, stale plan fallback</td></tr>
+<tr><td>Switch</td><td>Current-state latch + complete slack vector의 lexicographic maximin + bottleneck hysteresis</td><td>Farthest point, weighted sum, family/provider order, first success</td></tr>
+</table>
+
+<h2>구현 구조</h2>
+<ol>
+<li><code>PathFamilyRuntimeRequest</code>는 exact deployment bundle, interception episode, generation, robot motion, active execution/tracking, bounded family projection을 묶는다.</li>
+<li><code>ActivePathTrackingState</code>는 arm/hand position·velocity·acceleration과 path-time alignment residual을 reusable path, tracking tube, validation report digest에 연결한다.</li>
+<li><code>ResidentPathFamilyEvaluator</code>는 startup에 immutable family와 latch를 검증·정렬하고 runtime에는 fixed batch만 평가한다.</li>
+<li><code>PathFamilyRuntimeCoordinator</code>는 episode당 하나이며 동일 generation은 idempotent, 변조 재사용은 오류, 과거 generation은 superseded 처리한다.</li>
+<li>Cutoff 전 권고 순서는 active retain, hysteresis를 통과한 certified latch, 한 번의 fixed-budget warm-start admission이다.</li>
+<li>Cutoff 이후 grasp와 topology는 고정하고 declared correction tube 안의 active correction만 남긴다. 밖이면 stop 권고다.</li>
+</ol>
+
+<h2>발생한 문제, 원인, 해결</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>8 family 제한만으로 최악 시간이 고정되지 않음</td><td>Family당 latch, slack, projection context 수가 무제한</td><td>각 차원을 policy hard bound로 추가하고 bundle/runtime 양쪽에서 거부</td><td>최악 query work가 8 × 16 latch와 고정 metric/context 수로 제한</td></tr>
+<tr><td>Stress p95가 19.73 ms</td><td>매 query마다 startup-verified family와 phase-mismatched latch까지 full validation</td><td>Resident index를 재사용하고 path-time interval이 겹치는 latch만 joint membership 검사</td><td>로컬 p95 3.33 ms, p99 3.88 ms, max 4.27 ms</td></tr>
+<tr><td>Tracking residual의 기준 source가 없음</td><td>Reusable path와 validation report만 hash하고 별도 tracking tube를 누락</td><td><code>tracking_tube_file</code>을 family schema·source verifier·active state에 연결</td><td>Numeric ratio가 exact tube artifact와 교차 검증됨</td></tr>
+<tr><td>Warm-start count가 실제 solver attempt처럼 보임</td><td>Coordinator가 solver를 실행하지 않고 admission만 발행</td><td><code>warm_start_admission_count</code>로 명명하고 deadline/query-budget 취소 시 소진하지 않음</td><td>Admission과 실행 evidence를 분리</td></tr>
+<tr><td>5 ms 예시 budget의 jitter margin 부족</td><td>로컬 synthetic 최대 4.27 ms로 gate에 지나치게 근접</td><td>예시 hard budget을 10 ms로 설정하고 실제 배포 측정 전 재조정 금지</td><td>junjinyong 최대 5.50 ms에서도 fail-closed margin 유지</td></tr>
+<tr><td>첫 server test SSH가 output 없이 255 종료</td><td>일시적 SSH session 단절</td><td>Revision과 fixed Python을 별도 확인 후 새 session에서 동일 test 재실행</td><td><code>b84a168</code>, Python 3.10.20, 관련 54개 통과</td></tr>
+</table>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Retain, switch hysteresis, failed tracking → latch, warm admission 1회, unsupported context, cutoff freeze, bounded correction, stale/deadline/query budget, generation mutation·supersession을 독립 검사했다.</li>
+<li>Local 관련 path-family·robot-motion·atlas·runtime 54개와 junjinyong 동일 54개가 통과했다.</li>
+<li>Planning discovery 288개 중 OpenCV 전용 import 3개를 제외한 285개, calibration 환경 14개, 총 299개가 통과했다.</li>
+<li>junjinyong policy-limit 8-family × 16-latch, 500 query는 p50 3.31 ms, p95 3.63 ms, p99 3.72 ms, maximum 5.50 ms였다.</li>
+</ul>
+
+<h2>아직 실행할 수 없는 이유</h2>
+<p>현재 family와 runtime request는 fixture뿐이며 실제 compiler output이 아니다. Fused <code>ConveyorMotionState</code>·<code>FusedPlanarObjectTrack</code>·calibration·prediction에서 각 family projection과 correction을 계산하는 trusted projector가 없다. Warm start는 admission만 있고 solver와 independent continuous validator가 없다. Tracking tube report 자체도 독립 재현되지 않았고 controller capability·dispatch·watchdog 계약도 없다.</p>
+<p>다음 구현은 request를 수기로 채우는 fallback이 아니라 trusted projector와 measured state stream을 먼저 연결해야 한다. 그 뒤 warm-start backend agreement와 closed-loop simulation을 추가한다. 이 순서를 건너뛰면 현재 빠른 resident query는 실제 시스템의 latency나 안전성을 증명하지 못한다.</p>
+<p><a href="path-family-deployment-bundle.html">Execution-blocked path-family bundle</a>이 offline 입력 경계이고, <a href="realtime-conveyor-architecture.html">real-time architecture ADR</a>이 전체 권한 순서를 정의한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
