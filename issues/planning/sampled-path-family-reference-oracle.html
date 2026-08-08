@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sampled path-family reference oracle · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-025 · 2026-08-09 · sampled path oracle</div>
+<h1>AutoDex의 정적 grasp filter를 moving path hard gate로 확장하되, 실제 sampled 계산과 원본 경로를 분리하지 않는다.</h1>
+<p class="lede">이전 단계는 path-family compiler가 요구할 metric 계약을 정의했지만 실제 값을 계산하는 reference producer는 없었다. 기존 301-frame playback validator도 robot collision을 하나의 최소 거리로 합치고 dynamics, singularity, correction grid와 cutoff stop을 제공하지 않았다. AutoDex 선택 기준과 BeltBench 채택 기준을 다시 대조한 뒤, arm·hand 이름에 독립적인 task/stop path 계약과 13-metric sampled oracle, transitive source verification을 구현했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/f22a6a24ca19932af707dff9af96e1ff0fdcae96"><code>f22a6a2</code></a>가 구현한다. 이 결과는 offline <code>sampled_reference</code>이고 항상 실행 차단 상태다. 실제 Pepsi/xArm/Inspire path-family assessment, continuous swept collision, controller authority는 아직 없다.</div>
+
+<h2>AutoDex 선택 기준 재검토</h2>
+<p>감사 기준은 계속 <code>willi19/autodex-code:main</code>의 <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. <code>gohyunsu/autodex-code:main</code>의 사이트 history나 저장소 이름을 알고리즘 근거로 사용하지 않았다.</p>
+<table class="table">
+<tr><th>AutoDex 단계</th><th>확인한 실제 rule</th><th>이번 결정</th></tr>
+<tr><td>BODex proposal</td><td>Optimizer feasibility와 grasp/distance residual threshold, residual order</td><td>생성 provenance로만 보존한다. 독립 검증 metric이나 moving 안전 margin으로 승격하지 않는다.</td></tr>
+<tr><td>Simulation filter</td><td>한 pregrasp endpoint의 hand/world·self sphere collision과 zero activation distance</td><td>충돌 검사 개념은 유지하되 named geometry, 양의 threshold와 path frame 전체의 독립 category로 대체한다.</td></tr>
+<tr><td>Squeeze/hold</td><td>Extrapolated hand sphere/object overlap과 고정 0.1 kg·한 gravity 방향의 MuJoCo hold</td><td>Named intended contact, 비의도 접촉, task wrench와 hardware reliability를 별도 gate로 둔다.</td></tr>
+<tr><td>Coverage order</td><td>Binary scene survivor의 greedy set cover</td><td>모든 hard gate 뒤의 bounded portfolio 다양성에만 사용한다. Clearance·timing 실패를 coverage로 보상하지 않는다.</td></tr>
+<tr><td>Runtime plan</td><td>Coverage 순서, endpoint collision, fixed-start IK, 3 cm lift IK 뒤 첫 trajectory 성공</td><td>Latest robot state, complete moving path, dynamics, singularity, deadline, stop path를 추가하고 maximin slack으로 비교한다.</td></tr>
+</table>
+
+<h2>BeltBench가 실제 채택한 filtering 순서</h2>
+<ol>
+<li>Source, object, stable pose, hand, task와 command identity가 맞는 proposal만 import한다.</li>
+<li>Arm-independent intrinsic 단계에서 named contact 수·침투, non-contact/self/support clearance, signed force·moment wrench, approach·closure·release를 hard-gate한다.</li>
+<li>Deployment 단계에서 선택한 arm·hand·connector·workcell의 IK, self, arm/hand assembly, workcell, non-intentional object clearance와 joint/singularity margin을 검사한다.</li>
+<li>Atlas는 측정 yaw uncertainty와 horizon을 지지하는 모든 cell의 grasp 교집합만 bounded prefilter로 반환한다.</li>
+<li>Path-family는 complete phase, fixed hand/contact schedule, named dynamics, correction cell, task path와 cutoff stop path를 검사한다.</li>
+<li>Runtime은 fresh track·encoder·robot state, support, correction, cutoff와 deadline을 다시 검사한다. 모든 hard gate 뒤에만 normalized slack의 lexicographic maximin을 적용한다.</li>
+<li>Moving hardware reliability, controller capability와 watchdog가 없으므로 physical commit은 계속 별도 미구현 경계다.</li>
+</ol>
+
+<h2>발견한 문제와 원인</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>위험</th></tr>
+<tr><td>Compiler가 받을 실제 metric producer 부재</td><td>계약과 fixture validator result까지만 존재</td><td>임의 수치를 채운 결과도 구조상 compiler 입력처럼 보일 수 있음</td></tr>
+<tr><td>Robot collision minimum 하나로 요약</td><td>기존 playback report가 raw pair category를 보존하지 않음</td><td>Self, arm/hand assembly, workcell 중 무엇이 실패했는지와 각 margin을 재현할 수 없음</td></tr>
+<tr><td>Workcell obstacle의 암묵적 복구 시도</td><td>Checker 내부에 원본 obstacle이 남아 있을 것이라고 가정</td><td>FCL geometry로 변환된 private state와 source-bound scene이 달라질 수 있음</td></tr>
+<tr><td>Controller motion limit source 누락</td><td>URDF position limit와 controller dynamics limit를 같은 것으로 취급</td><td>Velocity·acceleration·jerk와 stop tolerance를 특정 robot default로 추론할 위험</td></tr>
+<tr><td><code>PickPlayback</code>만으로 stop 표현</td><td>Playback은 complete pickup을 강제</td><td>Contact 전 cutoff에서 attachment 없이 멈추는 emergency path를 표현할 수 없음</td></tr>
+<tr><td>Assessment에서 원본 path 위치 소실</td><td>Path ID와 canonical digest만 남기고 reference를 저장하지 않음</td><td>Startup에서 metric을 만든 task/stop 파일을 찾고 다시 hash할 수 없음</td></tr>
+<tr><td>Compiler 변환 시 correction cell 재검사 누락</td><td>Accepted boolean과 plan digest만 신뢰</td><td>필수 axis boundary가 빠진 assessment를 다른 result로 splice할 가능성</td></tr>
+</table>
+
+<h2>구현한 방법</h2>
+<ul>
+<li><code>RobotMotionLimitProfile</code>은 arm과 end effector의 임의 named joint에 SI position unit, lower/upper position, maximum velocity·acceleration·jerk를 선언한다. Stop duration, splice velocity·acceleration 오차, terminal velocity·acceleration tolerance와 <code>draft/manufacturer/measured</code> authority도 source와 함께 기록한다.</li>
+<li><code>SampledRobotObjectPath</code>는 특정 joint 수나 xArm/Inspire 이름 없이 task와 stop을 모두 표현한다. Strict time, 고정 joint order와 object-state transition을 검사하며 stop은 pickup을 강제하지 않는다.</li>
+<li>Task playback adapter는 명시적으로 arm, end effector와 task mode를 받아 기존 playback을 generic task path로 변환한다. Emergency stop은 별도 path로 생성해야 한다.</li>
+<li>Correction design은 nominal 한 cell과 longitudinal, timing, lateral, yaw, belt-speed residual 5축 각각의 양·음 boundary를 요구한다. 최소 11개 cell이며 full Cartesian grid나 continuous tube라고 부르지 않는다.</li>
+<li>Reference oracle은 raw collision pair를 self, assembly, workcell로 분류하고 robot/object query에서 intended hand contact를 제외한 non-intentional clearance를 별도로 계산한다. Exact workcell obstacle tuple은 checker 내부에서 찾지 않고 호출자가 명시적으로 전달한다.</li>
+<li>비균일 sample time에서 joint velocity, acceleration, jerk를 계산하고 각 named limit의 residual ratio를 취한다. Arm Jacobian은 joint range와 characteristic length로 단위를 맞춘 최소 singular value를 계산한다.</li>
+<li>Stop path는 replan cutoff의 exact robot/object state에서 시작하고 task derivative history와 splice continuity, 최대 정지 시간, terminal velocity·acceleration, 계속 이동하는 conveyor object, 충돌과 dynamics를 모두 검사한다.</li>
+<li>13개 sampled metric은 policy의 observed margin, required margin, unit와 capability를 그대로 보존한다. <code>correction_support</code>와 <code>stop_path</code>는 cell 통과 비율이며 일반적으로 1.0 hard gate다.</li>
+</ul>
+
+<h2>Source binding과 schema 변경</h2>
+<ul>
+<li>Bundle source에는 <code>arm_collision_semantics</code>, <code>assembly_collision_semantics</code>, <code>object_interaction_semantics</code>, <code>motion_limits</code>를 추가했다. Bundle schema는 <code>5.0</code>이다.</li>
+<li>Validation report schema는 <code>3.0</code>이다. Validator source뿐 아니라 assessment reference/hash, exact sampled plan hash와 complete deployment-context hash를 보존한다.</li>
+<li>각 assessment cell은 write-once task/stop path reference와 실제 serialized file SHA-256을 보존한다. In-memory path와 declared digest가 다르면 oracle 실행 전 거부한다.</li>
+<li>Startup verifier는 report와 assessment를 다시 hash한 뒤 22개 transitive path를 모두 reload한다. Cell ID·좌표·reference uniqueness, 11개 필수 axis cell, frame count, task/stop role, arm·hand·object·stable pose·task identity, motion-limit profile ID·authority와 calibration ID를 bundle과 다시 비교한다.</li>
+<li>Compiled family에서 original plan digest를, bundle에서 deployment context digest를 독립적으로 다시 계산한다. Report 파일 hash만 바꿔 다른 assessment를 붙이는 방식은 실패한다.</li>
+</ul>
+
+<h2>발생한 문제, 원인, 해결과 결과</h2>
+<table class="table">
+<tr><th>실제 구현 문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>Combined checker에 <code>obstacles</code> public property가 없음</td><td>Private FCL object를 원본 <code>PrimitiveObstacle</code>로 오인</td><td>Oracle API가 source-bound obstacle tuple을 필수 인자로 받도록 변경</td><td>숨은 fallback 없이 scene source가 명확해짐</td></tr>
+<tr><td>Path hash와 JSON file hash가 달랐음</td><td>Canonical compact payload hash와 pretty-printed write format을 혼용</td><td>Path/assessment text serializer를 하나로 고정하고 그 exact bytes를 hash</td><td>Startup file verification과 producer digest가 일치</td></tr>
+<tr><td>좌표를 바꾼 negative test가 metric 단계 전에 실패</td><td>Source digest가 먼저 변조를 정확히 감지</td><td>변조 path의 새 digest를 명시적으로 갱신한 별도 test로 coordinate mismatch gate를 평가</td><td>Source tamper와 geometric mismatch가 서로 다른 경계에서 모두 fail-closed</td></tr>
+<tr><td>Planning 환경의 전체 discovery에 OpenCV 없음</td><td>Planning lock과 calibration lock을 분리</td><td>동일 3개 module을 calibration environment에서 별도 실행</td><td>Code regression과 환경 import 오류를 구분</td></tr>
+<tr><td>SSH 첫 연결 reset</td><td>서버 네트워크의 일시적 reset</td><td><code>ConnectTimeout=15</code>로 재시도하고 incremental Git bundle로 fast-forward</td><td>서버가 exact source commit을 재현하고 기존 BODex build를 보존</td></tr>
+</table>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Robot-name-neutral fixture는 11개 correction cell의 task 12 frame과 stop 4 frame, 총 176 frame을 평가한다.</li>
+<li>누락 axis cell, correction pose 불일치, robot/object penetration, altered plan/context, mutated assessment와 mutated transitive path를 모두 거부한다.</li>
+<li>Local 변경 집중 test 32개가 통과했다. Full planning discovery는 385개 중 382개가 통과했고 <code>cv2</code> import 3건만 실패했다.</li>
+<li>Local calibration environment에서 해당 module의 실제 test 14개가 모두 통과했다. 중복 import 오류를 제외한 총 실제 통과 수는 396개다.</li>
+<li><code>junjinyong</code> server의 source HEAD는 <code>f22a6a2</code>다. 집중 test 32개가 2.568초에 통과했고 전체 385개 중 382개가 38.870초에 통과했다. 실패는 동일한 <code>cv2</code> import 3건이다.</li>
+<li>서버의 untracked BODex build 두 directory와 native Coal extension은 삭제하거나 수정하지 않았다.</li>
+</ul>
+
+<h2>냉정한 현재 평가</h2>
+<p>이번 구현은 임의 metric을 입력하는 compiler 앞에 실제 sampled 계산과 transitive path provenance를 세웠다는 점에서 필요하다. 그러나 11개 axis cell은 correction corner interaction을 놓칠 수 있고 frame sampling 사이 충돌을 보장하지 않는다. Finite difference는 controller가 실제 실행할 interpolation과 동일하다는 보장도 없다. Draft motion limit은 제조사 또는 측정 controller limit으로 교체되기 전 승인값이 아니다.</p>
+<p>또한 이 oracle은 offline correctness authority라서 interception deadline 안에서 실행할 대상이 아니다. Real-time 경로는 verified resident atlas/path family, bounded retain/latch와 최대 한 번의 warm start를 사용해야 한다. 가속 collision/dynamics backend는 이 oracle과 zero false-accept 비교를 통과한 뒤에만 online validator 후보가 될 수 있다.</p>
+
+<h2>다음 구현</h2>
+<ol>
+<li>현재 historical playback에서 cutoff 이전 state를 사용해 물리적으로 타당한 braking stop path를 별도 생성한다. Manufacturer/controller-sourced xArm·Inspire motion profile 없이는 실제 assessment를 만들지 않는다.</li>
+<li>Nominal과 axis boundary 이후 correction corner를 adaptive하게 추가하고, failure surface 근처를 우선 탐색한다. 그래도 sampled 결과는 continuous로 승격하지 않는다.</li>
+<li>Pinocchio/HPP-FCL reference 결과와 GPU collision backend의 pair별 distance·gate decision을 비교한다. False accept가 하나라도 있으면 online 후보에서 제외한다.</li>
+<li>Continuous segment collision과 controller interpolation/dynamics를 검증하는 별도 backend를 구현하고 report scope를 <code>continuous_path_tube</code>로 유지한다.</li>
+<li>Measured calibration, connector metrology, supervised static/moving trials와 controller watchdog가 준비될 때까지 execution authority를 추가하지 않는다.</li>
+</ol>
+<p><a href="path-family-metric-evidence-and-sampled-compiler.html">Metric/compiler 계약</a>, <a href="runtime-grasp-selection.html">AutoDex selection authority 감사</a>, <a href="realtime-conveyor-architecture.html">실시간 아키텍처 결정</a>이 각각 앞 단계 근거를 설명한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
