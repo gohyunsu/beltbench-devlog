@@ -16,7 +16,7 @@
 <h1>통과한 grasp만 저장하지 않고, 모든 후보가 왜 탈락했는지 재현한다.</h1>
 <p class="lede">AutoDex의 생성, simulation filter, runtime planner와 hardware 통계 순서를 pinned source에서 다시 확인하고 BeltBench의 intrinsic, deployment, shortlist 기준과 대조했다. 기존 BeltBench는 기준 자체는 더 엄격했지만 horizon coverage 또는 endpoint threshold에서 탈락한 후보를 <code>continue</code>로 버려, 최종 shortlist만으로는 어떤 기준이 후보를 제거했는지 설명할 수 없었다. 후보별 normalized hard-gate vector를 보존하는 schema 2.0 decision ledger를 구현하고, hard gate와 coverage·maximin·diversity ranking을 계약 수준에서 분리했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/9f26612c4266d64328f2e76f3b9d45e35e46c5db"><code>9f26612</code></a>이 complete candidate ledger와 schema authority 경계를 구현했고, 후속 <a href="https://github.com/gohyunsu/beltbench/commit/2962269d8f37761376e3ef73d289f9318fc22a71"><code>2962269</code></a>이 normalized horizon coverage를 redundancy maximin에 포함했다. 이는 offline diagnostic selection의 추적성을 높인 변경이다. 실제 Pepsi schema-2 shortlist, continuous trajectory, hardware reliability와 controller commit 권한은 아직 없다.</div>
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/9f26612c4266d64328f2e76f3b9d45e35e46c5db"><code>9f26612</code></a>이 complete candidate ledger와 schema authority 경계를 구현했고, 후속 <a href="https://github.com/gohyunsu/beltbench/commit/2962269d8f37761376e3ef73d289f9318fc22a71"><code>2962269</code></a>이 normalized horizon coverage를 redundancy maximin에 포함했다. <a href="https://github.com/gohyunsu/beltbench/commit/e3aeb7d"><code>e3aeb7d</code></a>은 0-margin penetration을 통과시킬 수 있던 unsigned FCL distance를 signed distance로 수정하고 intrinsic protocol을 revision 3으로 올렸다. 실제 Pepsi revision-3 schema-2 shortlist, continuous trajectory, hardware reliability와 controller commit 권한은 아직 없다.</div>
 
 <h2>AutoDex에서 실제로 거르는 기준</h2>
 <p>감사 기준은 cached <code>willi19/autodex-code:origin/main</code>의 exact commit <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. 로컬 checkout <code>52add68</code>은 이 ref보다 5커밋 뒤이며 사용자 작업으로 dirty하므로 수정하지 않았다. 이번 세션의 live <code>ls-remote</code>는 DNS 제한으로 실패했기 때문에 오늘 원격을 새로 확인했다고 주장하지 않고, 기존에 fetch된 checksummed commit object를 직접 읽었다.</p>
@@ -100,6 +100,29 @@
 <li><code>git diff --check</code>, 88자 초과 audit와 수정 Python 5개 AST parse가 통과했다.</li>
 <li>Server는 ledger commit에서 shortlist 16개, 전체 discovery 388개 중 385개를 통과했다. 실패는 local과 같은 <code>cv2</code> import 3건이며 서버에는 별도 calibration env가 없다.</li>
 <li>후속 coverage commit의 server shortlist test 17개가 1.989초에 통과했다. Server main은 exact <code>2962269</code>이며 기존 BODex build 두 디렉터리와 compiled <code>.so</code>만 untracked로 보존됐다.</li>
+</ul>
+
+<h2>추가 감사: zero-margin collision의 의미</h2>
+<div class="callout warn"><strong>새로 발견한 결함:</strong> checked pair의 clearance threshold가 0이면 기존 공통 FCL adapter가 관통 상태도 unsigned distance 0으로 반환할 수 있었고, 계약의 <code>distance &gt;= required_clearance</code>가 이를 통과시킬 수 있었다. 따라서 이전의 117 geometry-clear 수는 재현 가능하지만 current authority가 아닌 baseline이다.</div>
+<table class="table">
+<tr><th>구분</th><th>내용</th></tr>
+<tr><td>문제</td><td>Intrinsic hand self와 assembly hand-self/cross pair 중 일부가 zero clearance를 사용했다. 실제 overlap과 정확한 접촉을 unsigned distance 0에서 구분하지 못했다.</td></tr>
+<tr><td>원인</td><td><code>_distance_evidence()</code>가 default <code>hppfcl.DistanceRequest()</code>를 사용했고, <code>CollisionPairEvidence</code>는 거리와 threshold만으로 pass 여부를 재구성했다.</td></tr>
+<tr><td>해결</td><td>공통 collision과 proximity distance query 모두 <code>enable_signed_distance=true</code>를 사용한다. Penetration은 음수 거리이므로 threshold가 0이어도 fail closed한다. Intentional contact는 zero threshold가 아니라 explicit allowed-pair 또는 object-interaction semantics가 소유한다.</td></tr>
+<tr><td>회귀 검증</td><td>실제로 겹치는 sphere obstacle을 clearance 0으로 구성한 test가 음수 pair를 확인하고 전체 collision check가 실패하는지 검증한다.</td></tr>
+</table>
+
+<h3>Threshold를 임의로 정하지 않은 근거</h3>
+<p>수정 전 commit의 immutable full evaluation을 서버에서 다시 생성하고 10,313개 direct/transitive source를 verifier로 확인했다. 140개 full-path 평가 중 117개가 기존 geometry-clear 정의를 통과했다. 그 117개의 최소 closure non-contact distance는 1.013 mm, 최소 approach/closure self-distance는 1.075 mm였다. Fixed release command는 모든 후보에서 더 좁은 0.221 mm self-distance를 만들었다.</p>
+<p>따라서 <code>draft-2026-08-09.1</code>은 closure non-contact gate를 1 mm, checked hand self gate를 provisional 0.1 mm로 둔다. 전자는 기존 geometry-clear 후보를 보존하려고 낮춘 값이 아니라 이전 gate와 실제 최솟값 사이에서 확인된 양의 경계다. 후자는 release CAD가 허용하는 범위 안에서 penetration과 zero-touch를 분리하는 진단값이다. 어느 값도 hardware 공차가 아니며 connector 조립오차, 실제 hand link 간격과 compliance를 측정하기 전에는 protocol status를 <code>approved</code>로 바꿀 수 없다.</p>
+
+<h3>수정 후 검증과 artifact 상태</h3>
+<ul>
+<li>Collision, intrinsic, deployment, shortlist, atlas 영향 테스트 62개가 모두 통과했다.</li>
+<li>Planning discovery는 390개 중 실제 387개가 통과했고, 남은 3개는 해당 환경에 <code>cv2</code>가 없는 import placeholder다.</li>
+<li>그 세 OpenCV module의 실제 14개 test가 calibration 환경에서 모두 통과했다. 중복 placeholder를 제외한 실제 동작 test는 총 401개다.</li>
+<li>Source commit <code>e3aeb7d</code>는 GitHub main에 push했다. 수정 전 server run은 exit 0으로 보존하지만 revision-3 source와 config의 ancestry가 아니므로 새 deployment나 shortlist에 재사용하지 않는다.</li>
+<li>Revision-3 endpoint screening부터 full evaluation, yaw deployments와 schema-2 shortlist를 새 immutable run ID로 재생성해야 한다. Candidate 수는 새 chain이 끝나기 전까지 117 또는 74라고 가정하지 않는다.</li>
 </ul>
 
 <h2>냉정한 현재 평가</h2>
