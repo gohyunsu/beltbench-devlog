@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bounded warm-start boundary · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap"><a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a><nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav></div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-021 · 2026-08-08 · bounded warm start</div>
+<h1>Warm-start admission과 실행 가능한 trajectory 사이에 측정 가능한 검증 경계를 둔다.</h1>
+<p class="lede">AutoDex의 grasp filtering은 proposal과 정적 배치 적합성을 줄이는 근거다. BeltBench에서는 이 결과를 moving command로 승격하지 않고, 정확한 fused-track projection과 robot motion state를 한 번의 bounded solver 입력으로 묶은 뒤 별도 validator가 전체 path와 stop path를 다시 통과해야만 다음 controller 경계로 전달하도록 했다.</p>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/90eba81"><code>90eba81</code></a>이 generic warm-start admission, backend descriptor, bounded runner와 independent-validation 계약을 구현한다. 실제 accelerated solver, validator와 controller commit은 없으므로 모든 결과는 <code>execution_blocked=True</code>다.</div>
+
+<h2>AutoDex filter 재검토 결론</h2>
+<p>기준 source는 <code>willi19/autodex-code</code>의 <code>main</code>, commit <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. 다시 확인한 결과 provider residual, sampled pregrasp sphere, squeeze overlap, 단일 gravity hold, scene set cover, first-success runtime planning 중 어느 하나도 conveyor moving grasp의 최종 승인 기준으로 사용할 수 없다.</p>
+<table class="table">
+<tr><th>분류</th><th>채택 여부</th><th>BeltBench 기준</th></tr>
+<tr><td>Generator convergence와 provider rank</td><td>Provenance로만 보존</td><td>Proposal을 만든 출처이며 선택 점수나 execution authority가 아니다.</td></tr>
+<tr><td>Pregrasp collision</td><td>의도만 채택</td><td>Sampled zero-margin sphere 대신 named assembly와 continuous swept path의 positive normalized margin을 요구한다.</td></tr>
+<tr><td>Squeeze overlap</td><td>승인 기준에서 제외</td><td>Named contact, allowed penetration, non-contact clearance와 signed force·moment resistance로 교체한다.</td></tr>
+<tr><td>Static gravity hold</td><td>선택적 diagnostic</td><td>질량·마찰·방향 변화, closing timing과 moving contact를 독립 path validator에서 검사한다.</td></tr>
+<tr><td>Set cover와 first success</td><td>Hard gate 뒤 bounded coverage만 허용</td><td>후보 수나 탐색 순서는 collision, dynamics, singularity, timing 실패를 보상하지 못한다.</td></tr>
+<tr><td>Runtime IK·collision·planning</td><td>필수지만 불충분</td><td>Fresh state, uncertainty, fixed schedule, cutoff, stop path, 독립 검증과 controller acceptance를 추가한다.</td></tr>
+</table>
+
+<h2>채택한 선택·거부 순서</h2>
+<ol>
+<li>Object, stable pose, arm, end effector, connector, workcell, calibration과 모든 source checksum의 exact identity를 요구한다.</li>
+<li>Arm-independent intrinsic 단계에서 named contact, penetration, non-contact·self·support clearance, signed force·moment wrench, approach·closure·release를 hard gate로 사용한다.</li>
+<li>Deployment atlas에서는 측정 yaw uncertainty와 continuous intercept horizon이 걸치는 모든 yaw × horizon cell의 grasp 교집합만 남긴다.</li>
+<li>Path-family 단계에서 lateral·speed·intercept·horizon support, complete phases, joint dynamics, collision, singularity, timing, latch, correction과 stop evidence를 요구한다.</li>
+<li>Runtime은 fresh fused track·encoder·calibration과 named robot position·velocity·acceleration을 사용해 retain → certified latch → 한 번의 bounded warm start 순서만 허용한다.</li>
+<li>모든 hard gate 뒤에만 전체 normalized-slack vector의 lexicographic maximin을 적용하고 switch에는 bottleneck hysteresis를 추가한다.</li>
+</ol>
+
+<h2>발생한 문제, 원인, 해결</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td><code>warm_start_required</code>가 실제 solve처럼 읽힐 수 있음</td><td>Coordinator admission과 backend result 계약이 분리되지 않음</td><td><code>PathFamilyWarmStartAdmission</code>, <code>WarmStartCandidateOutput</code>, <code>PathFamilyWarmStartResult</code>를 분리</td><td>Admission, backend-native output, trusted measured result의 권한이 구분됨</td></tr>
+<tr><td>Caller가 같은 ID의 다른 projection이나 evaluation을 끼울 수 있음</td><td>Request, trusted batch와 decision의 evaluated projection을 모두 대조하지 않음</td><td><code>build_trusted_warm_start_admission</code>이 batch partition, exact projection, selected evaluation, request generation과 robot state를 교차 검증</td><td>Request/batch/decision splicing이 solver 입력 전에 거부됨</td></tr>
+<tr><td>Runtime generation과 perception track generation을 같은 값으로 오인할 위험</td><td>두 generation의 causal 역할이 문서와 계약에서 분리되지 않음</td><td>Admission에 runtime generation과 projection의 source-track generation을 별도 identity로 보존</td><td>새 observation과 새 planning request의 순서를 독립적으로 추적함</td></tr>
+<tr><td>Request deadline은 남았지만 family cutoff가 지난 뒤 solve가 끝날 수 있음</td><td>Warm-start budget을 외부 commit deadline에만 비교</td><td>Effective deadline을 <code>min(request deadline, path start + replan cutoff)</code>로 단일화</td><td>Topology freeze 전에 solver와 validation이 모두 끝나지 못하는 후보는 사전 거부됨</td></tr>
+<tr><td>Dispatch 지연이 validation 시간을 잠식해도 backend를 호출</td><td>Runner가 시작 시점과 solver 완료 시점에 validation reserve를 다시 확인하지 않음</td><td>호출 전과 반환 후 모두 독립 검증 worst-case budget을 남기지 못하면 artifact 없이 deadline failure로 전환</td><td>이미 늦은 expensive solve를 피하고 late trajectory가 다음 단계로 새지 않음</td></tr>
+<tr><td>Validator가 capability 이름만 모두 선언하고 margin 하나만 낼 수 있음</td><td>Accepted 상태가 complete normalized metric set을 요구하지 않음</td><td>13개 필수 metric ID와 15개 validation capability, 모두 1 이상인 normalized slack을 강제</td><td>Generic score 하나가 빠진 collision·dynamics·timing gate를 숨길 수 없음</td></tr>
+<tr><td>Backend waypoint 상한 초과가 wrapper 밖 예외로 남음</td><td>Native output 자체 형식과 backend descriptor 한도를 다른 시점에 검사</td><td>Runner 내부에서 상한을 검사하고 malformed output과 함께 artifact-free <code>backend_error</code>로 정규화</td><td>Backend 구현 오류가 trajectory reference를 남기지 않음</td></tr>
+<tr><td>직접 생성한 계약에 <code>NaN</code>이나 boolean integer가 들어갈 수 있음</td><td>Deserializer만 numeric type을 엄격히 확인하고 dataclass 직접 경로는 비교식에 의존</td><td>Admission, descriptor, result와 validation의 string·integer·finite-time 검증을 직접 경로에도 적용</td><td>직렬화 우회 입력도 fail-closed로 거부됨</td></tr>
+</table>
+
+<h2>모듈 경계</h2>
+<ul>
+<li><code>beltbench/contracts/path_family_warm_start.py</code>: backend capability, exact admission, measured result, independent validation과 acceptance diagnostic을 정의한다.</li>
+<li><code>beltbench/planning/path_family_warm_start.py</code>: trusted admission builder와 interception-scoped one-shot runner만 소유하며 특정 arm, hand, solver 이름을 하드코딩하지 않는다.</li>
+<li><code>beltbench/planning/path_family_runtime.py</code>: maximin 순서에서 solver+validator 예산이 effective deadline 안에 드는 첫 family만 한 번 admission한다.</li>
+<li><code>config/planning/path-family-deployment-policy.example.json</code>: solver 20 ms와 independent validation 10 ms를 별도 draft budget으로 둔다.</li>
+</ul>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Trusted batch/decision splicing, generation 분리, cutoff 우선 deadline, one-shot admission, backend exception·waypoint 초과, dispatch 지연, late artifact 제거, digest binding, complete margin vector와 validation budget을 테스트했다.</li>
+<li>관련 path-family·projection·runtime·atlas·tracking 61개가 local과 <code>junjinyong</code> planning 환경에서 각각 통과했다.</li>
+<li>Local planning discovery 307개 중 OpenCV import 전용 3개를 제외한 304개와 calibration 환경 14개, 실제 총 318개가 통과했다.</li>
+<li>Server source는 <code>90eba81</code>이며 기존 untracked BODex build directory와 native library는 수정하거나 삭제하지 않았다.</li>
+</ul>
+
+<h2>남은 위험과 다음 구현</h2>
+<p>현재 backend는 deterministic test fixture뿐이다. Synchronous Python 호출은 blocking solver를 중간에 취소하지 못하고 늦게 반환된 결과만 폐기한다. 실제 control loop에 넣기 전에는 GPU warm-start solver와 별도 continuous validator를 nonblocking process 또는 worker boundary로 구현하고, cancellation latency를 측정해야 한다.</p>
+<p>또한 trajectory·stop-path artifact를 runtime session이 직접 저장하고 다시 SHA-256으로 검증해야 하며, reference oracle agreement, actual path compiler, controller commit·watchdog, post-contact lift와 bin-drop handoff가 남아 있다. 따라서 이번 단계는 AutoDex grasp를 moving system에 안전하게 전달하는 권한 경계를 정의한 것이지 실시간 grasp 실행을 완성한 것이 아니다.</p>
+<p><a href="trusted-path-family-projector.html">Trusted projector</a>가 입력 evidence를 만들고, <a href="realtime-conveyor-architecture.html">real-time architecture ADR</a>이 다음 backend와 controller 구현 순서를 정의한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
