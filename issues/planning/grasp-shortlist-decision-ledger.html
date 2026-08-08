@@ -16,7 +16,7 @@
 <h1>통과한 grasp만 저장하지 않고, 모든 후보가 왜 탈락했는지 재현한다.</h1>
 <p class="lede">AutoDex의 생성, simulation filter, runtime planner와 hardware 통계 순서를 pinned source에서 다시 확인하고 BeltBench의 intrinsic, deployment, shortlist 기준과 대조했다. 기존 BeltBench는 기준 자체는 더 엄격했지만 horizon coverage 또는 endpoint threshold에서 탈락한 후보를 <code>continue</code>로 버려, 최종 shortlist만으로는 어떤 기준이 후보를 제거했는지 설명할 수 없었다. 후보별 normalized hard-gate vector를 보존하는 schema 2.0 decision ledger를 구현하고, hard gate와 coverage·maximin·diversity ranking을 계약 수준에서 분리했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/9f26612c4266d64328f2e76f3b9d45e35e46c5db"><code>9f26612</code></a>이 complete candidate ledger와 schema authority 경계를 구현했고, 후속 <a href="https://github.com/gohyunsu/beltbench/commit/2962269d8f37761376e3ef73d289f9318fc22a71"><code>2962269</code></a>이 normalized horizon coverage를 redundancy maximin에 포함했다. <a href="https://github.com/gohyunsu/beltbench/commit/e3aeb7d"><code>e3aeb7d</code></a>은 0-margin penetration을 통과시킬 수 있던 unsigned FCL distance를 signed distance로 수정하고 intrinsic protocol을 revision 3으로 올렸다. <a href="https://github.com/gohyunsu/beltbench/commit/c8da10c"><code>c8da10c</code></a>은 deployment contact semantics가 intrinsic gate를 약화하지 못하게 결속했다. 실제 Pepsi revision-3 schema-2 shortlist, continuous trajectory, hardware reliability와 controller commit 권한은 아직 없다.</div>
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/9f26612c4266d64328f2e76f3b9d45e35e46c5db"><code>9f26612</code></a>이 complete candidate ledger와 schema authority 경계를 구현했고, 후속 <a href="https://github.com/gohyunsu/beltbench/commit/2962269d8f37761376e3ef73d289f9318fc22a71"><code>2962269</code></a>이 normalized horizon coverage를 redundancy maximin에 포함했다. <a href="https://github.com/gohyunsu/beltbench/commit/e3aeb7d"><code>e3aeb7d</code></a>은 0-margin penetration을 통과시킬 수 있던 unsigned FCL distance를 signed distance로 수정하고 intrinsic protocol을 revision 3으로 올렸다. <a href="https://github.com/gohyunsu/beltbench/commit/c8da10c"><code>c8da10c</code></a>은 deployment contact semantics가 intrinsic gate를 약화하지 못하게 결속했다. <a href="https://github.com/gohyunsu/beltbench/commit/c30a3e1"><code>c30a3e1</code></a>은 deployment를 exact intrinsic object manifest와 content-equivalent hand collision model에 결속한다. 실제 Pepsi revision-3 schema-2 shortlist, continuous trajectory, hardware reliability와 controller commit 권한은 아직 없다.</div>
 
 <h2>AutoDex에서 실제로 거르는 기준</h2>
 <p>감사 기준은 cached <code>willi19/autodex-code:origin/main</code>의 exact commit <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. 로컬 checkout <code>52add68</code>은 이 ref보다 5커밋 뒤이며 사용자 작업으로 dirty하므로 수정하지 않았다. 이번 세션의 live <code>ls-remote</code>는 DNS 제한으로 실패했기 때문에 오늘 원격을 새로 확인했다고 주장하지 않고, 기존에 fetch된 checksummed commit object를 직접 읽었다.</p>
@@ -26,6 +26,7 @@
 <tr><td>Pregrasp collision</td><td>Hand/world와 self collision, activation distance 0</td><td>개념만 채택한다. Named mesh pair, 양의 required margin, endpoint와 sampled path로 다시 계산한다.</td></tr>
 <tr><td>Squeeze contact</td><td><code>2 * grasp - pregrasp</code> posture의 hand sphere가 object와 하나라도 overlap하면 통과</td><td>Acceptance evidence로 거부한다. Contact identity·개수·penetration·non-contact clearance·task wrench를 별도 gate로 요구한다.</td></tr>
 <tr><td>MuJoCo hold</td><td>0.1 kg, 고정 simulator/controller, tabletop gravity 한 방향, 5 cm 또는 15도 초과 실패</td><td>Optional diagnostic만 허용한다. 선언된 6 force direction과 <code>MAX_PENE</code>는 실제 판정 loop에서 사용되지 않는다.</td></tr>
+<tr><td>Mutable cache</td><td>기존 <code>coll_valid.npy</code>와 <code>sim_eval.json</code>을 path로 재사용하며 <code>--sim_only</code>는 collision-pass seed의 squeeze contact를 재검사하지 않음</td><td>가속용 cache일 뿐 authority가 아니다. BeltBench는 complete input과 evaluator checksum이 일치하는 immutable artifact만 재사용한다.</td></tr>
 <tr><td>Cross-pose order</td><td>Collision과 MuJoCo binary survivor matrix의 greedy set cover</td><td>모든 hard gate 뒤 bounded portfolio가 context를 먼저 덮는 개념으로만 채택한다.</td></tr>
 <tr><td>Runtime filter</td><td>Target mesh를 제거한 hand/table collision, Inspire에서는 비활성인 backward heuristic, fixed-start batch IK, arm 좌표 <code>±π</code>, 3 cm lift IK</td><td>Collision·IK·lift 필요성은 채택하지만 explicit robot limits, 양의 margin, latest state, uncertainty와 complete path로 재검증한다.</td></tr>
 <tr><td>Runtime 선택</td><td>Coverage/stat priority 또는 shuffle 순서에서 첫 <code>plan_single_js</code> 성공을 반환</td><td>거부한다. Search order는 robustness가 아니므로 hard gate 뒤 deterministic lexicographic maximin을 사용한다.</td></tr>
@@ -37,7 +38,7 @@
 <li><strong>Identity와 provenance:</strong> object, stable pose, hand, provider revision, command joint, source checksum과 non-pickled schema가 정확히 일치해야 한다.</li>
 <li><strong>Intrinsic endpoint:</strong> named intended contact, 최소 contact 수, allowed penetration, non-contact object clearance, hand self-clearance, support clearance와 12-direction task-wrench margin을 검사한다.</li>
 <li><strong>Intrinsic path:</strong> object-relative approach, fixed-pose closure와 task-required release를 sampled path 전체에서 검사한다. 이 단계 실패는 geometry-clear worklist에 들어올 수 없다.</li>
-<li><strong>Robot deployment:</strong> sampled moving-object horizon마다 multi-seed pregrasp/grasp IK, arm·hand·connector assembly·workcell collision, non-intentional robot/object clearance를 검사한다.</li>
+<li><strong>Robot deployment:</strong> exact intrinsic object manifest와 content-equivalent hand collision model을 먼저 확인한 뒤, sampled moving-object horizon마다 multi-seed pregrasp/grasp IK, arm·hand·connector assembly·workcell collision, non-intentional robot/object clearance를 검사한다.</li>
 <li><strong>Shortlist hard gate:</strong> 최소 horizon coverage, task-wrench quality, support, assembly·object clearance, normalized joint-limit margin과 characteristic-length-normalized Jacobian singular value를 모두 threshold 이상으로 요구한다.</li>
 <li><strong>Portfolio ranking:</strong> 통과 후보만 대상으로 새 context 수를 먼저 최대화한다. 동률과 redundancy는 normalized horizon coverage, endpoint, intrinsic-path slack의 lexicographic maximin과 configured grasp/hand diversity로 정한다.</li>
 <li><strong>Online narrowing:</strong> resident yaw/horizon atlas 교집합, exact latest observation, path-family evidence, correction·deadline·stop gate로 다시 좁힌다. Shortlist 통과는 실행 권한이 아니다.</li>
@@ -51,6 +52,8 @@
 <tr><td>선택 엔트리의 endpoint/path 값과 후보 판정이 별도 권위가 될 수 있음</td><td>Candidate-level typed decision이 없고 selected payload만 검증</td><td>Ledger를 나중에 추가해도 selected rank와 다른 수치로 splice될 수 있음</td></tr>
 <tr><td>Schema 1.0 파일 사이에도 field 차이가 존재</td><td>과거 shortlist가 같은 version에서 <code>intrinsic_path_normalized_slacks</code> 추가 전후로 생성됨</td><td>과거 파일을 아예 열지 못하거나, 반대로 current authority로 오인할 수 있음</td></tr>
 <tr><td>Coverage hard gate는 기록하지만 redundancy order에는 반영되지 않음</td><td>기존 <code>_shortlist_order_key</code>가 endpoint와 path slack만 결합</td><td>물리 여유가 같은 경우 한 horizon만 지원하는 후보가 ID tie-break로 universal 후보보다 먼저 선택될 수 있음</td></tr>
+<tr><td>Intrinsic과 deployment가 ID만 같은 다른 object asset을 사용할 수 있음</td><td>Full-evaluation과 deployment source 비교가 proposal·intrinsic config에서 끝나고 object manifest exact ancestry를 확인하지 않음</td><td>다른 collision mesh에서 계산한 contact와 clearance가 같은 후보 evidence chain에 섞일 수 있음</td></tr>
+<tr><td>Intrinsic hand와 robot assembly hand의 collision model 동등성이 계약에 없음</td><td>두 URDF는 asset relocation 때문에 file hash가 다르고 end-effector ID와 root name만 일치하면 계속 진행</td><td>다른 finger mesh나 joint transform이 우연히 최소 contact count를 만족해 intrinsic 품질과 deployment IK·contact가 서로 다른 모델을 설명할 수 있음</td></tr>
 </table>
 
 <h2>구현한 schema 2.0 decision ledger</h2>
@@ -134,6 +137,17 @@
 <tr><td>Non-intentional object clearance의 총 gate가 불명확</td><td>Deployment base clearance 0과 shortlist residual 0.5 mm가 분리되어 문서상 절대 거리처럼 보일 수 있음</td><td>Base gate를 0.5 mm로 올리고 shortlist/atlas residual 0.5 mm를 추가해 retained endpoint의 total separation을 1 mm로 구성했다. 두 값은 독립 측정 두 개가 아니다.</td></tr>
 </table>
 <p>Allowed geometry 변경, minimum count 감소, contact-distance 증가를 각각 독립 subtest로 만들었고 모두 동일한 fail-closed ancestry 오류를 확인했다. Deployment·complete-path 소비자 54개 test와 downstream deployment·shortlist·atlas 40개 test가 통과했다. Source commit <code>c8da10c</code>은 GitHub main에 push했으며, 실행 중이던 revision-3 intrinsic run은 이 deployment-only source 변경을 입력으로 사용하지 않는다.</p>
+
+<h2>추가 감사: intrinsic collision model과 deployment asset 결속</h2>
+<p>Contact rule이 같아도 contact를 계산한 형상이 다르면 같은 evidence가 아니다. Full intrinsic chain은 vendored BODex Inspire-left URDF를 사용하고 robot assembly asset은 동일한 URDF와 mesh를 server asset directory로 복사해 사용한다. 두 URDF의 SHA-256은 mesh 상대경로가 달라 서로 다르지만, 실제 left-hand collision mesh 13개와 joint kinematics는 동일했다. 현재 asset이 맞다는 관찰만으로 향후 asset 교체를 막을 수 없으므로 별도 ancestry gate가 필요했다.</p>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>같은 object ID로 다른 mesh를 deployment에 넣을 수 있음</td><td>Transitive source 비교에서 object manifest가 누락</td><td>Deployment CLI와 verifier가 full intrinsic의 exact object manifest path를 요구</td><td>Object model substitution은 IK 전에 ancestry error로 중단</td></tr>
+<tr><td>Relocated hand URDF는 file hash가 달라 단순 SHA 비교를 쓸 수 없음</td><td>Collision mesh filename prefix만 <code>./meshes</code>와 <code>inspire/meshes</code>로 다름</td><td>Visual을 제외하고 link collision geometry, joint kinematics와 resolved collision-mesh content hash를 canonicalize</td><td>경로만 다른 현재 두 모델은 같은 digest <code>2343c622...94c22</code>로 통과</td></tr>
+<tr><td>특정 Inspire 다관절 hand에 fingerprint가 종속될 위험</td><td>초기 구현이 joint가 하나 이상 있어야 한다고 가정</td><td>최소 하나의 collision geometry만 요구하고 joint tuple은 비어 있어도 허용</td><td>고정 gripper와 suction tool도 같은 contract를 사용 가능</td></tr>
+<tr><td>구 gate의 nominal·yaw artifact가 새 ancestry source를 포함하지 않음</td><td>Artifact 생성 도중 model-identity gap을 발견</td><td>대기 중 old shortlist job은 취소하고 old yaw-0는 diagnostic으로만 종료, 새 commit에서 deployment chain 재생성</td><td>구 nominal의 117×3 중 225 feasible pair 수치는 threshold 영향 분석에만 남고 current shortlist authority로 사용하지 않음</td></tr>
+</table>
+<p>Relocation-equivalence, collision mesh mutation, joint origin mutation, fixed end effector와 manifest mismatch를 독립 test로 검증했다. 영향 범위 58개 test가 모두 통과했고 planning discovery는 396개 중 393개가 통과했다. 실패가 아니라 error로 남은 3개는 planning 환경에 OpenCV가 없어 import되지 않은 기존 calibration module이다. Source commit <a href="https://github.com/gohyunsu/beltbench/commit/c30a3e1"><code>c30a3e1</code></a>을 GitHub에 push했다.</p>
 
 <h2>냉정한 현재 평가</h2>
 <p>이번 변경은 AutoDex보다 threshold 수를 늘린 것이 핵심이 아니다. 필터의 소유 단계, 단위, pass boundary와 탈락 근거를 분리하고 모든 worklist 후보에 대해 재현 가능하게 만든 것이 핵심이다. AutoDex의 first-success와 binary coverage는 데이터 수집과 정적 실험에는 실용적이지만 conveyor deadline, uncertainty와 moving contact를 다루는 최종 선택 규칙으로는 부족하다.</p>
