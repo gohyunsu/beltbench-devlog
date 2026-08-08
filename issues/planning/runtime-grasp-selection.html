@@ -16,28 +16,30 @@
 <h1>AutoDex 필터는 후보 근거로 감사하고, 움직이는 물체의 실행 가능성은 최신 상태에서 다시 판정한다.</h1>
 <p class="lede">정적 scene에서 성공한 grasp와 conveyor 위 움직이는 물체를 지금 잡을 수 있는 trajectory는 같은 판정이 아니다. AutoDex의 생성·simulation·runtime 필터를 실제 source revision에서 다시 확인하고, BeltBench에서는 offline grasp 자격, deployment context, exact rolling planning, controller commit을 서로 다른 권한 경계로 분리했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> revision <code>f39aad1</code>의 rolling planner는 atlas lookup, bounded exact search, 최신 robot state, deadline, dense playback validation을 연결하지만 출력은 <code>diagnostic_only</code>다. 현재 CPU Pinocchio/HPP-FCL backend와 full-mesh validator는 실시간이 아니며 robot command를 보낼 수 없다.</div>
+<div class="callout"><strong>현재 효력:</strong> revision <code>9c8c9b2</code>에서 AutoDex 선택 규칙을 최신 source까지 다시 감사하고 BeltBench의 intrinsic·shortlist 권한 계약을 강화했다. rolling planner 출력은 계속 <code>diagnostic_only</code>다. 현재 CPU Pinocchio/HPP-FCL backend와 full-mesh validator는 실시간이 아니며 robot command를 보낼 수 없다.</div>
 
 <h2>감사 기준과 repository 혼동</h2>
 <p>알고리즘 source는 <code>willi19/autodex-code</code>의 2026-08-08 원격 <code>main</code>, commit <code>5ada1c</code>로 고정했다. <code>willi19/AutoDex</code>는 project site다. 로컬의 <code>gohyunsu/autodex-code</code> checkout도 site fork였고, 별도 nested checkout <code>52add68</code>은 현재 원격 HEAD가 아니었다. 따라서 working tree 이름을 신뢰하지 않고 <code>git ls-remote</code>로 HEAD를 확인한 뒤 저장된 <code>upstream/main</code> object를 <code>git show</code>로 감사했다.</p>
-<p><a href="https://github.com/willi19/autodex-code/tree/5ada1c077f60bae9af6f27b07619218f58422e50">감사한 AutoDex source revision</a>과 <a href="https://github.com/gohyunsu/beltbench/commit/f39aad1">BeltBench 구현 commit</a>을 각각 기준점으로 사용한다.</p>
+<p><a href="https://github.com/willi19/autodex-code/tree/5ada1c077f60bae9af6f27b07619218f58422e50">감사한 AutoDex source revision</a>과 <a href="https://github.com/gohyunsu/beltbench/commit/9c8c9b2">BeltBench 재감사 구현 commit</a>을 각각 기준점으로 사용한다.</p>
 
 <h2>AutoDex의 실제 필터</h2>
 <table class="table">
 <tr><th>단계</th><th>실제 판정</th><th>BeltBench 판정</th></tr>
-<tr><td>BODex 생성</td><td>feasible optimizer, grasp residual ≤ 0.001, mean distance residual ≤ 0.01, residual 순서</td><td>깨진 output을 거르는 provider provenance로만 보존. 독립 grasp 검증으로 승격하지 않음</td></tr>
+<tr><td>BODex 생성</td><td>feasible optimizer, 설정된 grasp·contact-distance residual threshold, grasp residual 순서</td><td>깨진 output을 거르는 provider provenance로만 보존. 같은 모델의 convergence와 정렬을 독립 grasp 검증으로 승격하지 않음</td></tr>
 <tr><td>Scene collision</td><td>pregrasp hand의 world·self collision, activation distance 0</td><td>개념은 채택하되 named mesh, pair별 양의 margin, endpoint·path로 재계산</td></tr>
 <tr><td>Squeeze contact</td><td>외삽 squeeze posture에서 hand sphere 하나라도 object와 겹치면 통과</td><td>그대로 배제. 접촉 geometry·개수·관통·비접촉 clearance·task wrench를 별도 hard gate로 사용</td></tr>
 <tr><td>MuJoCo hold</td><td>0.1 kg, 고정 friction/controller, tabletop gravity 한 방향, 5 cm 또는 15° 초과 실패</td><td>선택 권한으로 배제. 6방향 상수와 penetration 상수는 선언돼도 실제 loop에서 쓰이지 않음</td></tr>
 <tr><td>Cross-pose order</td><td>collision∧MuJoCo valid matrix의 greedy set cover</td><td>hard gate 뒤 context coverage 개념만 채택. redundancy는 maximin slack과 diversity로 선택</td></tr>
-<tr><td>Runtime</td><td>setup-specific backward heuristic, hand/scene collision, IK, lift, motion plan 후 우선순위 또는 shuffle 순서의 첫 성공</td><td>필요 gate는 채택하되 heuristic과 first-success 선택은 배제. 최신 pose·covariance·robot state·deadline에서 재계산</td></tr>
+<tr><td>Runtime prefilter</td><td>coverage whitelist/order, target mesh를 제외한 hand/table collision, Inspire에서는 비활성인 backward-wrist heuristic</td><td>coverage는 hard gate 뒤 portfolio 구성에만 채택. 대상 물체·양의 margin·swept path를 포함해 독립 재계산</td></tr>
+<tr><td>Runtime IK·planning</td><td>고정 initial state batch IK, arm 좌표 <code>[-π, π]</code> heuristic, 3 cm lift IK, 우선순위 또는 shuffle 순서의 첫 motion-plan 성공</td><td>IK·lift·planning 필요성만 채택. 최신 robot state에서 전체 경로와 deadline을 검사하고 first-success 대신 maximin slack으로 선택</td></tr>
+<tr><td>Runtime retry</td><td>main loop에서 전체 stochastic planner를 최대 두 번 다시 실행</td><td>moving-pick online loop에서는 배제. acquisition 전에 path family를 compile하고 한 번의 명시적으로 제한된 warm start만 허용</td></tr>
 </table>
 <p>Inspire hand에서는 backward heuristic 자체가 우회된다. 이는 그 수치가 일반적인 grasp quality 기준이 아니라 특정 robot·hand 배치 heuristic임을 보여 준다. 또한 cross-pose compiler는 <code>{order: ...}</code> dictionary를 쓰지만 <code>extract_selected.py</code>는 legacy list를 slice하므로, 감사 revision의 cross-pose → selected-100 경로에는 schema 불일치가 있다. 따라서 <code>selected_100</code>을 품질 top-100이나 확실히 재현된 moving-pick 후보로 취급하지 않는다.</p>
 
 <h2>BeltBench가 채택한 계층</h2>
 <ol>
 <li><strong>Proposal:</strong> provider threshold와 source checksum을 보존하지만 권한은 없다.</li>
-<li><strong>Intrinsic:</strong> exact identity, named contact, contact count, penetration, non-contact/self/support clearance, signed force·moment task wrench, approach·closure·release capability를 arm과 독립적으로 검사한다.</li>
+<li><strong>Intrinsic:</strong> exact identity, named contact, contact count, penetration, non-contact/self/support clearance, 최소 12개의 full-rank antipodal signed force·moment wrench, approach·closure·release capability를 arm과 독립적으로 검사한다.</li>
 <li><strong>Deployment:</strong> arm·hand·connector·workcell 조합의 IK, self/cross/environment/object collision, joint·singularity margin을 yaw×horizon context별로 검사한다.</li>
 <li><strong>Atlas:</strong> 모든 hard gate 뒤 context coverage와 maximin slack으로 bounded resident 후보를 만든다. 측정 yaw uncertainty가 지지하는 cell 교집합이 비면 거부한다.</li>
 <li><strong>Rolling exact planning:</strong> 최신 planar pose prediction과 timestamped arm·hand state에서 candidate-time pair만 다시 계획한다.</li>
@@ -54,6 +56,9 @@
 <tr><td>오래 걸린 이전 generation이 뒤늦게 선택될 가능성</td><td>latest-value admission과 request identity가 없음</td><td>generation과 canonical payload fingerprint를 저장하고 batch 사이 최신 여부를 확인</td><td>새 generation 도착 시 이전 결과는 <code>superseded</code>; 같은 generation의 변경 payload는 오류</td></tr>
 <tr><td>exact search 후 계산 시간이 deadline slack에 반영되지 않음</td><td>planning 시작 시 계산한 robustness를 그대로 사용</td><td>exact planning 뒤와 dense validation 뒤 실제 monotonic time으로 slack 재계산</td><td>commit deadline 또는 operational slack을 잃은 playback은 폐기</td></tr>
 <tr><td>sampled candidate gate만 통과한 trajectory가 시각화될 수 있음</td><td>independent full-frame validator가 rolling selection과 분리</td><td>bounded refinement count만 validator boundary로 검사하고 첫 dense-valid operational 후보만 기록</td><td>모든 refinement 실패 시 <code>rejected_no_full_frame_candidate</code></td></tr>
+<tr><td>intrinsic failure code가 남은 후보를 shortlist registry가 받을 수 있음</td><td>호출자가 geometry failure를 이미 제거했다는 암묵적 가정</td><td>protocol 미승인·stable pose 미측정·capability 미검증만 context blocker로 허용하고 그 외 failure code는 registry 경계에서 즉시 거부</td><td>upstream filter 누락이 있어도 geometry-failed grasp가 atlas로 승격되지 않음</td></tr>
+<tr><td>요청 capability와 evidence authority가 같은 필드처럼 보임</td><td><code>capabilities</code>의 task intent와 <code>validation_scope</code>의 검증 효력을 구분하는 계약이 약함</td><td>provisional 후보는 의도된 capability를 보존하되 scope를 <code>unvalidated</code>로 고정하고, approved 후보는 required capability가 실제 validated set에 있어야 통과</td><td>"drop 가능하도록 생성됨"을 "drop이 검증됨"으로 오인하는 경로 제거</td></tr>
+<tr><td>부분 wrench set이나 0 clearance로 protocol을 승인할 수 있음</td><td>수치의 유한성만 검사하고 load-envelope 완전성과 승인 margin을 강제하지 않음</td><td>6D full-rank·antipodal·12방향 이상을 요구하고 approved 상태에는 모든 사용 단계의 양의 margin, release capability에는 양의 release clearance를 요구</td><td>정적 gravity hold나 0-margin 접촉이 moving pick 검증으로 승격되는 것을 차단</td></tr>
 </table>
 
 <h2>Runtime workload 계약</h2>
@@ -61,7 +66,7 @@
 <p>이 수치는 안전 인증이나 latency 측정값이 아니다. Atlas lookup p95 약 1.8 ms만 측정됐고 exact CPU planning과 dense reference validation은 수 분 단위다. Production에서는 GPU batched IK/FK/Jacobian, conservative SDF와 bounded continuous checker를 같은 contract 뒤에 구현하고 p50/p95/p99·missed deadline·cancellation을 recorded replay로 측정해야 한다.</p>
 
 <h2>검증 결과</h2>
-<p>핵심 runtime, trajectory, intercept contract, portfolio 집중 test 22개가 통과했다. 전체 planning discovery는 실제 test 237개가 통과했고 OpenCV가 없는 planning 환경에서 세 module만 import되지 않았다. 같은 세 module을 calibration 환경에서 실행한 14개가 모두 통과해 총 251개 실제 test를 확인했다. 전체 <code>compileall</code>과 <code>git diff --check</code>도 통과했다.</p>
+<p>이번 intrinsic·shortlist 집중 test 20개가 통과했다. 전체 planning discovery는 312개 중 309개가 통과했고 OpenCV가 없는 planning 환경에서 세 module만 import되지 않았다. 같은 세 module을 calibration 환경에서 실행한 14개가 모두 통과해 총 323개 실제 test를 확인했다. <code>git diff --check</code>도 통과했다.</p>
 <p>Negative test는 unsupported yaw에서 backend를 부르지 않는지, stale robot state, in-flight supersession, 이전 generation 재계획 금지, post-planning deadline miss, dense validation 전부 실패, 같은 generation의 payload 변경, measured robot state binding, backend의 잘못된 identity·horizon을 검사한다.</p>
 
 <h2>남은 위험과 다음 단계</h2>
