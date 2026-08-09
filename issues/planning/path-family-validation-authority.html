@@ -18,6 +18,7 @@
 
 <div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/2a31d72"><code>2a31d72</code></a>가 typed report, exact metric schema, startup semantic verifier와 negative test를 구현한다. Bundle schema는 <code>3.0</code>, policy schema는 <code>4.0</code>으로 올렸다. 모든 결과는 계속 <code>execution_blocked</code>다.</div>
 <div class="callout"><strong>2026-08-09 후속 감사:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/08ffc9b"><code>08ffc9b</code></a>는 visualization waypoint를 controller trajectory로 오인하지 않도록 source-bound fixed-schedule timing 진단을 추가했다. 현재 Pepsi drop schedule은 다섯 구간이 실패하며, 이 결과는 grasp ranking이 아니라 path compiler 입력 자체를 고쳐야 한다는 증거다.</div>
+<div class="callout"><strong>2026-08-09 moving-contact 경계:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/f09f92c"><code>f09f92c</code></a>는 접촉 시각의 controller trajectory <code>q</code>/<code>qdot</code>와 tool Jacobian으로 object-relative pose·twist를 검사한다. 실제 xArm/Inspire trajectory가 아직 없으므로 계약과 reference 계산만 검증된 상태다. <a href="https://github.com/gohyunsu/beltbench/commit/9d37bf3"><code>9d37bf3</code></a>는 별도로 발견한 server clock skew가 latency 근거로 승격되지 않게 막는다.</div>
 
 <h2>AutoDex에서 실제로 거르는 기준</h2>
 <p>감사 기준은 public <code>willi19/autodex-code:main</code> <code>5ada1c0</code>이다. 이름이 비슷한 site repository나 오래된 fork branch를 구현 source로 간주하지 않았다.</p>
@@ -39,6 +40,7 @@
 <li>Robot deployment 단계에서 선택한 manifest의 arm·hand·connector·workcell에 대해 IK, assembly/workcell/object clearance, joint와 singularity margin을 검사한다.</li>
 <li>Yaw×horizon atlas는 측정 yaw uncertainty가 걸치는 모든 cell의 hard-gated grasp 교집합만 반환한다. 빈 교집합은 unsupported다.</li>
 <li>Compiled path family는 complete phases, fixed contact/hand timing, correction support, latch, reusable/stop path와 exact 13개 continuous margin을 모두 요구한다.</li>
+<li>Moving contact는 trajectory digest, arm·hand·connector·object·stable pose·grasp identity, 접촉 <code>q</code>/<code>qdot</code>, object pose·twist와 expected object-from-tool transform을 결속하고 pose 및 상대 선·각속도를 독립 hard gate로 검사한다.</li>
 <li>Live runtime은 fresh track·encoder·named robot motion state, support, correction, deadline, latest generation을 다시 검사한다.</li>
 <li>모든 hard gate 뒤에만 full normalized-slack vector의 lexicographic maximin으로 비교한다. Provider order, first success, weighted sum, 가장 먼 intercept는 선택 기준이 아니다.</li>
 <li>향후 physical commit은 moving-pick reliability lower bound, controller capability, watchdog와 stop authority를 별도로 요구한다.</li>
@@ -134,6 +136,35 @@
 <li>분리된 calibration 환경에서 해당 세 module의 실제 test 14개가 모두 통과했다.</li>
 <li>현재 config 진단은 5개 실패, position-limit failure 0개, required/allocated duration worst ratio 약 103.06을 기록했다.</li>
 <li>관리형 server PBS job <code>115162</code>가 source <code>901cba7</code>에서 timing·dynamics·playback 13개를 7.517초에 통과했고 scheduler와 run status 모두 exit 0을 기록했다.</li>
+</ul>
+
+<h2>후속 구현: 접촉 순간 pose와 twist를 별도 hard gate로 만든다</h2>
+<p>AutoDex public source를 다시 확인했다. 2026-08-09 원격 branch는 여전히 <code>main</code> 하나이고 HEAD는 <code>5ada1c0</code>이다. Static filter의 pregrasp sphere collision, squeeze overlap, 고정 0.1 kg·tabletop gravity MuJoCo hold, adaptive scene당 5개 survivor, binary set cover, fixed-start IK·3 cm lift·first-success planning 중 어느 것도 moving object와 tool의 접촉 상대 속도를 검사하지 않는다. 따라서 AutoDex 통과를 moving-contact 승인으로 변환하지 않았다.</p>
+
+<p>처음 고려한 방법은 기존 301-frame playback을 finite difference하는 것이었다. 이 방법은 폐기했다. Position-only waypoint interpolation은 접촉 순간의 controller <code>qdot</code>를 보존하지 않으며, 현재 cubic smoothstep은 각 waypoint에서 속도가 0이 될 수 있다. Frame 평균 속도가 belt 속도와 비슷해 보여도 실제 접촉 boundary condition은 다를 수 있다. 새 <code>PlannedMovingContact</code>는 time-parameterized trajectory의 정확한 접촉 상태만 받으며 position-only playback에는 입력 자격을 주지 않는다.</p>
+
+<p><code>reference.jacobian_moving_contact.v1</code>는 robot별 구현을 FK와 6×N tool Jacobian adapter 뒤에 둔다. Jacobian 행은 robot-base frame의 linear 3행, angular 3행 순서다. Tool twist <code>J(q) qdot</code>와 object twist를 비교할 때 object 원점 속도만 사용하지 않고 tool 위치의 강체 속도 <code>v_origin + omega × (p_tool - p_object)</code>를 사용한다. 접촉 translation, rotation, relative linear speed, relative angular speed는 단위와 threshold가 다른 네 hard gate이며 weighted sum으로 합치지 않는다.</p>
+
+<p>Draft example threshold는 translation 5 mm, rotation 2°, relative linear speed 0.03 m/s, relative angular speed 0.1 rad/s다. 이는 offline engineering placeholder일 뿐 xArm/Inspire controller 측정값이 아니다. 통과 assessment에도 chase interval collision, controller tracking, hand closure, attachment, measured hardware reliability가 없다는 execution-block reason이 항상 남는다. Expected object-from-tool transform은 실제 connector chain을 포함해야 하며 AutoDex hand root를 arm flange에 직접 붙이면 frame 오류다.</p>
+
+<h3>문제, 원인, 해결, 결과</h3>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>Playback frame 차분으로 moving contact를 검사하려 함</td><td>Position-only interpolation에 순간 <code>qdot</code>와 controller boundary state가 없음</td><td>Exact trajectory digest와 접촉 <code>JointMotionTarget(q,qdot,qddot)</code>를 새 계약의 필수 입력으로 지정</td><td>Viser animation이나 geometric waypoint만으로 contact gate를 통과할 수 없음</td></tr>
+<tr><td>Object 원점 선속도만 비교하면 회전 물체의 offset contact가 틀림</td><td>Rigid-body point velocity의 <code>omega × radius</code> 항을 누락할 수 있음</td><td>Tool 위치에서 object velocity를 계산하고 tool linear velocity와 비교</td><td>회전과 offset을 포함한 synthetic test가 통과하며 해당 항을 제거하면 실패</td></tr>
+<tr><td>Pose, 선속도, 각속도 중 좋은 값이 나쁜 값을 가릴 수 있음</td><td>하나의 norm이나 weighted score로 합치려는 유혹</td><td>Translation·rotation·relative linear·relative angular metric을 독립 threshold와 failure ID로 고정</td><td>세 metric 동시 위반 test에서 세 failure가 정렬된 채 모두 보존</td></tr>
+<tr><td>Trajectory나 threshold payload를 바꾼 뒤 assessment를 재사용할 수 있음</td><td>평가 결과만 저장하면 입력 ancestry가 사라짐</td><td>Contact payload와 policy를 canonical SHA-256으로 결속하고 verifier가 전체 계산을 재현</td><td>Object velocity 하나만 바꿔도 input digest 단계에서 거부</td></tr>
+<tr><td><code>[true, 0.0, 0.0]</code>가 NumPy 변환 뒤 <code>[1.0, 0.0, 0.0]</code>로 통과</td><td>원래 JSON 타입 검사 전에 homogeneous numeric array로 승격</td><td><code>dtype=object</code>로 boolean·numeric string을 먼저 검사한 뒤 float 배열로 변환</td><td>처음 실패한 negative test가 수정 후 통과하며 hard-gate coercion 우회를 차단</td></tr>
+<tr><td>첫 PBS 결과의 완료 시각이 scheduler 시작보다 약 5분 빠름</td><td>Compute node clock이 run filesystem/scheduler clock보다 약 367초 느리지만 status가 이를 기록하지 않음</td><td>Status schema <code>2.0</code>에서 compute clock과 filesystem mtime을 비교하고 별도 timing authority를 기록</td><td>Job은 기능 회귀 완료로 남되 <code>timing_evidence_authorized=false</code>로 latency·deadline 근거 사용을 차단</td></tr>
+</table>
+
+<h3>검증 범위와 한계</h3>
+<ul>
+<li>Moving-contact focused test는 matching pose/twist, stationary-tool rejection, rigid-body offset velocity, 독립 pose/angular failure, joint/Jacobian fail-closed, boolean/numeric-string 거부, source tamper rejection을 포함해 7개가 통과했다.</li>
+<li>Moving-contact focused regression 23개가 통과했다. 최신 source의 planning 환경 full discovery는 420개를 수집해 OpenCV import module 3개를 제외한 417개가 통과했고, calibration 환경에서 그 세 module의 실제 test 14개가 모두 통과했다.</li>
+<li>Source <code>f09f92c</code>의 PBS job <code>115163</code>은 moving-contact·timing·dynamics·playback 20개를 통과했지만 완료 timestamp 모순을 발견해 timing evidence로 채택하지 않았다.</li>
+<li>Source <code>9d37bf3</code>의 CPU-only PBS job <code>115165</code>는 status-writer를 포함한 22개를 8.388초에 통과하고 scheduler exit 0을 기록했다. Clock 비교는 <code>-367 s</code>, coarse bound 2 s 밖으로 판정되어 timing authority를 명시적으로 거부했다.</li>
+<li>이 검증은 reference 수학과 contract 동작에 대한 것이다. Production time-parameterizer가 만든 xArm/Inspire 접촉 <code>qdot</code>, 실제 connector transform, chase interval, controller feedback과 moving grasp 성공률은 아직 입력 자체가 없으므로 검증되지 않았다.</li>
 </ul>
 
 <p>다음 단계는 임의 phase 문자열에 시간을 붙이는 방식을 확장하는 것이 아니다. Geometric path, arm·hand semantic event window, controller-sourced boundary state를 입력으로 받는 time-parameterizer contract를 만들고, attach 전 chase 구간의 object-relative pose drift와 선·각속도 차이를 hard gate로 검증해야 한다. 그 뒤 동일 timing으로 continuous collision과 stop path를 다시 검증한다.</p>

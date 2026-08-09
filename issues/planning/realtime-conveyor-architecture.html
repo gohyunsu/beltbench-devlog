@@ -18,6 +18,7 @@
 
 <div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/b0c3c56">revision <code>b0c3c56</code></a>은 production 방향 ADR과 첫 constrained belt-state 계약을 구현한다. 실제 encoder adapter, multi-camera filter, path-family compiler, controller는 아직 없으므로 real-time 또는 hardware-ready 상태가 아니다.</div>
 <div class="callout"><strong>2026-08-09 timing 경계:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/08ffc9b">revision <code>08ffc9b</code></a>는 collision-free geometric path, event-preserving time-parameterization, bounded latch/stop, late phase correction을 서로 다른 capability로 확정했다. 현재 구현은 fixed-schedule diagnostic까지이며 production parameterizer는 아직 없다.</div>
+<div class="callout"><strong>2026-08-09 moving-contact 경계:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/f09f92c">revision <code>f09f92c</code></a>는 접촉 시각의 exact trajectory <code>q</code>/<code>qdot</code>로 tool/object pose·twist를 비교한다. Reference contract와 synthetic 계산은 검증했지만 production path compiler 입력은 아직 없으며, server clock skew도 timing evidence를 차단한 상태다.</div>
 
 <h2>냉정한 현재 상태</h2>
 <table class="table">
@@ -54,6 +55,7 @@
 </ol>
 
 <p>Arm과 hand는 독립적으로 retime하지 않는다. <code>close_start</code>, contact, attach, release-open start, detach와 cutoff는 공동 semantic window이며 deadline 안에 valid schedule이 없으면 reject한다. Attach 전에는 hand와 물체의 상대 pose drift뿐 아니라 상대 선속도와 각속도를 검사해야 한다. Viser의 <code>conveyor → attached</code> 상태 전환은 이 물리 조건의 증거가 아니다.</p>
+<p>새 reference contact gate는 이 중 접촉 시각 하나의 pose·twist 계산만 구현한다. Position-only playback frame 차분은 허용하지 않으며, tool 선속도는 object 원점 속도가 아니라 <code>v_origin + omega × radius</code>와 비교한다. Chase interval 전체, hand closure, continuous collision과 controller tracking은 계속 별도 blocker다. 상세 실패와 검증 결과는 <a href="path-family-validation-authority.html">path-family validation authority 기록</a>에 남겼다.</p>
 
 <h2>R1: constrained belt state 구현</h2>
 <p><code>ConveyorMotionState</code>는 encoder-derived longitudinal position·velocity·acceleration, 3×3 covariance, calibration ID, sequence, monotonic timestamp를 갖는다. <code>FusedPlanarObjectTrack</code>은 object/stable pose identity, belt `(x,y,yaw)`, covariance, observed longitudinal/lateral velocity, yaw rate, contributing camera IDs와 camera disagreement를 갖는다.</p>
