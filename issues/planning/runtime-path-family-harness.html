@@ -16,7 +16,7 @@
 <h1>검증된 grasp와 path-family를 최신 관측에서 실제 시간 순서로 선택한다.</h1>
 <p class="lede">문서와 개별 계약만 연결해 놓고 real-time pipeline이라고 부르지 않는다. 실제 projector, coordinator, bounded warm-start 경계, capacity-one scheduler와 causal recorder를 한 실행 경로로 묶고, 선택되거나 거부된 결과를 발생 시간 그대로 Viser가 재생할 수 있는 첫 production-shaped vertical slice를 구현했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/3e3de99"><code>3e3de99</code></a>이 runtime engine과 causal session, <a href="https://github.com/gohyunsu/beltbench/commit/697250e"><code>697250e</code></a>가 bounded multi-rate input-to-selection, <a href="https://github.com/gohyunsu/beltbench/commit/66f1061"><code>66f1061</code></a>이 exact future-start whole-trajectory handoff, <a href="https://github.com/gohyunsu/beltbench/commit/3ea93dd"><code>3ea93dd</code></a>가 accepted handoff와 기존 kinematic feedback의 causal binding을 구현한다. Receipt와 generated feedback은 diagnostic evidence일 뿐이며 모든 trajectory는 계속 <code>execution_blocked</code>, <code>execution_authorized=false</code>다.</div>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/3e3de99"><code>3e3de99</code></a>이 runtime engine과 causal session, <a href="https://github.com/gohyunsu/beltbench/commit/697250e"><code>697250e</code></a>가 bounded multi-rate input-to-selection, <a href="https://github.com/gohyunsu/beltbench/commit/66f1061"><code>66f1061</code></a>이 exact future-start whole-trajectory handoff, <a href="https://github.com/gohyunsu/beltbench/commit/3ea93dd"><code>3ea93dd</code></a>가 accepted handoff와 기존 kinematic feedback의 in-memory causal binding, <a href="https://github.com/gohyunsu/beltbench/commit/37683bb"><code>37683bb</code></a>가 atomic handoff ancestry와 Viser cross-verification을 구현한다. Receipt와 generated feedback은 diagnostic evidence일 뿐이며 모든 trajectory는 계속 <code>execution_blocked</code>, <code>execution_authorized=false</code>다.</div>
 
 <h2>Grasp 선택 기준을 다시 연결한 결론</h2>
 <p>AutoDex source 감사 결과는 바뀌지 않았다. BODex residual과 provider 순서, zero-margin sampled sphere collision, squeeze overlap, 한 방향 gravity hold, scene set cover, coverage 순서의 첫 planning 성공은 proposal 생성과 static diagnostic에는 유용하지만 moving conveyor command의 승인 기준은 아니다.</p>
@@ -197,11 +197,21 @@
 <tr><td>구조적으로 valid한 rejected lifecycle artifact가 simulation에 들어갈 가능성</td><td>Lifecycle validity와 acceptance authority는 서로 다른 조건</td><td>Rejected/expired 상태를 명시적으로 차단하고 실제 rejected snapshot negative test 추가</td><td>Adapter rejection 뒤 diagnostic feedback을 생성하는 우회 제거</td></tr>
 </table>
 
+<h3>Atomic evidence와 Viser 교차검증 추가</h3>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>Viser에 feedback session과 handoff snapshot을 함께 줄 수 있지만 둘의 관계는 검사하지 않음</td><td>Feedback은 selected runtime session까지만 checksum으로 참조하고 handoff file은 별도 status 입력</td><td>Accepted snapshot을 <code>controller_handoff_snapshot</code> planned artifact로 session에 포함하고 selection event input으로 결속</td><td>Missing, duplicated, changed, unbound 또는 cross-session handoff/feedback pair를 reload와 Viser에서 거부</td></tr>
+<tr><td>첫 구현에서 generic feedback publisher가 controller handoff type을 직접 import</td><td>Atomic publication과 controller 의미 검증을 한 함수에 넣음</td><td>Generic publisher는 prevalidated planned source file만 처리하고 controller-specific wrapper가 snapshot·runtime session·activation 의미를 소유하도록 역의존 제거</td><td>Standalone simulation 경로는 controller lifecycle과 독립적으로 유지</td></tr>
+<tr><td><code>controller_feedback.py</code>가 생성과 evidence I/O를 함께 담아 370줄로 증가</td><td>기능 경계를 한 모듈에 누적</td><td>In-memory causal binding 201줄과 atomic materialize/reload verifier 185줄로 분리</td><td>순수 계산과 filesystem evidence lifecycle을 독립 테스트·변경 가능</td></tr>
+<tr><td>첫 server 전체 회귀가 출력 없이 종료</td><td>SSH session output 소실로 성공·실패를 증명할 로그가 없음</td><td>남은 BeltBench process가 없음을 확인하고 verbosity 0, explicit <code>testsRun/wasSuccessful</code> 출력으로 재실행</td><td>불확실한 실행은 폐기하고 최종 509/509 로그만 검증 증거로 채택</td></tr>
+</table>
+
 <h3>검증 결과와 해석</h3>
 <ul>
-<li>Local controller handoff/feedback 집중 test 23개가 4.529초에 통과했다. Planning discovery 512개 중 OpenCV 전용 import 3개를 제외한 509개가 통과했고, 그 3개 module의 calibration test 14개도 별도 환경에서 통과했다. 전체 compile과 diff 형식 검사도 통과했다.</li>
-<li><code>junjinyong</code> pinned planning 환경에서 집중 23개는 2.680초, planning-compatible 509개는 63.743초에 통과했다.</li>
-<li>Local, GitHub <code>main</code>과 server HEAD는 <a href="https://github.com/gohyunsu/beltbench/commit/3ea93dd"><code>3ea93dd</code></a>로 일치한다. Server의 기존 BODex native output 3개는 보존했다.</li>
+<li>최종 local controller handoff/feedback/session 집중 test 33개는 4.382초, planning-compatible 509개는 33.101초에 통과했다. OpenCV 전용 calibration test 14개도 별도 환경에서 3.312초에 통과했다.</li>
+<li>전체 source/scripts/tests compile, diff 형식 검사, planning simulation CLI와 visualization Viser CLI import가 통과했다.</li>
+<li><code>junjinyong</code> pinned planning 환경에서 집중 33개는 3.729초, planning-compatible 509개는 77.939초에 통과했다.</li>
+<li>Local, GitHub <code>main</code>과 server HEAD는 <a href="https://github.com/gohyunsu/beltbench/commit/37683bb"><code>37683bb</code></a>로 일치한다. Server의 기존 BODex native output 3개는 보존했다.</li>
 <li>이 결과는 causal plumbing과 deterministic kinematic reference의 기능 회귀다. ROS transport, controller interpolation implementation, arm-hand atomic commit, measured tracking, dynamics/contact, watchdog/stop latency와 p95/p99 real-time evidence는 여전히 없다.</li>
 </ul>
 
