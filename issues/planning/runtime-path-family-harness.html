@@ -16,7 +16,7 @@
 <h1>검증된 grasp와 path-family를 최신 관측에서 실제 시간 순서로 선택한다.</h1>
 <p class="lede">문서와 개별 계약만 연결해 놓고 real-time pipeline이라고 부르지 않는다. 실제 projector, coordinator, bounded warm-start 경계, capacity-one scheduler와 causal recorder를 한 실행 경로로 묶고, 선택되거나 거부된 결과를 발생 시간 그대로 Viser가 재생할 수 있는 첫 production-shaped vertical slice를 구현했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/3e3de99"><code>3e3de99</code></a>이 runtime engine과 causal session, <a href="https://github.com/gohyunsu/beltbench/commit/697250e"><code>697250e</code></a>가 bounded multi-rate input-to-selection, <a href="https://github.com/gohyunsu/beltbench/commit/66f1061"><code>66f1061</code></a>이 exact future-start whole-trajectory handoff를 구현한다. Receipt는 diagnostic evidence일 뿐이며 모든 trajectory는 계속 <code>execution_blocked</code>, <code>execution_authorized=false</code>다.</div>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/3e3de99"><code>3e3de99</code></a>이 runtime engine과 causal session, <a href="https://github.com/gohyunsu/beltbench/commit/697250e"><code>697250e</code></a>가 bounded multi-rate input-to-selection, <a href="https://github.com/gohyunsu/beltbench/commit/66f1061"><code>66f1061</code></a>이 exact future-start whole-trajectory handoff, <a href="https://github.com/gohyunsu/beltbench/commit/3ea93dd"><code>3ea93dd</code></a>가 accepted handoff와 기존 kinematic feedback의 causal binding을 구현한다. Receipt와 generated feedback은 diagnostic evidence일 뿐이며 모든 trajectory는 계속 <code>execution_blocked</code>, <code>execution_authorized=false</code>다.</div>
 
 <h2>Grasp 선택 기준을 다시 연결한 결론</h2>
 <p>AutoDex source 감사 결과는 바뀌지 않았다. BODex residual과 provider 순서, zero-margin sampled sphere collision, squeeze overlap, 한 방향 gravity hold, scene set cover, coverage 순서의 첫 planning 성공은 proposal 생성과 static diagnostic에는 유용하지만 moving conveyor command의 승인 기준은 아니다.</p>
@@ -174,6 +174,35 @@
 <li>Local, GitHub <code>main</code>과 server는 <code>66f1061</code>로 일치한다. Server에는 기존 BODex native output 3개만 untracked로 남았다.</li>
 <li>Concrete ROS 2/<code>ros2_control</code> adapter, combined arm-hand endpoint 또는 two-phase prepare/commit, measured controller feedback, cancellation/stop latency와 native p95/p99 trace는 아직 없다.</li>
 <li>Warm-start 결과의 typed event request materialization과 active trajectory replacement/splice도 아직 없다. Diagnostic receipt는 어떤 경우에도 hardware execution을 승인하지 않는다.</li>
+</ul>
+
+<h2>2026-08-10: accepted handoff를 기존 feedback simulator에 결속</h2>
+<p>AutoDex selection source를 다시 대조해도 결론은 같다. BODex/provider 순서, static pregrasp collision, squeeze overlap, fixed-parameter hold, set cover와 first-success는 proposal·worklist·static diagnostic 범위다. BeltBench runtime authority는 independent intrinsic, exact robot/workcell deployment, yaw×horizon support, moving-contact, complete task/stop path, live freshness/deadline, physical reliability와 controller commit gate가 소유한다. 따라서 이번 단계는 선택 기준을 완화하거나 새 controller를 흉내 내는 작업이 아니라, 이미 hard-gated된 diagnostic selection이 어떤 exact request로 feedback을 만들었는지 인과관계를 닫는 작업이다.</p>
+
+<h3>선택한 구현 방향</h3>
+<ol>
+<li>별도 fake controller나 Python controller-rate sampler를 추가하지 않았다. 기존 <code>build_event_trajectory_kinematic_feedback_streams()</code>의 independent command·robot·object clocks와 pure-delay semantics를 그대로 재사용한다.</li>
+<li><code>build_controller_handoff_simulation_feedback()</code>는 causally verified <code>VerifiedRuntimeControllerHandoff</code>만 받는다. Snapshot이 <code>accepted_diagnostic</code>이고 receipt가 accepted일 때만 진행한다.</li>
+<li>Timeline의 complete event request는 handed-off request와 exact equality여야 한다. Start timestamp와 object generation은 caller가 정하지 않고 immutable activation에서만 가져온다.</li>
+<li>생성 뒤 exact arm·hand·object·stable-pose identity, stream start/end와 capacity, initial arm-hand position·velocity·acceleration, 모든 commanded sample의 trajectory target을 다시 검사한다.</li>
+<li>결과 scope는 <code>controller_kinematic_simulation</code>이며 <code>execution_authorized=false</code>로 고정한다. Adapter acceptance를 controller tracking, dynamics, contact, stop 또는 hardware acceptance로 승격하지 않는다.</li>
+</ol>
+
+<h3>발생한 문제, 원인, 해결과 결과</h3>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>기존 feedback generator를 handoff와 독립 호출할 수 있음</td><td>Request, start time과 generation을 caller가 각각 전달</td><td>Accepted snapshot과 exact request를 먼저 검증하고 timing/generation을 activation에서만 파생하는 bridge 추가</td><td>Selection과 generated feedback 사이의 request·clock·generation ancestry를 단일 경로로 고정</td></tr>
+<tr><td>첫 command 검증 뒤 event target만 확인하면 중간 command mutation이 남음</td><td>Semantic event 시각만 required sample로 보는 기존 simulator 계약</td><td>Bridge가 complete commanded stream을 동일 timeline에서 다시 sample해 arm·hand position/derivative를 전부 대조</td><td>Event 사이 command 변조도 거부하며 기존 simulator 구현은 중복하지 않음</td></tr>
+<tr><td>Absolute timestamp에서 start를 빼 재구성한 path time이 exact tuple 비교에서 실패</td><td>IEEE-754 subtraction의 수치 오차</td><td>Joint 이름과 순서는 exact, 수치 재현 오차만 <code>rtol=0</code>, <code>atol=1e-10</code>으로 제한</td><td>정상 stream은 통과하고 0.1 rad target 변조 negative test는 계속 실패</td></tr>
+<tr><td>구조적으로 valid한 rejected lifecycle artifact가 simulation에 들어갈 가능성</td><td>Lifecycle validity와 acceptance authority는 서로 다른 조건</td><td>Rejected/expired 상태를 명시적으로 차단하고 실제 rejected snapshot negative test 추가</td><td>Adapter rejection 뒤 diagnostic feedback을 생성하는 우회 제거</td></tr>
+</table>
+
+<h3>검증 결과와 해석</h3>
+<ul>
+<li>Local controller handoff/feedback 집중 test 23개가 4.529초에 통과했다. Planning discovery 512개 중 OpenCV 전용 import 3개를 제외한 509개가 통과했고, 그 3개 module의 calibration test 14개도 별도 환경에서 통과했다. 전체 compile과 diff 형식 검사도 통과했다.</li>
+<li><code>junjinyong</code> pinned planning 환경에서 집중 23개는 2.680초, planning-compatible 509개는 63.743초에 통과했다.</li>
+<li>Local, GitHub <code>main</code>과 server HEAD는 <a href="https://github.com/gohyunsu/beltbench/commit/3ea93dd"><code>3ea93dd</code></a>로 일치한다. Server의 기존 BODex native output 3개는 보존했다.</li>
+<li>이 결과는 causal plumbing과 deterministic kinematic reference의 기능 회귀다. ROS transport, controller interpolation implementation, arm-hand atomic commit, measured tracking, dynamics/contact, watchdog/stop latency와 p95/p99 real-time evidence는 여전히 없다.</li>
 </ul>
 
 <h2>남은 신뢰 경계와 다음 순서</h2>
