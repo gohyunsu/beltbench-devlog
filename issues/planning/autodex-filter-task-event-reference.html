@@ -232,14 +232,62 @@
 <li>이 변경은 Viser와 planned evidence 경계만 닫는다. Spatial/active correction materialization, continuous collision, controller conversion과 hardware authority는 여전히 없다.</li>
 </ul>
 
+<h2>2026-08-10 후속: AutoDex filter 최종 대조와 event-native measured feedback</h2>
+<p>선택 기준을 다시 넓히는 대신, AutoDex의 실제 구현에서 유효한 정적 기준과 moving conveyor에서 새로 필요한 실행 기준을 단계별로 대조했다. 감사 기준은 <code>willi19/autodex-code:origin/main@5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. BODex convergence와 파일 순서는 후보 생성 provenance이지 성공 label이 아니며, AutoDex의 한 방향 tabletop hold와 runtime의 첫 successful plan도 BeltBench 실행 권한으로 승격하지 않는다.</p>
+
+<table class="table">
+<tr><th>AutoDex에서 확인한 기준</th><th>BeltBench 판단</th><th>채택 방식</th></tr>
+<tr><td>BODex convergence·order</td><td>후보 생성 provenance로만 유효</td><td>Immutable provider source와 proposal digest를 보존하되 acceptance에서 제외</td></tr>
+<tr><td>Pregrasp world/self collision, squeeze overlap</td><td>유용하지만 endpoint 중심</td><td>First-contact·retention endpoint와 contact-to-retention intrinsic path의 독립 geometry gate로 재검산</td></tr>
+<tr><td>0.1 kg, 한 tabletop-gravity MuJoCo hold, 5 cm·15 deg 실패 한계</td><td>특정 payload·방향의 정적 fixture</td><td>정적 참고 근거만 유지하고 task-wrench·다방향 protocol·payload capacity·moving retention으로 대체 검증</td></tr>
+<tr><td>Binary scene coverage와 set cover</td><td>다양성 축소 개념은 유효</td><td>Yaw·intercept horizon을 공유해 지지하는 후보를 먼저 교집합한 뒤 maximin slack과 diversity로 shortlist</td></tr>
+<tr><td>Endpoint hand/table collision, batch IK, 5 cm lift IK</td><td>빠른 runtime prefilter로 유효</td><td>Arm·hand·connector·object·workcell identity에 결속된 deployment prefilter로 사용하고 complete path gate와 분리</td></tr>
+<tr><td>Hand-specific orientation heuristic, first successful plan</td><td>장치 편향과 순서 의존성이 큼</td><td>채택하지 않음. Robot-neutral capability와 모든 hard gate를 통과한 후보의 normalized robust slack을 비교</td></tr>
+<tr><td>Hardware success의 Laplace point estimate</td><td>불확실성과 context ancestry가 부족</td><td>Geometry와 분리된 exact grasp digest·workcell·controller context의 reliability evidence로만 사용</td></tr>
+</table>
+
+<h3>BeltBench의 실제 탈락 순서</h3>
+<ol>
+<li>Object·stable pose·grasp payload·hand model의 source digest와 protocol 완전성을 먼저 검사한다.</li>
+<li>First-contact와 retention에서 named contact identity·count·penetration, non-contact/self/support clearance와 task-wrench를 독립 hard gate로 적용한다.</li>
+<li>Pregrasp→contact→retention intrinsic path와 object-relative pose/twist를 검사한다. 현재 task-wrench 수치는 geometry 비교값이지 payload capacity 증거가 아니다.</li>
+<li>Robot·hand·connector·workcell·object deployment identity, yaw·horizon atlas와 continuous path evidence를 결속한다.</li>
+<li>Measured object pose·fixed yaw·belt translation으로 contact 시각을 예측하고 IK, collision, dynamics, moving-contact pose/twist, stop path를 검사한다.</li>
+<li>Freshness, latest generation, cutoff, deadline과 timing slack을 통과한 후보만 모든 normalized margin의 minimum으로 순위화한다. 첫 성공 후보를 즉시 선택하지 않는다.</li>
+<li>Controller commit과 hardware reliability는 위 geometry 선택과 별도 authority로 남긴다. 근거가 없으면 diagnostic selection까지만 허용한다.</li>
+</ol>
+
+<h3>문제, 원인, 해결, 결과</h3>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>새 event request가 있어도 viewer에는 desired reference만 표시</td><td>기존 ideal feedback simulator가 legacy <code>PickPlayback</code> frame에 결합</td><td><code>EventTrajectoryReferenceTimeline</code>을 직접 소비하는 robot-neutral kinematic feedback adapter 구현</td><td>Legacy playback을 역추론하지 않고 exact selected request에서 command·measured robot·measured object stream 생성</td></tr>
+<tr><td>Command, robot feedback, camera/object feedback를 같은 주기로 가정</td><td>시각화 편의를 실제 multi-rate 시스템 의미와 혼합</td><td>각 stream의 독립 period, exact semantic event time과 bounded sample capacity를 policy에 명시</td><td>10 ms command, 4 ms robot feedback, 33.333 ms object feedback 예제를 서로 다른 clock으로 재현</td></tr>
+<tr><td>Measured layer가 command 복사본이면 지연·상태 전이를 검사할 수 없음</td><td>Plumbing smoke가 이상적 kinematics만 복제</td><td>순수 robot tracking delay 뒤 FK로 attached object를 계산하고 contact·attach·release·containment 상태기계를 보존</td><td>Desired와 지연된 measured layer의 구조적 차이, drop release 전이를 deterministic test로 검증</td></tr>
+<tr><td>일부 stream만 저장된 session이 노출될 수 있음</td><td>Artifact별 write 후 최종 session을 publish하는 순서</td><td>Sibling staging directory에서 source·artifact·session을 전부 재검증한 뒤 directory 전체를 atomic replace</td><td>중간 상태는 최종 경로에 나타나지 않고 exact request와 선택 session ancestry가 보존</td></tr>
+<tr><td>Viewer FK가 planning backend에 의존할 위험</td><td>Simulation과 rendering 책임이 섞이기 쉬움</td><td>Simulation CLI는 Pinocchio planning model, Viser는 기존 visualization adapter만 사용</td><td>Renderer가 trajectory나 measured state를 계산하지 않는 read-only 경계 유지</td></tr>
+<tr><td>서버 첫 focused 결과가 비어 보임</td><td>원격 <code>tail</code> pipeline의 종료 상태만 보였고 test runner 상태가 출력되지 않음</td><td><code>unittest -q</code> 종료 코드를 직접 출력해 재실행</td><td><code>junjinyong</code>에서 focused <code>41/41</code>와 전체 planning <code>484/484</code> 통과를 별도 확인</td></tr>
+<tr><td>로컬 전체 재검증에서 120개 temporary-directory error</td><td>Read-only 실행 컨텍스트에 사용 가능한 <code>/tmp</code>가 없음</td><td>코드 수정 없이 쓰기 가능한 같은 pinned environment에서 동일 484개 suite를 재실행</td><td><code>484/484</code> 통과로 filesystem 제약과 구현 회귀를 분리</td></tr>
+</table>
+
+<h3>검증 경계와 현재 상태</h3>
+<ul>
+<li>Source <a href="https://github.com/gohyunsu/beltbench/commit/6ab325a"><code>6ab325a</code></a>를 <code>main</code>에 push하고 <code>junjinyong</code> checkout을 exact <code>6ab325af54c4541b1b90edf7ade242451e3aaebd</code>까지 fast-forward했다. 기존 BODex·CuRobo native 산출물은 건드리지 않았다.</li>
+<li>로컬 planning <code>484/484</code>, calibration/OpenCV <code>14/14</code>, 합계 <code>498/498</code>가 통과했다. Strict boolean parser 추가 뒤 feedback·session·Viser focused test <code>19/19</code>도 재실행했다.</li>
+<li>서버 pinned planning 환경에서 feedback·session·event·Viser focused <code>41/41</code>와 전체 planning <code>484/484</code>가 통과했다. 이는 기능·계약 회귀 결과이며 real-time latency나 tracking accuracy 측정이 아니다.</li>
+<li>Simulation source는 <code>pure-delay-event-kinematics-v1</code>과 <code>no-dynamics-no-contact</code>를 명시한다. Dynamics, contact, controller, sensor latency와 hardware execution authority는 제공하지 않는다.</li>
+<li>현재 local·server artifact에는 current schema의 typed xArm/Inspire/Pepsi event request가 없다. 과거 <code>PickPlayback</code>에서 임의 변환하지 않았으므로 실제 asset measured animation은 새 intrinsic·deployment·path evidence로 request를 compile한 뒤에만 생성할 수 있다.</li>
+<li>Engine, runtime harness와 recorder는 존재하지만 observation·encoder·robot state에서 selected request와 feedback/evidence까지 잇는 하나의 production entry point는 아직 없다. 새 simulator는 선택 이후 경계만 검증한다.</li>
+</ul>
+
 <h2>남은 구현 순서</h2>
 <ol>
+<li>Deterministic observation·encoder·robot-state input을 projector·bounded engine·recorder·selected request·setpoint/feedback trace까지 잇는 production-shaped runner를 구성한다.</li>
 <li>Current proposal batch를 schema 2.0 intrinsic evaluator로 다시 실행해 retention endpoint/path artifact와 deployment·yaw atlas를 재생성한다.</li>
 <li>Spatial·yaw·belt-speed와 active phase correction을 적용해 exact corrected arm-hand trajectory를 출력하는 typed backend를 구현하고 request·contact·continuous collision을 독립 재검증한다.</li>
-<li>Current evidence로 legacy-free xArm/Inspire/Pepsi runtime session을 생성해 runtime-selected actual-asset Viser startup을 검증한다.</li>
-<li>Exact interpolated arm·hand·connector·object에 대해 continuous/swept collision과 controller tracking bound를 독립 검증한다.</li>
-<li>Release motion과 bin containment를 source-bound artifact로 만들되 display model을 실행 authority로 재사용하지 않는다.</li>
-<li>Hardware가 준비되면 calibration residual, latency, controller·hand feedback과 exact-grasp moving-pick reliability를 측정해 physical commit gate를 연다.</li>
+<li>새 current evidence로 legacy-free xArm/Inspire/Pepsi runtime session과 feedback session을 생성해 actual-asset Viser startup을 검증한다.</li>
+<li>Deadline miss, supersession, cutoff, watchdog와 stop fault injection을 추가하고 desired/measured 오차와 cancellation latency를 측정한다.</li>
+<li>Controller backend를 붙여 exact interpolated arm·hand·connector·object의 swept collision, tracking bound, release와 bin containment를 검증한다.</li>
+<li>Hardware가 준비되면 calibration residual, end-to-end latency, controller·hand feedback과 exact-grasp moving-pick reliability를 측정해 physical commit gate를 연다.</li>
 </ol>
 <p>관련 맥락은 <a href="synchronized-event-trajectory.html">synchronized event trajectory</a>, <a href="runtime-grasp-selection.html">runtime grasp selection 재감사</a>, <a href="path-family-validation-authority.html">path validation authority</a>에 이어서 확인한다.</p>
 </main>
