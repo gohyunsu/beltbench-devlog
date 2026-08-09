@@ -123,6 +123,8 @@
 <tr><td>Release 한 frame만 늘리면 해결된 것처럼 보일 수 있음</td><td>Release가 가장 큰 위반이지만 hand close, approach, grasp, return도 독립적으로 실패</td><td>Arm과 hand 전체 joint 집합을 같은 profile에서 공동 평가</td><td>다섯 실패를 확인해 국소 patch가 아닌 event-preserving parameterizer가 필요함을 확인</td></tr>
 <tr><td>Report 안 checksum만 맞추면 stale 계산을 재사용할 수 있음</td><td>Source identity 저장과 계산 재현은 별개</td><td>Request와 motion-limit source를 다시 hash하고 전체 assessment를 재계산해 payload exact 비교</td><td>Source 변경, metric 변조, identity splice를 diagnostic verifier에서 거부</td></tr>
 <tr><td>Limit만 통과하면 moving grasp도 가능한 것으로 오해할 수 있음</td><td>Rest-to-rest joint bound는 접촉 시 object-relative pose와 속도를 검사하지 않음</td><td>Execution-block reason에 collision, moving-contact velocity, controller tracking, measured limit authority 누락을 고정 기록</td><td>통과 결과도 command authority가 아니며 다음 moving-contact gate가 명시적 blocker로 남음</td></tr>
+<tr><td>SSH에서 직접 실행한 server test가 완료 artifact 전에 종료됨</td><td>Login-node 세션과 test lifetime을 결합했고 detached process도 운영 정책에 의해 종료됨</td><td><a href="https://github.com/gohyunsu/beltbench/commit/a515465"><code>a515465</code></a>에서 CPU-only PBS regression runner를 추가</td><td>Commit·환경·명령·node·log·exit status를 immutable run evidence로 보존</td></tr>
+<tr><td>첫 PBS runner의 comma-separated module 값이 <code>qsub -v</code> 구분자와 충돌</td><td>Application argument 형식과 scheduler 전달 문법을 분리하지 않음</td><td><a href="https://github.com/gohyunsu/beltbench/commit/901cba7"><code>901cba7</code></a>에서 colon-separated allowlisted module 계약으로 변경</td><td>별도 quoting이나 <code>eval</code> 없이 여러 unittest module을 전달</td></tr>
 </table>
 
 <h3>검증 범위</h3>
@@ -131,6 +133,7 @@
 <li>Planning 환경 전체 discovery는 411개를 수집했고 408개가 통과했다. 세 import error는 이 환경에 의도적으로 없는 OpenCV module이었다.</li>
 <li>분리된 calibration 환경에서 해당 세 module의 실제 test 14개가 모두 통과했다.</li>
 <li>현재 config 진단은 5개 실패, position-limit failure 0개, required/allocated duration worst ratio 약 103.06을 기록했다.</li>
+<li>관리형 server PBS job <code>115162</code>가 source <code>901cba7</code>에서 timing·dynamics·playback 13개를 7.517초에 통과했고 scheduler와 run status 모두 exit 0을 기록했다.</li>
 </ul>
 
 <p>다음 단계는 임의 phase 문자열에 시간을 붙이는 방식을 확장하는 것이 아니다. Geometric path, arm·hand semantic event window, controller-sourced boundary state를 입력으로 받는 time-parameterizer contract를 만들고, attach 전 chase 구간의 object-relative pose drift와 선·각속도 차이를 hard gate로 검증해야 한다. 그 뒤 동일 timing으로 continuous collision과 stop path를 다시 검증한다.</p>
