@@ -17,6 +17,7 @@
 <p class="lede">AutoDex의 grasp 필터와 BeltBench의 moving-path gate를 다시 대조하는 과정에서, <code>continuous_path_tube</code>라는 문자열과 파일 SHA-256만 맞으면 임의 보고서도 runtime 입력이 될 수 있는 결함을 발견했다. 보고서를 typed contract로 바꾸고 robot·object·workcell부터 실제 path까지 정확히 결속했다. 다만 실제 continuous validator를 구현한 것처럼 주장하지 않는다.</p>
 
 <div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/2a31d72"><code>2a31d72</code></a>가 typed report, exact metric schema, startup semantic verifier와 negative test를 구현한다. Bundle schema는 <code>3.0</code>, policy schema는 <code>4.0</code>으로 올렸다. 모든 결과는 계속 <code>execution_blocked</code>다.</div>
+<div class="callout"><strong>2026-08-09 후속 감사:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/08ffc9b"><code>08ffc9b</code></a>는 visualization waypoint를 controller trajectory로 오인하지 않도록 source-bound fixed-schedule timing 진단을 추가했다. 현재 Pepsi drop schedule은 다섯 구간이 실패하며, 이 결과는 grasp ranking이 아니라 path compiler 입력 자체를 고쳐야 한다는 증거다.</div>
 
 <h2>AutoDex에서 실제로 거르는 기준</h2>
 <p>감사 기준은 public <code>willi19/autodex-code:main</code> <code>5ada1c0</code>이다. 이름이 비슷한 site repository나 오래된 fork branch를 구현 source로 간주하지 않았다.</p>
@@ -102,6 +103,37 @@
 <li>OpenCV가 있는 calibration 환경에서 해당 3개 module의 실제 test 14개가 통과했다. 총 실제 통과 수는 376개다.</li>
 <li><code>junjinyong</code> server를 source commit <code>2a31d72</code>로 fast-forward한 뒤 동일하게 365개를 수집하고 planning 362개를 통과했다. 기존 untracked BODex native build는 변경하지 않았다.</li>
 </ul>
+
+<h2>후속 감사: grasp 통과와 실행 timing 사이의 단절</h2>
+<p>AutoDex 기준을 다시 대조해도 결론은 같았다. BODex residual, static collision, squeeze overlap, 고정 parameter MuJoCo hold, scene set cover와 첫 runtime planning 성공은 object-relative grasp 후보를 만들고 정적 유용성을 거르는 절차다. 이 중 어느 것도 belt와 함께 움직이는 물체에 대한 arm·hand 동기 궤적을 보장하지 않는다. 따라서 BeltBench는 AutoDex의 통과 여부를 compiled path의 velocity·acceleration·jerk·moving-contact·stop gate로 전달하지 않는다.</p>
+
+<table class="table">
+<tr><th>실패 구간</th><th>배정 시간</th><th>필요 시간</th><th>지배 제약</th></tr>
+<tr><td><code>track → approach</code></td><td>1.0000 s</td><td>1.4422 s</td><td>arm <code>joint5</code> jerk</td></tr>
+<tr><td><code>pregrasp → close_above_object</code></td><td>0.5000 s</td><td>3.4354 s</td><td>hand <code>left_index_1_joint</code> velocity</td></tr>
+<tr><td><code>close_above_object → grasp</code></td><td>0.5000 s</td><td>0.9435 s</td><td>arm <code>joint3</code> jerk</td></tr>
+<tr><td><code>release → drop</code></td><td>0.0333 s</td><td>3.4354 s</td><td>hand <code>left_index_1_joint</code> velocity</td></tr>
+<tr><td><code>return_home → home</code></td><td>1.0000 s</td><td>1.5326 s</td><td>arm <code>joint2</code> jerk</td></tr>
+</table>
+
+<h3>문제, 원인, 해결, 결과</h3>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>301-frame geometric playback이 보기에는 자연스럽지만 실제 task path의 hand derivative가 크게 위반됨</td><td>Waypoint phase와 임의 시간을 joint-space smooth interpolation에 직접 넣어 geometry와 executable timing을 같은 artifact로 취급</td><td>기존 시간을 움직이지 않는 <code>reference.rest_to_rest_quintic_bounds.v1</code> 진단을 별도 contract로 구현</td><td>Schedule을 억지로 늘리지 않고 실패 segment, limiting joint, derivative와 최소 시간을 명시적으로 보존</td></tr>
+<tr><td>Release 한 frame만 늘리면 해결된 것처럼 보일 수 있음</td><td>Release가 가장 큰 위반이지만 hand close, approach, grasp, return도 독립적으로 실패</td><td>Arm과 hand 전체 joint 집합을 같은 profile에서 공동 평가</td><td>다섯 실패를 확인해 국소 patch가 아닌 event-preserving parameterizer가 필요함을 확인</td></tr>
+<tr><td>Report 안 checksum만 맞추면 stale 계산을 재사용할 수 있음</td><td>Source identity 저장과 계산 재현은 별개</td><td>Request와 motion-limit source를 다시 hash하고 전체 assessment를 재계산해 payload exact 비교</td><td>Source 변경, metric 변조, identity splice를 diagnostic verifier에서 거부</td></tr>
+<tr><td>Limit만 통과하면 moving grasp도 가능한 것으로 오해할 수 있음</td><td>Rest-to-rest joint bound는 접촉 시 object-relative pose와 속도를 검사하지 않음</td><td>Execution-block reason에 collision, moving-contact velocity, controller tracking, measured limit authority 누락을 고정 기록</td><td>통과 결과도 command authority가 아니며 다음 moving-contact gate가 명시적 blocker로 남음</td></tr>
+</table>
+
+<h3>검증 범위</h3>
+<ul>
+<li>Timing, path dynamics, playback, sampled path, compiler, projection, runtime engine, warm start 관련 집중 test 92개가 통과했다.</li>
+<li>Planning 환경 전체 discovery는 411개를 수집했고 408개가 통과했다. 세 import error는 이 환경에 의도적으로 없는 OpenCV module이었다.</li>
+<li>분리된 calibration 환경에서 해당 세 module의 실제 test 14개가 모두 통과했다.</li>
+<li>현재 config 진단은 5개 실패, position-limit failure 0개, required/allocated duration worst ratio 약 103.06을 기록했다.</li>
+</ul>
+
+<p>다음 단계는 임의 phase 문자열에 시간을 붙이는 방식을 확장하는 것이 아니다. Geometric path, arm·hand semantic event window, controller-sourced boundary state를 입력으로 받는 time-parameterizer contract를 만들고, attach 전 chase 구간의 object-relative pose drift와 선·각속도 차이를 hard gate로 검증해야 한다. 그 뒤 동일 timing으로 continuous collision과 stop path를 다시 검증한다.</p>
 
 <h2>아직 해결하지 않은 것</h2>
 <p>Typed report는 필요한 신뢰 경계지만 validator 계산을 증명하지 않는다. 현재 Python Coal/hpp-fcl binding과 Pinocchio 경로는 discrete frame collision·distance query를 제공하며, 기존 301-frame playback validation도 sampled oracle이다. Capability 문자열을 썼다고 continuous swept collision이나 correction-tube 전체가 계산되는 것은 아니다.</p>

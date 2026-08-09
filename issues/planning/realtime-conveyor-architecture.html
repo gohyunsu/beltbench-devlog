@@ -17,6 +17,7 @@
 <p class="lede">현재 reference pipeline은 필터 근거와 fail-closed 동작을 검증하지만 coarse planning과 dense validation에 수백 초가 걸린다. 이를 평균적으로 빠르게 만드는 방식으로는 실시간 목표를 만족할 수 없다. Conveyor task의 제한된 운동을 명시적 runtime 가정으로 만들고, offline path family·online retain/latch/warm-start·replan cutoff·controller authority로 계산을 다시 나눴다.</p>
 
 <div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/b0c3c56">revision <code>b0c3c56</code></a>은 production 방향 ADR과 첫 constrained belt-state 계약을 구현한다. 실제 encoder adapter, multi-camera filter, path-family compiler, controller는 아직 없으므로 real-time 또는 hardware-ready 상태가 아니다.</div>
+<div class="callout"><strong>2026-08-09 timing 경계:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/08ffc9b">revision <code>08ffc9b</code></a>는 collision-free geometric path, event-preserving time-parameterization, bounded latch/stop, late phase correction을 서로 다른 capability로 확정했다. 현재 구현은 fixed-schedule diagnostic까지이며 production parameterizer는 아직 없다.</div>
 
 <h2>냉정한 현재 상태</h2>
 <table class="table">
@@ -38,6 +39,7 @@
 <tr><td><a href="https://github.com/jingxixu/dynamic-grasping">Reachability/motion-aware dynamic grasping, IROS 2021</a></td><td>Reachability SDF로 grasp를 줄이고 이전 trajectory를 seed로 재사용. 예시는 pose 5 Hz와 별도 planning/ranking budget 사용</td><td>Coarse-to-fine filter, previous-plan warm start, switching hysteresis를 채택. Learned score는 독립 hard gate 없이 전이하지 않음</td></tr>
 <tr><td><a href="https://curobo.org/">cuRobo</a></td><td>GPU batch IK·collision·trajectory optimization의 낮은 평균 latency 보고</td><td>Accelerated backend 후보. 선택 GPU·workcell에서 p95/p99와 reference agreement를 측정하기 전에는 보장으로 사용하지 않음</td></tr>
 <tr><td><a href="https://moveit.picknik.ai/main/doc/examples/realtime_servo/realtime_servo_tutorial.html">MoveIt Servo</a> / <a href="https://docs.ruckig.com/tutorial.html">Ruckig</a></td><td>Servo safety 기능과 jerk-limited online state-to-state generation 제공</td><td>Controller-side correction/stop adapter 후보. Global collision-free path나 grasp timing을 대신하지 않음</td></tr>
+<tr><td><a href="https://arxiv.org/abs/1707.07239">TOPP-RA</a></td><td>이미 고정된 geometric path를 supported constraint 아래 time-parameterize</td><td>Offline reference 후보. Path 생성, jerk/controller authority, moving-contact event 의미를 단독으로 보장하지 않음</td></tr>
 </table>
 
 <h2>확정한 hybrid 구조</h2>
@@ -50,6 +52,8 @@
 <li><strong>Controller:</strong> command generation, measured feedback, jerk/velocity limits, watchdog, stop, hand trigger를 별도 authority에서 확인한다.</li>
 <li><strong>Evidence:</strong> observation·prediction·planning·commit·setpoint·measured state·contact를 append-only timestamp event로 기록해 Viser가 실제 상대 시간에 재생한다.</li>
 </ol>
+
+<p>Arm과 hand는 독립적으로 retime하지 않는다. <code>close_start</code>, contact, attach, release-open start, detach와 cutoff는 공동 semantic window이며 deadline 안에 valid schedule이 없으면 reject한다. Attach 전에는 hand와 물체의 상대 pose drift뿐 아니라 상대 선속도와 각속도를 검사해야 한다. Viser의 <code>conveyor → attached</code> 상태 전환은 이 물리 조건의 증거가 아니다.</p>
 
 <h2>R1: constrained belt state 구현</h2>
 <p><code>ConveyorMotionState</code>는 encoder-derived longitudinal position·velocity·acceleration, 3×3 covariance, calibration ID, sequence, monotonic timestamp를 갖는다. <code>FusedPlanarObjectTrack</code>은 object/stable pose identity, belt `(x,y,yaw)`, covariance, observed longitudinal/lateral velocity, yaw rate, contributing camera IDs와 camera disagreement를 갖는다.</p>
