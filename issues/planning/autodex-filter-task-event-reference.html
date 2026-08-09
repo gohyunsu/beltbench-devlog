@@ -12,14 +12,14 @@
 <nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
 </div></header>
 <main class="wrap article">
-<div class="eyebrow">ISSUE-030 · 2026-08-09 · grasp filter and task events</div>
+<div class="eyebrow">ISSUE-030 · 2026-08-10 후속 감사 · grasp filter and retention</div>
 <h1>AutoDex의 정적 grasp filter를 moving conveyor의 실행 기준으로 과장하지 않고, task 사건과 actual-time reference까지 닫는다.</h1>
-<p class="lede">AutoDex가 실제로 거르는 조건과 BeltBench가 채택한 조건을 최신 public branch에서 다시 대조했다. 정적 후보 생성·collision·hold·coverage는 유용하지만 moving grasp의 상대 속도, arm-hand 동기 closure, release와 controller authority를 증명하지 않는다. 이번 구현은 그 차이를 숨기지 않고 task별 필수 사건과 grasp command를 schema 수준에서 강제하고, 같은 desired trajectory를 실제 시간축으로 Viser에 표시한다.</p>
+<p class="lede">AutoDex가 실제로 거르는 조건과 BeltBench가 채택한 조건을 최신 public branch에서 다시 대조했다. 정적 후보 생성·collision·hold·coverage는 유용하지만 moving grasp의 상대 속도, arm-hand 동기 closure, release와 controller authority를 증명하지 않는다. 후속 구현은 첫 접촉 <code>q_grasp</code>와 운반 유지 <code>q_sqz</code>를 분리하고, intrinsic·deployment·shortlist·event·Viser·hardware evidence가 같은 retention 명령을 사용하도록 결속한다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/bdc5cd0"><code>bdc5cd0</code></a>이 task-event schema 2.0, release-command 결속, actual-time desired reference와 Viser adapter를 구현한다. Complete chase interval, continuous collision, controller tracking과 hardware attachment가 없으므로 실행 권한은 계속 차단한다.</div>
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/2614962"><code>2614962</code></a>가 first-contact/retention 분리, bounded intentional contact, exact grasp digest, task-event 결속과 Viser replay를 구현한다. Current Pepsi artifact는 새 retention gate 이전 결과이며 protocol·stable pose·hardware evidence가 없으므로 실행 권한은 계속 차단한다.</div>
 
 <h2>감사 source와 branch</h2>
-<p>2026-08-09에 <code>willi19/autodex-code</code> remote를 다시 fetch했다. 공개 remote branch는 <code>main</code> 하나이며 감사 commit은 <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. 로컬에는 이름이 같은 과거 checkout과 개인 fork가 함께 있으므로 working tree HEAD를 신뢰하지 않고 <code>autodex/autodex-code:origin/main</code>의 blob을 직접 읽었다. Site repository인 <code>autodex</code>, GoTrack perception, BODex proposal generator와 grasp acceptance를 같은 모듈로 취급하지 않았다.</p>
+<p>2026-08-10에도 <code>willi19/autodex-code</code> remote를 다시 fetch했다. 공개 remote branch는 <code>main</code> 하나이며 감사 commit은 <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. 로컬에는 이름이 같은 과거 checkout과 개인 fork가 함께 있으므로 working tree HEAD를 신뢰하지 않고 <code>autodex/autodex-code:origin/main</code>의 blob을 직접 읽었다. Site repository인 <code>autodex</code>, GoTrack perception, BODex proposal generator와 grasp acceptance를 같은 모듈로 취급하지 않았다.</p>
 
 <h2>AutoDex의 effective filter</h2>
 <table class="table">
@@ -37,8 +37,8 @@
 <h2>BeltBench가 채택한 기준</h2>
 <ol>
 <li><strong>Proposal boundary:</strong> provider success·residual·순서는 source와 생성 맥락으로 보존하되 acceptance에 사용하지 않는다.</li>
-<li><strong>Intrinsic endpoint:</strong> named allowed contact, 최소 contact 수, bounded penetration, non-contact object·self·support clearance와 signed force·moment task-wrench margin을 독립 hard gate로 둔다.</li>
-<li><strong>Intrinsic path:</strong> object-relative approach, closure와 task에 필요한 release 전 경로를 sample별로 검사한다. Endpoint success가 path failure를 덮지 못한다.</li>
+<li><strong>Intrinsic endpoint:</strong> first contact와 retention 각각에 named allowed contact, 최소 contact 수, bounded penetration, non-contact object·self·support clearance와 signed force·moment task-wrench margin을 독립 hard gate로 둔다.</li>
+<li><strong>Intrinsic path:</strong> object-relative approach, pregrasp-to-contact closure, contact-to-retention과 task에 필요한 release 전 경로를 sample별로 검사한다. Endpoint success가 path failure를 덮지 못한다.</li>
 <li><strong>Robot deployment:</strong> exact arm·hand·connector·object·workcell ancestry에서 IK, assembly/workcell/object clearance, joint-limit과 singularity margin을 검사한다.</li>
 <li><strong>Yaw·horizon atlas:</strong> 측정 yaw uncertainty와 intercept horizon이 걸치는 모든 cell의 hard-gated grasp 교집합만 online candidate로 반환한다. 빈 교집합에는 nominal fallback이 없다.</li>
 <li><strong>Portfolio selection:</strong> 모든 threshold를 통과한 후보에만 coverage를 적용하고, redundancy는 dimensionless normalized slack의 deterministic lexicographic maximin으로 정렬한다.</li>
@@ -58,7 +58,7 @@
 <li>선택적인 <code>replan_cutoff</code>은 closure 시작 뒤에 올 수 없다.</li>
 <li>Task에 없는 추가 사건, 필수 사건 누락과 물리적으로 뒤집힌 순서는 모두 거부한다.</li>
 </ul>
-<p>Release task는 선택 grasp가 <code>drop_release</code> 또는 <code>tabletop_release</code> capability와 명시적 <code>release_command</code>를 가져야 한다. Release 시작은 final grasp command를 유지하고 detach는 selected release command에 도달하며, 두 boundary의 prescribed hand velocity·acceleration은 0이어야 한다.</p>
+<p>Release task는 선택 grasp가 <code>drop_release</code> 또는 <code>tabletop_release</code> capability와 명시적 <code>release_command</code>를 가져야 한다. Release 시작은 exact retention command를 유지하고 detach는 selected release command에 도달하며, 두 boundary의 prescribed hand velocity·acceleration은 0이어야 한다.</p>
 
 <h2>Actual-time desired reference</h2>
 <p><code>EventTrajectoryReferenceTimeline</code>은 저장 frame을 선형 보간하지 않고 같은 piecewise quintic을 actual time에 평가한다. Attach 전 object는 측정된 초기 orientation을 유지한 채 contact pose와 belt velocity에서 평행이동한다. Attach 뒤에는 robot-neutral FK protocol과 exact object-from-tool transform으로 tool을 따라가며, detach 뒤에는 명시적 static place 또는 ballistic drop display model을 적용한다.</p>
@@ -69,7 +69,7 @@
 <table class="table">
 <tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
 <tr><td>Drop task에 release가 없어도 valid</td><td>Task mode가 enum 확인만 하고 event set을 소유하지 않음</td><td>Schema 2.0 task별 exact event state machine과 strict order 추가</td><td>누락·추가·순서 역전 task가 contract boundary에서 거부됨</td></tr>
-<tr><td>Release 동작이 grasp와 분리</td><td>Viewer가 detach를 임의 연출할 수 있었음</td><td>Grasp capability, final command, release command와 zero derivative boundary 결속</td><td>같은 grasp ID의 다른 release command 치환 test가 실패하도록 수정</td></tr>
+<tr><td>Release 동작이 grasp와 분리</td><td>Viewer가 detach를 임의 연출할 수 있었음</td><td>Grasp capability, first-contact·retention·release command와 zero derivative boundary 결속</td><td>같은 grasp ID의 다른 hand command 치환 test가 실패하도록 수정</td></tr>
 <tr><td>새 planning reference가 legacy playback module에 의존</td><td><code>ReleaseMotion</code> 정의가 과거 viewer request 안에 있었음</td><td>중립 <code>contracts.object_release</code>로 한 번만 정의하고 양쪽 consumer가 import</td><td>표현 중복과 새 core의 legacy dependency 제거</td></tr>
 <tr><td>Release vector와 duration이 boolean·문자열을 숫자로 변환</td><td><code>np.asarray(..., dtype=float)</code>와 <code>float()</code>가 입력 type을 지움</td><td>Raw scalar type, shape, finite와 positive duration을 변환 전에 검사</td><td>Boolean·numeric string·zero acceleration negative test 통과</td></tr>
 <tr><td>Visualization 환경에 Pinocchio가 없음</td><td>초기 FK adapter가 planning backend를 renderer에 요구</td><td>Robot-neutral protocol 뒤에 <code>yourdfpy</code> adapter 구현</td><td>실제 xArm URDF의 6개 joint와 <code>link6</code> FK load 통과</td></tr>
@@ -89,13 +89,46 @@
 <li>PBS test log의 11.845초는 기능 회귀 소요 시간일 뿐 latency 근거가 아니다. Compute clock이 filesystem보다 367초 느려 status가 <code>timing_evidence_authorized=false</code>로 정확히 차단했다.</li>
 </ul>
 
+<h2>2026-08-10 후속: first contact와 retention 분리</h2>
+<p>Public <code>willi19/autodex-code:origin/main</code>의 <code>run_sim_filter.py</code>, <code>compute_order.py</code>, <code>compute_order_cross_pose.py</code>와 runtime <code>planner.py</code>를 다시 읽었다. Effective generation filter는 finite input, pregrasp world/self collision, <code>2 × grasp - pregrasp</code> squeeze overlap, tabletop gravity 한 방향의 MuJoCo hold, binary scene coverage 순서다. Runtime은 target을 제거한 endpoint collision, Inspire에서 비활성인 orientation heuristic, batch IK, 5 cm lift IK와 우선순위상 첫 successful plan을 사용한다. 이 기준은 proposal pool과 정적 scene coverage에는 유용하지만 moving pick의 retention, complete path, deadline과 uncertainty authority는 아니다.</p>
+
+<h3>문제와 진단</h3>
+<table class="table">
+<tr><th>문제</th><th>근본 원인</th><th>위험</th></tr>
+<tr><td><code>grasp_command</code>를 운반 자세로 재사용</td><td>Library가 pregrasp·grasp·release만 저장해 AutoDex의 <code>q_grasp</code>와 <code>q_sqz</code> 단계를 잃음</td><td>첫 접촉에서는 타당해도 lift 중 물체를 유지하지 못하는 grasp가 통과할 수 있음</td></tr>
+<tr><td>Intrinsic과 deployment의 penetration 의미 불일치</td><td>Intrinsic은 named contact의 bounded penetration을 허용하지만 deployment·sampled path·playback은 모든 <code>colliding=True</code>를 거부</td><td>Retention에서 생기는 얕은 의도 접촉까지 탈락하거나 consumer마다 판정이 달라짐</td></tr>
+<tr><td>Assessment closure minimum의 단위 혼합</td><td>Object·self·support clearance와 음수 penetration을 하나의 scalar minimum으로 합쳐 object threshold와 비교</td><td>각 독립 gate를 통과한 low self/support margin이 잘못된 object-clearance 탈락을 만듦</td></tr>
+<tr><td>동일 <code>grasp_id</code> hardware evidence 재사용</td><td>Reliability context가 complete grasp payload digest를 저장하지 않음</td><td>Hand command나 transform이 바뀌어도 과거 trial이 합쳐질 수 있음</td></tr>
+<tr><td>후단 consumer의 retention 누락</td><td>Shortlist diversity, deployment ancestry verifier와 intrinsic Viser가 first-contact command만 사용</td><td>선택 근거, source 재현과 표시 animation이 저장 evaluation과 달라짐</td></tr>
+</table>
+
+<h3>해결</h3>
+<ul>
+<li>Grasp library schema를 <code>6.0</code>으로 올리고 exact <code>retention_command</code>를 payload와 SHA-256에 포함했다. Hardware reliability evidence와 requirement도 schema <code>2.0</code>에서 complete grasp digest가 같아야만 trial을 합친다.</li>
+<li>Retention policy를 <code>pregrasp + gain × (first_contact - pregrasp)</code>로 명시하고 command joint뿐 아니라 모든 mimic joint의 URDF limit 교집합으로 clip한다. Gain은 hand 이름 분기가 아니라 intrinsic protocol 입력이다.</li>
+<li>First-contact와 retention에서 contact identity·count·penetration·non-contact/self/support clearance·task-wrench를 각각 검사하고, contact-to-retention path도 별도 hard gate로 추가했다. Static quality와 support margin은 두 endpoint의 보수적 minimum이다.</li>
+<li>Deployment는 같은 arm grasp configuration에서 first-contact와 retention hand assembly/object collision을 모두 저장한다. 허용된 hand geometry의 얕은 penetration만 명시 threshold까지 contact로 세고, arm·비접촉 hand·초과 penetration은 static, timed tool, sampled path와 playback 모두 hard failure다. Deployment threshold는 intrinsic보다 느슨할 수 없다.</li>
+<li>Shortlist maximin vector에 retention object/self/support slack을 넣고 hand diversity도 first-contact와 retention separation의 큰 값을 effective mimic-aware joint range로 정규화한다. Source verifier는 proposal·protocol·URDF로 retention을 재계산해 assessment의 치환을 거부한다.</li>
+<li>Event trajectory는 <code>hand_close_start=pregrasp</code>, <code>contact=grasp</code>, <code>hand_close_complete=attach=retention</code>, <code>release_open_start=retention</code>, <code>detach=release</code>를 exact equality로 검사한다. Position-only legacy playback은 retention animation을 보여도 contact timing evidence로 승격하지 않는다.</li>
+<li>Intrinsic Viser는 approach·closure·retention·release 네 경로와 first-contact/retention contact evidence를 저장 sample 그대로 반복 재생한다.</li>
+</ul>
+
+<h3>검증과 현재 결론</h3>
+<ul>
+<li>Source <a href="https://github.com/gohyunsu/beltbench/commit/2614962"><code>2614962</code></a>를 <code>main</code>에 push했다. Planning <code>470/470</code>, 분리된 calibration <code>14/14</code>, 총 <code>484/484</code> regression이 통과했고 <code>git diff --check</code>와 두 Viser CLI import도 통과했다.</li>
+<li>실제 Inspire-left URDF에서 gain 2 retention은 thumb <code>(0.635232, 0.273136)</code>, index·middle·ring·little <code>1.6</code>이며 mimic limit까지 포함한 재계산과 library 값이 정확히 일치한다. Complete grasp digest는 <code>ab0bdde930d3227c871fcaed2503cd2cb882398d3d03ca2e0a3d7a8f09348f0c</code>다.</li>
+<li>현재 Pepsi drop request의 해석 결과는 계속 <code>synthesis_required</code>다. Retention command를 결정적으로 만들었다는 사실은 contact quality, stable pose, release path나 hardware reliability를 새로 검증했다는 뜻이 아니다.</li>
+<li>기존 117개 geometry-clear와 관련 intrinsic artifact는 retention schema 이전 결과다. 새 evaluator로 재생성·source verify하기 전에는 shortlist나 moving execution authority로 사용할 수 없다.</li>
+<li>AutoDex physical sequence의 gain 2는 Inspire 예시 protocol로 채택했을 뿐 universal hand rule이 아니다. 다른 hand와 object는 새 protocol·URDF·contact evidence를 요구한다.</li>
+</ul>
+
 <h2>남은 구현 순서</h2>
 <ol>
-<li>Contact부터 attach까지 complete chase interval의 pose·twist tracking tube와 closing-hand collision을 검증한다.</li>
-<li>Event window와 intercept deadline을 동시에 만족하는 schedule allocator·time parameterizer를 구현한다.</li>
+<li>Current proposal batch를 schema 2.0 intrinsic evaluator로 다시 실행해 retention endpoint/path artifact와 deployment·yaw atlas를 재생성한다.</li>
+<li>Offline schedule allocator가 exact first-contact/retention waypoint를 직접 출력하고 path-family compiler가 이를 source-bound event trajectory로 소비하게 연결한다.</li>
 <li>Exact interpolated arm·hand·connector·object에 대해 continuous/swept collision과 controller tracking bound를 독립 검증한다.</li>
 <li>Release motion과 bin containment를 source-bound artifact로 만들되 display model을 실행 authority로 재사용하지 않는다.</li>
-<li>Hardware가 준비되면 calibration residual, latency, controller·hand feedback과 moving-pick reliability를 측정해 physical commit gate를 연다.</li>
+<li>Hardware가 준비되면 calibration residual, latency, controller·hand feedback과 exact-grasp moving-pick reliability를 측정해 physical commit gate를 연다.</li>
 </ol>
 <p>관련 맥락은 <a href="synchronized-event-trajectory.html">synchronized event trajectory</a>, <a href="runtime-grasp-selection.html">runtime grasp selection 재감사</a>, <a href="path-family-validation-authority.html">path validation authority</a>에 이어서 확인한다.</p>
 </main>
