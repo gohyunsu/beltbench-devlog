@@ -16,7 +16,7 @@
 <h1>AutoDex의 정적 grasp filter를 moving conveyor의 실행 기준으로 과장하지 않고, task 사건과 actual-time reference까지 닫는다.</h1>
 <p class="lede">AutoDex가 실제로 거르는 조건과 BeltBench가 채택한 조건을 최신 public branch에서 다시 대조했다. 정적 후보 생성·collision·hold·coverage는 유용하지만 moving grasp의 상대 속도, arm-hand 동기 closure, release와 controller authority를 증명하지 않는다. 후속 구현은 첫 접촉 <code>q_grasp</code>와 운반 유지 <code>q_sqz</code>를 분리하고, intrinsic·deployment·shortlist·event·Viser·hardware evidence가 같은 retention 명령을 사용하도록 결속한다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/c228f44"><code>c228f44</code></a>까지 first-contact/retention 분리, bounded intentional contact, exact grasp digest, 동적 closure의 exact contact, task-event 결속과 runtime state 보존을 구현한다. Current Pepsi artifact는 새 retention/contact gate 이전 결과이며 protocol·stable pose·hardware evidence가 없으므로 실행 권한은 계속 차단한다.</div>
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/0d8c127"><code>0d8c127</code></a>까지 first-contact/retention 분리와 runtime path-family 선택을 startup-verified resident event request에 결속한다. 다만 기록된 request는 nominal reference와 명시적 correction 요청이며 correction 적용 결과가 아니다. Current Pepsi artifact는 새 retention/contact gate 이전 결과이고 protocol·stable pose·hardware evidence도 없으므로 실행 권한은 계속 차단한다.</div>
 
 <h2>감사 source와 branch</h2>
 <p>2026-08-10에도 <code>willi19/autodex-code</code> remote를 다시 fetch했다. 공개 remote branch는 <code>main</code> 하나이며 감사 commit은 <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. 로컬에는 이름이 같은 과거 checkout과 개인 fork가 함께 있으므로 working tree HEAD를 신뢰하지 않고 <code>autodex/autodex-code:origin/main</code>의 blob을 직접 읽었다. Site repository인 <code>autodex</code>, GoTrack perception, BODex proposal generator와 grasp acceptance를 같은 모듈로 취급하지 않았다.</p>
@@ -145,10 +145,38 @@
 <li>Production online 방향은 여전히 verified resident path family의 retain/latch/bounded correction이다. 매 camera frame마다 이 reference intercept search를 실행하는 방식으로 되돌리지 않는다.</li>
 </ul>
 
+<h2>2026-08-10 후속: 선택된 path family와 실제 event request 결속</h2>
+<p><code>PathFamilyRuntimeEngine</code>부터 session recorder까지 다시 따라가자, coordinator는 올바른 path family를 골라도 엔진이 반환하는 것은 <code>SourceFileEvidence</code>뿐이었다. Recorder는 선택 결과와 별도로 생성된 고정 <code>PickPlayback</code>을 Viser layer로 골랐다. 따라서 saved decision의 family·grasp와 표시되는 arm-hand trajectory가 같은 source라는 증거가 없었다. 특히 warm start 파일과 precompiled event request를 같은 <code>selected_trajectory</code> 필드로 처리해, derivative와 contact 사건이 없는 파일도 동일한 downstream 의미를 가질 수 있었다.</p>
+
+<h3>AutoDex 기준 재확인과 BeltBench 판단</h3>
+<p><code>willi19/autodex-code:origin/main</code>을 다시 fetch했으며 commit은 여전히 <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. Effective filter는 finite BODex output, zero-activation-distance pregrasp world/self collision, squeeze sphere overlap, tabletop gravity 한 방향 MuJoCo hold, binary coverage, runtime endpoint collision·IK·5 cm lift IK와 first-success planning이다. Parallel <code>sim_only</code> 경로는 squeeze contact를 재계산하지 않는 것도 다시 확인했다. BeltBench는 이 중 provenance, scene collision 개념, IK와 coverage만 독립 hard gate 뒤의 prefilter/portfolio 요소로 채택한다. Squeeze overlap, fixed hold, cache hit, provider order, orientation heuristic와 first success는 moving execution authority로 채택하지 않는다.</p>
+
+<h3>문제, 원인, 수정, 결과</h3>
+<table class="table">
+<tr><th>문제</th><th>근본 원인</th><th>수정</th><th>결과</th></tr>
+<tr><td>선택 결과가 파일 label과 SHA만 보존</td><td>Path-family bundle의 reusable path가 어떤 typed trajectory인지 startup에서 열지 않음</td><td>모든 family를 <code>ResidentEventTrajectoryCatalog</code>로 미리 load하고 source SHA, arm·hand·connector·object·stable pose·task·grasp·pick schedule·duration을 대조</td><td>Catalog root 밖 경로, 잘못된 hash, 다른 schedule과 incomplete catalog가 online loop 전에 fail closed</td></tr>
+<tr><td>Online 선택 뒤 파일 I/O 또는 암묵 fallback 가능</td><td>Selected source가 단순 reference라 consumer가 나중에 다시 열어야 했음</td><td>Catalog에 exact request object와 canonical digest를 resident로 유지하고 runtime query에서는 lookup만 수행</td><td>Measured loop에서 JSON parse와 filesystem fallback을 제거</td></tr>
+<tr><td>Contact·attach 절대시각과 request 상대시각이 분리</td><td>Projection, family schedule과 event request가 서로 다른 artifact에 존재</td><td><code>RuntimeTrajectoryActivation</code>에 source/request digest, projection, monotonic start·contact·attach, duration과 correction을 결속</td><td>Saved request의 first-contact/attach offset과 selected projection의 절대시각이 다르면 typed loader가 거부</td></tr>
+<tr><td>Session에 exact event request 본문이 없음</td><td>Recorder가 unrelated legacy playback만 외부 artifact로 저장</td><td>선택된 request를 별도 <code>event_trajectory_request</code> artifact로 materialize하고 decision·trajectory update·diagnostic selection event와 교차검증</td><td>Source-file SHA와 canonical request SHA를 분리 보존하고 same-ID request 치환을 검출</td></tr>
+<tr><td>Warm start가 precompiled request처럼 보임</td><td>두 결과가 같은 optional source field를 공유</td><td>Resident activation은 retain/correct/latch/switch에만 생성하고 warm-start result에는 자동 생성하지 않음</td><td>독립 validation을 통과한 파일도 typed event request 경계를 별도로 통과하기 전에는 event-time authority가 없음</td></tr>
+<tr><td>Nonzero correction인데 nominal joint trajectory를 exact라고 부를 위험</td><td>Correction tube admission과 correction 적용 backend가 분리되지 않음</td><td>Activation에 correction을 명시적으로 보존하고 문서·AGENTS에서 nominal request plus unapplied correction으로 규정</td><td>Correction backend와 독립 재검증 전에는 corrected rendering·dispatch를 금지</td></tr>
+</table>
+
+<h3>검증과 현재 결론</h3>
+<ul>
+<li>Source <a href="https://github.com/gohyunsu/beltbench/commit/0d8c127"><code>0d8c127</code></a>을 <code>main</code>에 push했다.</li>
+<li>변경 직후 planning 전체 <code>476/476</code>, calibration/OpenCV <code>14/14</code>, 합계 <code>490/490</code>가 통과했다. 마지막 source-hash negative case 추가 뒤 activation/runtime focused regression <code>19/19</code>도 통과했다.</li>
+<li><code>junjinyong</code> 서버의 GitHub HTTPS credential은 계속 거부되어, 검증한 <code>c228f44..0d8c127</code> 증분 bundle로 checkout을 exact <code>0d8c127</code>까지 fast-forward했다. Pinned planning environment에서 같은 focused regression <code>19/19</code>가 통과했고, 기존 BODex/CuRobo build directory와 native <code>.so</code>는 untracked 상태 그대로 보존했다.</li>
+<li>Verifier는 wrapper 자체 선언을 신뢰하지 않고 deployment query의 selected projection ID, correction, path start/contact, request identity, canonical digest, source digest와 session event ancestry를 다시 비교한다.</li>
+<li>현재 runtime session의 legacy <code>PickPlayback</code>은 actual asset을 표시하는 별도 planned layer일 뿐 resident request에서 도출되지 않았다. Runtime Viser가 verified request와 typed correction output을 직접 소비하기 전에는 exact runtime replay라고 부르지 않는다.</li>
+<li>이번 변경은 AutoDex grasp filtering threshold를 복사한 것이 아니다. Expensive intrinsic·deployment·yaw/path validation은 offline, source verification은 startup, live support/correction/deadline/maximin query만 bounded online에 두는 기존 latency 구조를 유지한다.</li>
+</ul>
+
 <h2>남은 구현 순서</h2>
 <ol>
 <li>Current proposal batch를 schema 2.0 intrinsic evaluator로 다시 실행해 retention endpoint/path artifact와 deployment·yaw atlas를 재생성한다.</li>
-<li>Offline schedule allocator가 exact first-contact/retention waypoint를 직접 출력하고 path-family compiler가 이를 source-bound event trajectory로 소비하게 연결한다.</li>
+<li>Nonzero longitudinal·timing·lateral·yaw correction을 적용해 exact corrected arm-hand trajectory를 출력하는 typed backend를 구현하고 request·contact·continuous collision을 독립 재검증한다.</li>
+<li>Runtime Viser가 verified event-request artifact와 corrected output을 actual monotonic path phase에서 직접 재생하도록 legacy playback 선택과 분리한다.</li>
 <li>Exact interpolated arm·hand·connector·object에 대해 continuous/swept collision과 controller tracking bound를 독립 검증한다.</li>
 <li>Release motion과 bin containment를 source-bound artifact로 만들되 display model을 실행 authority로 재사용하지 않는다.</li>
 <li>Hardware가 준비되면 calibration residual, latency, controller·hand feedback과 exact-grasp moving-pick reliability를 측정해 physical commit gate를 연다.</li>
