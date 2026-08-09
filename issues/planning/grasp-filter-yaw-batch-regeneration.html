@@ -16,7 +16,7 @@
 <h1>AutoDex의 필터는 참고하되, moving pick의 권한 기준으로 복사하지 않는다.</h1>
 <p class="lede">Pinned AutoDex source의 proposal generation, static simulation filter, cross-pose order, runtime planner와 hardware-stat order를 다시 대조했다. BeltBench는 contact·clearance·wrench·path·robot deployment를 서로 다른 hard-gate owner로 유지하고, 모든 gate를 통과한 뒤에만 coverage와 maximin을 적용한다. 동시에 12개 yaw마다 같은 intrinsic ancestry와 robot model을 다시 읽던 offline 병목을 shared batch로 교체했다.</p>
 
-<div class="callout"><strong>현재 source:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/5cd83fb"><code>5cd83fb</code></a>이 shared preparation, yaw batch producer와 batch verifier를 구현했다. <a href="https://github.com/gohyunsu/beltbench/commit/f8af1b5"><code>f8af1b5</code></a>는 nominal shortlist가 full-yaw atlas의 whitelist가 될 수 없다는 권한 경계를 AGENTS와 방법론에 명시했다. 측정 resource 사용량을 반영한 <a href="https://github.com/gohyunsu/beltbench/commit/0fff6a3"><code>0fff6a3</code></a>은 순차 grasp PBS job을 1 CPU와 실제 메모리 여유에 맞췄다. 모든 산출물은 execution-blocked다.</div>
+<div class="callout"><strong>현재 source:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/5cd83fb"><code>5cd83fb</code></a>이 shared preparation, yaw batch producer와 batch verifier를 구현했다. <a href="https://github.com/gohyunsu/beltbench/commit/f8af1b5"><code>f8af1b5</code></a>는 nominal shortlist가 full-yaw atlas의 whitelist가 될 수 없다는 권한 경계를 AGENTS와 방법론에 명시했다. 측정 resource 사용량을 반영한 <a href="https://github.com/gohyunsu/beltbench/commit/0fff6a3"><code>0fff6a3</code></a>은 순차 grasp PBS job을 1 CPU와 실제 메모리 여유에 맞췄고, <a href="https://github.com/gohyunsu/beltbench/commit/25ff0d7"><code>25ff0d7</code></a>은 batch verifier가 source·association·decision integrity를 검증하지만 IK/FCL의 독립 physical oracle은 아니라는 한계를 고정했다. 모든 산출물은 execution-blocked다.</div>
 
 <h2>AutoDex에서 확인한 필터와 채택 판단</h2>
 <table class="table">
@@ -74,6 +74,37 @@
 <li>탈락 49개는 horizon coverage 42, non-contact object clearance 6, normalized joint-limit margin 1이다. 모든 탈락은 candidate decision ledger에 남는다.</li>
 <li>Top-8의 bottleneck은 모두 minimum horizon coverage 경계 1.0이었다. 이는 세 nominal horizon을 모두 지원한다는 뜻이지 continuous yaw/time 또는 moving execution이 검증됐다는 뜻이 아니다.</li>
 </ul>
+
+<h2>Current full-yaw endpoint 결과</h2>
+<table class="table">
+<tr><th>Yaw</th><th>Feasible / 351</th><th>대표 rejection</th></tr>
+<tr><td>0°</td><td>213</td><td>Pregrasp IK 132, pregrasp object clearance 6</td></tr>
+<tr><td>30°</td><td>185</td><td>Pregrasp IK 166</td></tr>
+<tr><td>60°</td><td>151</td><td>Pregrasp IK 200</td></tr>
+<tr><td>90°</td><td>130</td><td>Pregrasp IK 212, grasp assembly clearance 3, object penetration 6</td></tr>
+<tr><td>120°</td><td>101</td><td>Pregrasp IK 240, grasp assembly clearance 7, object penetration 3</td></tr>
+<tr><td>150°</td><td>113</td><td>Pregrasp IK 232, object penetration 6</td></tr>
+<tr><td>180°</td><td>150</td><td>Pregrasp IK 192, object penetration 9</td></tr>
+<tr><td>210°</td><td>153</td><td>Pregrasp IK 183, object penetration 9, pregrasp object clearance 6</td></tr>
+<tr><td>240°</td><td>197</td><td>Pregrasp IK 136, assembly clearance 3, object penetration 9, object clearance 6</td></tr>
+<tr><td>270°</td><td>209</td><td>Pregrasp IK 130, assembly clearance 3, object penetration 3, object clearance 6</td></tr>
+<tr><td>300°</td><td>231</td><td>Pregrasp IK 111, object penetration 3, object clearance 6</td></tr>
+<tr><td>330°</td><td>228</td><td>Pregrasp IK 114, object penetration 3, object clearance 6</td></tr>
+</table>
+<p>Job <code>115129</code>는 4,212 candidate-time pair 중 2,061개를 통과시키고 12 assessment의 ordered prediction binding을 확인했다. 과거 atlas baseline 2,097개보다 36개 적다. 0°, 210°, 240°, 270°, 300°, 330°에서 각각 같은 6개가 새 0.5 mm pregrasp non-contact object-clearance gate로 제거됐다. Shared batch가 결과를 바꾼 것이 아니라 후속 <code>c8da10c</code> policy가 실제로 더 엄격해진 결과다.</p>
+<p>Walltime은 41분 05초, CPU time은 38분 31초, peak memory는 약 1.1 GB였다. 하나의 sequential Pinocchio/HPP-FCL evaluator이므로 향후 PBS 요청을 1 CPU·8 GB로 낮췄다. 이 측정은 12 yaw의 reference endpoint compile이며 online latency가 아니다.</p>
+
+<h2>Current atlas 결과</h2>
+<p>Job <code>115130</code>은 exit 0으로 4분 08초에 12 yaw×3 horizon의 36 cell을 compile하고 11,120개 direct·transitive source와 derived candidate order를 검증했다. Registry에는 106개 distinct grasp가 남았고 cell별 candidate는 최소 33, 최대 71, 평균 52.97개다. 과거 registry 112개·cell 최대 77개보다 줄어 강화된 object-clearance gate가 atlas hard gate에도 반영됐다.</p>
+<p>4.6, 4.8, 5.0초 각 horizon에서 12 yaw 전체에 공통인 grasp는 모두 0개다. 따라서 nominal top-8을 전역 whitelist로 쓰는 방식은 실제로 full-yaw support를 잃는다. Runtime query는 측정 yaw uncertainty와 horizon bracket에 필요한 인접 cell의 교집합만 계산하고, 빈 교집합이면 다른 nominal grasp를 fallback하지 않는다.</p>
+
+<h2>Resident atlas query benchmark</h2>
+<table class="table">
+<tr><th>Yaw standard deviation</th><th>Accepted / query</th><th>Mean</th><th>p50</th><th>p95</th><th>p99</th><th>Max</th></tr>
+<tr><td>0.01 rad</td><td>10,000 / 10,000</td><td>1.426 ms</td><td>1.338 ms</td><td>1.843 ms</td><td>1.929 ms</td><td>33.565 ms</td></tr>
+<tr><td>5°</td><td>10,000 / 10,000</td><td>1.377 ms</td><td>1.277 ms</td><td>1.876 ms</td><td>1.961 ms</td><td>3.221 ms</td></tr>
+</table>
+<p>Jobs <code>115131</code>과 <code>115132</code>는 각각 current atlas의 11,120개 source를 먼저 검증하고 warmup 1,000회 뒤 10,000회를 측정했다. Walltime은 2분 37초와 2분 40초, peak memory는 각각 약 703 MB였다. Source 검증과 atlas load는 timed query 밖에 있으므로 resident query는 online shortlist lookup의 비용만 나타낸다. 10,000개 accepted는 uncertainty-supporting cell 교집합이 비지 않았다는 뜻일 뿐, complete path가 deadline·collision·controller gate를 통과했다는 뜻이 아니다. 따라서 이 수치를 end-to-end perception-to-command latency로 사용하지 않는다.</p>
 
 <h2>검증</h2>
 <ul>
