@@ -16,7 +16,7 @@
 <h1>AutoDex의 정적 grasp filter를 moving path hard gate로 확장하되, 실제 sampled 계산과 원본 경로를 분리하지 않는다.</h1>
 <p class="lede">이전 단계는 path-family compiler가 요구할 metric 계약을 정의했지만 실제 값을 계산하는 reference producer는 없었다. 기존 301-frame playback validator도 robot collision을 하나의 최소 거리로 합치고 dynamics, singularity, correction grid와 cutoff stop을 제공하지 않았다. AutoDex 선택 기준과 BeltBench 채택 기준을 다시 대조한 뒤, arm·hand 이름에 독립적인 task/stop path 계약과 13-metric sampled oracle, transitive source verification을 구현했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/f22a6a24ca19932af707dff9af96e1ff0fdcae96"><code>f22a6a2</code></a>가 구현한다. 이 결과는 offline <code>sampled_reference</code>이고 항상 실행 차단 상태다. 실제 Pepsi/xArm/Inspire path-family assessment, continuous swept collision, controller authority는 아직 없다.</div>
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/f22a6a24ca19932af707dff9af96e1ff0fdcae96"><code>f22a6a2</code></a>가 reference oracle을 구현했다. <a href="https://github.com/gohyunsu/beltbench/commit/1d36021"><code>1d36021</code></a>은 current playback을 label만 바꾼 sampled task와 discrete splice를 보존하는 cutoff stop producer를 추가했고, <a href="https://github.com/gohyunsu/beltbench/commit/9466532"><code>9466532</code></a>와 <a href="https://github.com/gohyunsu/beltbench/commit/81e9c8d"><code>81e9c8d</code></a>가 exact manifest reference, 재현 verifier와 direct-script 회귀를 결속했다. 결과는 계속 offline <code>sampled_reference</code>이고 실행 차단 상태다.</div>
 
 <h2>AutoDex 선택 기준 재검토</h2>
 <p>감사 기준은 계속 <code>willi19/autodex-code:main</code>의 <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. <code>gohyunsu/autodex-code:main</code>의 사이트 history나 저장소 이름을 알고리즘 근거로 사용하지 않았다.</p>
@@ -93,13 +93,32 @@
 <li>서버의 untracked BODex build 두 directory와 native Coal extension은 삭제하거나 수정하지 않았다.</li>
 </ul>
 
+<h2>2026-08-09 실제 Pepsi path 연결</h2>
+<p>Current schema-2 source를 얻기 위해 nominal yaw의 8개 shortlist 후보를 CPU reference planner로 다시 평가했다. PBS job <code>115150</code>은 8 search 중 한 후보를 dense refinement했고, <code>bodex-a9b299caeade8d79</code>의 5.0초 intercept가 301-frame full-frame geometry 검사를 통과했다. Coarse search는 160.917초, refinement는 139.468초였다. Verifier는 968개 source를 재검증했고 job은 12분 50초, exit 0으로 끝났다. Protocol, stable pose, calibration과 controller authority가 provisional이므로 report는 <code>diagnostic_selected=true</code>, <code>execution_selected=false</code>다.</p>
+<p>Playback은 <code>pepsi_light</code>, <code>upside_down</code>, <code>xarm6</code>, <code>inspire_left</code>와 exact manifest reference를 포함한다. Producer는 global 3.0초의 <code>approach</code>부터 label만 canonical phase로 바꾸고 시간을 0으로 옮겼다. Robot, hand, object pose와 sample time은 수정하지 않았다. Contact 전 global 4.0초, 즉 canonical 1.0초를 cutoff로 사용해 별도 stop을 생성했다.</p>
+<table class="table">
+<tr><th>Run</th><th>관찰</th><th>원인·조치</th><th>결과</th></tr>
+<tr><td><code>115153</code></td><td>Task 211 frame과 stop 31 frame 생성 뒤 verifier가 <code>ModuleNotFoundError: scripts</code>로 종료</td><td>Verifier가 sibling CLI를 Python package처럼 import했고 local unit-test 방식이 결함을 가렸다. Phase-map loader를 planning API로 이동하고 실제 <code>python scripts/...</code> child process 회귀를 추가했다.</td><td>Exit 1 artifact는 승인 증거에서 제외했다.</td></tr>
+<tr><td><code>115156</code></td><td>같은 immutable 입력으로 producer와 독립 verifier 재실행</td><td>Source 6개와 output 2개를 reload·rehash하고 task/stop을 다시 생성해 payload와 exact serialized hash를 비교했다.</td><td>Task 211, stop 31, verified file 8개, 46초, exit 0이다.</td></tr>
+</table>
+
+<h2>실제 dynamics 판정</h2>
+<table class="table">
+<tr><th>Path</th><th>Position</th><th>Velocity</th><th>Acceleration</th><th>Jerk</th></tr>
+<tr><td>Task</td><td>0.000</td><td>-25.504</td><td>-317.051</td><td>-1907.306</td></tr>
+<tr><td>Cutoff stop</td><td>0.289</td><td>0.811</td><td>0.144</td><td>0.494</td></tr>
+</table>
+<p>값은 draft motion limit 대비 normalized residual margin이므로 0보다 작으면 limit 초과다. Task의 최대 위반은 canonical 4.2초 release 경계의 <code>left_thumb_1_joint</code>였다. Global 7.2초 grasp command에서 7.233초 open command로 한 frame 만에 바뀌며 velocity 21.203 rad/s, acceleration 636.102 rad/s², jerk 38,166.127 rad/s³를 만들었다. Exact open command 0은 URDF lower bound와 같아 position margin도 0이다. 이는 AutoDex/BeltBench grasp geometry나 301-frame collision 통과로 보상할 수 없는 독립 trajectory 실패다.</p>
+<p>반대로 cutoff stop은 task의 discrete velocity·acceleration을 exact splice하고 마지막 세 joint sample을 같게 만들어 transition failure가 없었다. 그러나 stop limit은 draft이고 collision·continuous segment·controller 검증이 아직 없으므로 실행 가능한 brake라는 뜻은 아니다. 현재 task는 명백히 path-family hard gate를 통과하지 못하며, template 시간을 늘려 숫자만 맞추는 대신 controller-sourced limit을 입력으로 받는 time-parameterization backend가 approach, closure, release와 return을 함께 다시 생성해야 한다.</p>
+
 <h2>냉정한 현재 평가</h2>
 <p>이번 구현은 임의 metric을 입력하는 compiler 앞에 실제 sampled 계산과 transitive path provenance를 세웠다는 점에서 필요하다. 그러나 11개 axis cell은 correction corner interaction을 놓칠 수 있고 frame sampling 사이 충돌을 보장하지 않는다. Finite difference는 controller가 실제 실행할 interpolation과 동일하다는 보장도 없다. Draft motion limit은 제조사 또는 측정 controller limit으로 교체되기 전 승인값이 아니다.</p>
 <p>또한 이 oracle은 offline correctness authority라서 interception deadline 안에서 실행할 대상이 아니다. Real-time 경로는 verified resident atlas/path family, bounded retain/latch와 최대 한 번의 warm start를 사용해야 한다. 가속 collision/dynamics backend는 이 oracle과 zero false-accept 비교를 통과한 뒤에만 online validator 후보가 될 수 있다.</p>
 
 <h2>다음 구현</h2>
 <ol>
-<li>현재 historical playback에서 cutoff 이전 state를 사용해 물리적으로 타당한 braking stop path를 별도 생성한다. Manufacturer/controller-sourced xArm·Inspire motion profile 없이는 실제 assessment를 만들지 않는다.</li>
+<li>Current sampled producer의 portfolio report와 atlas-query ancestry를 명시적으로 결속한다. Playback ID 문자열에서 grasp를 추론하지 않는다.</li>
+<li>Controller-sourced xArm·Inspire limit과 state를 받는 time-parameterization backend로 release 한-frame jump를 제거한다. Draft limit을 느슨하게 바꿔 현재 path를 통과시키지 않는다.</li>
 <li>Nominal과 axis boundary 이후 correction corner를 adaptive하게 추가하고, failure surface 근처를 우선 탐색한다. 그래도 sampled 결과는 continuous로 승격하지 않는다.</li>
 <li>Pinocchio/HPP-FCL reference 결과와 GPU collision backend의 pair별 distance·gate decision을 비교한다. False accept가 하나라도 있으면 online 후보에서 제외한다.</li>
 <li>Continuous segment collision과 controller interpolation/dynamics를 검증하는 별도 backend를 구현하고 report scope를 <code>continuous_path_tube</code>로 유지한다.</li>

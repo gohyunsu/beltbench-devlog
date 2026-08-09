@@ -106,6 +106,11 @@
 </table>
 <p>Jobs <code>115131</code>과 <code>115132</code>는 각각 current atlas의 11,120개 source를 먼저 검증하고 warmup 1,000회 뒤 10,000회를 측정했다. Walltime은 2분 37초와 2분 40초, peak memory는 각각 약 703 MB였다. Source 검증과 atlas load는 timed query 밖에 있으므로 resident query는 online shortlist lookup의 비용만 나타낸다. 10,000개 accepted는 uncertainty-supporting cell 교집합이 비지 않았다는 뜻일 뿐, complete path가 deadline·collision·controller gate를 통과했다는 뜻이 아니다. 따라서 이 수치를 end-to-end perception-to-command latency로 사용하지 않는다.</p>
 
+<h2>Nominal portfolio의 atlas 권한 감사</h2>
+<div class="callout warn"><strong>이름과 실제 입력을 구분한다:</strong> run directory의 <code>portfolio-server-v7-current-atlas</code>는 current atlas를 직접 query하지 않았다. 실제 planner 입력은 schema-2 nominal shortlist 8개였다. Artifact 이름을 atlas-query evidence로 해석하지 않는다.</div>
+<p>Current atlas의 yaw 0, horizon 5.0초 cell에는 hard gate를 통과한 후보가 65개 있었다. Nominal shortlist 8개 중 7개만 이 cell에 포함됐고 <code>bodex-8866971692529a34</code>는 없었다. 즉 shortlist를 그대로 planning queue로 넣으면 atlas가 거부한 context 후보도 exact planner까지 불필요하게 도달할 수 있다. 이번에 dense geometry를 통과한 <code>bodex-a9b299caeade8d79</code>는 current cell rank 3이라 결과 자체는 atlas support와 일치하지만, run report가 그 사실을 source-bound query로 증명하지는 않는다.</p>
+<p>Production 경로는 shortlist 이름이나 playback ID를 신뢰하지 않고, exact measured yaw uncertainty와 horizon으로 생성한 typed atlas query artifact의 candidate ID·order·source hash를 planning request와 path-family generation manifest에 결속해야 한다. Atlas 밖 후보는 exact planner가 다시 거르도록 보내는 것이 아니라 admission 전에 제거한다. 이 결속 전까지 nominal portfolio는 reference planner와 geometry validator의 diagnostic으로만 유지한다.</p>
+
 <h2>검증</h2>
 <ul>
 <li>Shared artifact, batch binding, shortlist, atlas, full evaluation과 model identity 영향 test 58개가 local에서 통과했다.</li>
