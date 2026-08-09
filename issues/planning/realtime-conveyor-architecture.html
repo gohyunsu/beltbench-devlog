@@ -56,6 +56,7 @@
 
 <p>Arm과 hand는 독립적으로 retime하지 않는다. <code>close_start</code>, contact, attach, release-open start, detach와 cutoff는 공동 semantic window이며 deadline 안에 valid schedule이 없으면 reject한다. Attach 전에는 hand와 물체의 상대 pose drift뿐 아니라 상대 선속도와 각속도를 검사해야 한다. Viser의 <code>conveyor → attached</code> 상태 전환은 이 물리 조건의 증거가 아니다.</p>
 <p>새 reference contact gate는 이 중 접촉 시각 하나의 pose·twist 계산만 구현한다. Position-only playback frame 차분은 허용하지 않으며, tool 선속도는 object 원점 속도가 아니라 <code>v_origin + omega × radius</code>와 비교한다. Chase interval 전체, hand closure, continuous collision과 controller tracking은 계속 별도 blocker다. 상세 실패와 검증 결과는 <a href="path-family-validation-authority.html">path-family validation authority 기록</a>에 남겼다.</p>
+<p>Time-parameterizer dependency도 다시 확인했다. Ruckig Community는 arbitrary target state의 local state-to-state trajectory에는 적합하지만 intermediate waypoint를 넣으면 cloud API를 사용하고, waypoint mode에서 exact duration을 보장하지 않는다. 따라서 main task path에 바로 넣지 않는다. Ruckig은 latch·stop·작은 correction의 후보로 제한하고, complete collision-free path와 semantic event window는 local path-preserving backend가 별도 capability와 검증 근거를 제공해야 한다. Dependency 설치만으로 이 경계를 우회하지 않는다.</p>
 
 <h2>R1: constrained belt state 구현</h2>
 <p><code>ConveyorMotionState</code>는 encoder-derived longitudinal position·velocity·acceleration, 3×3 covariance, calibration ID, sequence, monotonic timestamp를 갖는다. <code>FusedPlanarObjectTrack</code>은 object/stable pose identity, belt `(x,y,yaw)`, covariance, observed longitudinal/lateral velocity, yaw rate, contributing camera IDs와 camera disagreement를 갖는다.</p>
