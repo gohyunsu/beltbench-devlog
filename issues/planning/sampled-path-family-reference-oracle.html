@@ -101,6 +101,7 @@
 <tr><td><code>115153</code></td><td>Task 211 frame과 stop 31 frame 생성 뒤 verifier가 <code>ModuleNotFoundError: scripts</code>로 종료</td><td>Verifier가 sibling CLI를 Python package처럼 import했고 local unit-test 방식이 결함을 가렸다. Phase-map loader를 planning API로 이동하고 실제 <code>python scripts/...</code> child process 회귀를 추가했다.</td><td>Exit 1 artifact는 승인 증거에서 제외했다.</td></tr>
 <tr><td><code>115156</code></td><td>같은 immutable 입력으로 producer와 독립 verifier 재실행</td><td>Source 6개와 output 2개를 reload·rehash하고 task/stop을 다시 생성해 payload와 exact serialized hash를 비교했다.</td><td>Task 211, stop 31, verified file 8개, 46초, exit 0이다.</td></tr>
 </table>
+<p>Source <code>81e9c8d</code>에서 sampled path 영향 test 64개가 통과했다. 전체 planning discovery는 407개 중 404개가 통과했고 assertion failure는 없었다. Planning environment에 <code>cv2</code>가 없어 import되지 않은 calibration·pickplace·pose module은 calibration environment에서 실제 test 14개가 모두 통과했다.</p>
 
 <h2>실제 dynamics 판정</h2>
 <table class="table">
