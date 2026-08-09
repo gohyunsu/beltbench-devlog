@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Moving grasp event 의미와 chase interval 검증 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-031 · 2026-08-09 · moving chase semantics</div>
+<h1>첫 물리 접촉과 물체 부착을 분리하고, 그 사이 전체 구간에서 손이 물체를 실제로 따라가는지 검증한다.</h1>
+<p class="lede">Endpoint grasp가 정적으로 유효하고 접촉 순간의 pose와 velocity가 맞더라도, 손을 닫는 동안 물체가 계속 이동하면 중간 구간에서 손이 뒤처질 수 있다. 기존 path-family의 <code>contact</code>는 사실상 attach 시각이었고 새 event trajectory의 contact는 첫 물리 접촉이어서 같은 단어가 서로 다른 상태 전이를 뜻했다. 이번 구현은 공통 사건 계약, 명시적 <code>contacting</code> 상태와 bounded chase 검증으로 이 의미 충돌과 endpoint-only 허점을 닫는다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/1bf2269"><code>1bf2269</code></a>이 공통 moving-pick 사건, actual-time reference와 complete chase interval의 재현 가능한 sampled evidence를 구현하고 over-capacity grid를 allocation 전에 거부한다. 이 결과는 필요한 진단 gate이지만 continuous collision, controller tracking bound와 hardware 결과가 없으므로 <code>execution_blocked</code>를 유지한다.</div>
+
+<h2>AutoDex filter 재감사 결론</h2>
+<p>기준 source는 <code>willi19/autodex-code</code>의 공개 <code>main</code>, commit <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. 공개 branch는 이 하나뿐이다. Site repository인 <code>autodex</code>, perception의 FoundationPose·GoTrack, BODex 후보 생성과 grasp acceptance를 서로 다른 역할로 취급했다.</p>
+<table class="table">
+<tr><th>AutoDex 단계</th><th>실제 기준</th><th>BeltBench 판단</th></tr>
+<tr><td>Pregrasp collision</td><td>한 endpoint에서 activation distance 0인 hand sphere world·self collision을 검사한다.</td><td>정적 prefilter 개념은 채택하지만 양의 clearance와 complete approach path를 별도로 요구한다.</td></tr>
+<tr><td>Squeeze contact</td><td><code>2 × grasp - pregrasp</code> 자세에서 object overlap이 하나라도 있으면 contact다.</td><td>Named link, 접촉 수, penetration과 non-contact clearance를 구분하지 않아 acceptance로 채택하지 않는다.</td></tr>
+<tr><td>MuJoCo hold</td><td>고정 0.1 kg과 tabletop gravity 한 방향에서 5 cm·15도 이탈을 검사한다.</td><td>정적 diagnostic으로만 보존한다. 선언된 6축 force와 penetration 기준은 effective rule에 없고 moving contact도 검증하지 않는다.</td></tr>
+<tr><td>Coverage</td><td>정적 survivor의 scene binary coverage를 greedy하게 늘린다.</td><td>모든 hard gate 뒤 portfolio 다양성에만 사용한다. 실패 margin이나 timing을 보상하지 못한다.</td></tr>
+<tr><td>Runtime first success</td><td>Orientation heuristic, endpoint collision, IK와 planning을 순서대로 통과한 첫 후보를 사용한다.</td><td>Fresh track, deadline, swept path와 robust slack이 없어 moving conveyor 선택 규칙으로 사용하지 않는다.</td></tr>
+</table>
+<p><code>FORCE_DIRECTIONS</code>와 <code>MAX_PENE</code>가 선언돼 있다는 사실, cache 파일이 존재한다는 사실과 generator가 success를 반환했다는 사실은 실제 acceptance 근거가 아니다. 이 구분은 이전 감사와 동일하며 이번 chase gate가 AutoDex에 원래 존재했다고 주장하지 않는다.</p>
+
+<h2>BeltBench의 실제 gate 계층</h2>
+<ol>
+<li><strong>Proposal:</strong> 생성기 success와 residual은 provenance이며 승인 점수가 아니다.</li>
+<li><strong>Intrinsic endpoint:</strong> named allowed contact, 최소 contact 수, penetration, self·support·non-contact clearance와 task wrench margin을 검사한다.</li>
+<li><strong>Intrinsic path:</strong> object-relative approach·closure·release 경로 전체를 검사한다. Endpoint 성공으로 중간 실패를 덮지 않는다.</li>
+<li><strong>Robot deployment:</strong> 정확한 arm·hand·connector·object·workcell 조합에서 IK, joint·singularity margin과 assembly·scene clearance를 검사한다.</li>
+<li><strong>Yaw·horizon atlas:</strong> 관측된 초기 yaw uncertainty와 가능한 intercept horizon 전체에서 hard-gated grasp 교집합만 반환한다.</li>
+<li><strong>Path family:</strong> task와 cutoff stop path, tracking·correction tube, latch, deadline과 complete phase를 검증한다.</li>
+<li><strong>Moving contact:</strong> 첫 접촉부터 attach까지 pose·상대 선속도·상대 각속도가 허용 tube 안에 유지되는지 검사한다.</li>
+<li><strong>Selection:</strong> 모든 hard gate를 통과한 후보만 normalized robust slack의 deterministic maximin으로 비교한다.</li>
+<li><strong>Physical authority:</strong> fresh synchronized observation, controller tracking·latency, calibration error와 hardware reliability는 별도 gate로 남긴다.</li>
+</ol>
+<p>따라서 이번 변경은 grasp quality score를 하나 더 더한 것이 아니다. 정적 grasp와 동적 실행 가능성을 서로 다른 권한으로 유지하고, 동적 접촉 구간의 필수 반례를 잡는 독립 evidence를 추가한 것이다.</p>
+
+<h2>사건과 물체 상태</h2>
+<p><code>MovingPickEventSchedule</code>이 path-family와 event trajectory가 공유하는 유일한 사건 의미를 소유한다.</p>
+<p><code>replan_cutoff ≤ hand_close_start &lt; first_contact &lt; hand_close_complete ≤ attach</code></p>
+<ul>
+<li><code>first_contact</code>: 허용된 hand link가 처음 물체에 닿는 시각이다.</li>
+<li><code>hand_close_complete</code>: 선택 grasp의 닫힘 command가 끝나는 시각이다.</li>
+<li><code>attach</code>: grasp constraint가 성립해 물체가 tool-relative pose로 전환되는 시각이다.</li>
+<li><code>contacting</code>: 첫 접촉부터 attach 전까지 물체는 belt에 지지되며, 손과 물체의 intentional contact가 필수다.</li>
+<li><code>attached</code>: attach 이후 물체는 tool을 따라가며, 설정된 최소 intentional contact가 필수다.</li>
+</ul>
+<p>현재 path-family bundle schema는 <code>6.0</code>이다. Validator는 첫 <code>contacting</code> sample이 정확히 <code>first_contact</code>, 첫 <code>attached</code> sample이 정확히 <code>attach</code>인지 검사한다. Runtime의 scheduled contact와 cutoff 판단도 같은 nested schedule을 사용한다.</p>
+
+<h2>Complete chase interval</h2>
+<p><code>MovingChaseAssessment</code>는 첫 접촉과 attach endpoint만 비교하지 않는다. 두 시각 사이를 policy가 정한 최대 간격으로 deterministic sampling하고, <code>hand_close_complete</code>를 grid에 정확히 삽입한다. 각 sample에서 exact arm·hand state의 FK/Jacobian과 예측 object pose·twist를 이용해 다음 네 metric의 최악값과 발생 시각을 기록한다.</p>
+<ul>
+<li>Object-from-tool 기준 translation error</li>
+<li>Object-from-tool 기준 rotation error</li>
+<li>손과 물체의 relative linear speed</li>
+<li>손과 물체의 relative angular speed</li>
+</ul>
+<p>Draft policy는 최대 sample 간격 <code>0.01 s</code>, 최대 <code>1001</code>개, translation <code>5 mm</code>, rotation <code>2 deg</code>, relative linear speed <code>0.03 m/s</code>, relative angular speed <code>0.1 rad/s</code>다. 숫자는 hardware 측정 전 보수적 초안이며, threshold 출처와 status를 artifact에 명시한다. Sampling 간격만 받고 개수 상한이 없으면 비정상 event duration이 latency와 memory를 무한히 늘릴 수 있으므로 둘 다 hard bound로 둔다.</p>
+<p>현재 운동 모델은 tabletop pose와 초기 yaw가 고정되고 물체가 belt 방향으로 평행이동한다는 가정이다. Object angular velocity가 0이 아니면 evaluator가 명시적으로 거부하며 조용히 translation-only model로 투영하지 않는다.</p>
+
+<h2>Artifact 결속과 시각화</h2>
+<p>Assessment는 exact event trajectory, moving-contact artifact와 chase policy의 SHA-256을 저장하고 verifier가 내용을 다시 계산한다. 중간 sample만 크게 벗어나고 두 endpoint가 일치하는 trajectory도 실패한다. Actual-time reference는 별도 legacy playback 변환 없이 exact timeline에서 직접 sampled path를 생성해 모든 waypoint와 사건을 보존한다.</p>
+<p>Viser는 선택적으로 chase assessment를 받아 sample 수, 최대 간격, 네 metric의 pass/fail, bottleneck과 worst time을 표시한다. 표시 전에 trajectory와 contact digest를 다시 확인한다. 이것은 계획된 reference와 offline evidence의 재생이며 controller command나 measured trajectory로 표시하지 않는다.</p>
+
+<h2>발생한 문제, 원인, 해결, 결과</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td><code>contact</code>가 first contact와 attach를 동시에 의미</td><td>과거 position-only path와 새 task-event trajectory가 별도 필드를 정의</td><td>공통 <code>MovingPickEventSchedule</code>과 <code>contacting</code> 상태 도입</td><td>첫 접촉, closure 완료와 attach의 상태 전이가 한 계약으로 고정됨</td></tr>
+<tr><td>첫 접촉 직후 물체가 tool에 붙어 표시됨</td><td>Object state validator가 contact를 곧 attached로 해석</td><td>Contacting은 belt-supported, attach 이후만 tool-relative로 평가</td><td>실제 closing chase 구간이 보존됨</td></tr>
+<tr><td>접촉 한 시점만 통과하면 중간 divergence를 놓침</td><td>기존 point-contact assessment가 endpoint diagnostic에 한정</td><td>First contact부터 attach까지 deterministic bounded sample gate 추가</td><td>Endpoint가 같아도 중간 이탈이 큰 trajectory가 거부됨</td></tr>
+<tr><td>Count 상한이 있어도 거대한 time vector를 먼저 만들 수 있음</td><td><code>np.linspace</code> 뒤에 sample-count 검사가 있었음</td><td>필요 segment 수를 먼저 계산해 allocation 전에 거부하고, event 삽입 뒤에도 재검사</td><td><code>1e-12 s</code> 간격 반례가 배열 생성 없이 fail-closed됨</td></tr>
+<tr><td>Fixture의 급격한 hand 변화가 상대 속도 gate를 실패</td><td>기존 test는 event order만 맞추고 물리적 chase를 만들지 않음</td><td>손 pose·velocity가 belt 이동을 실제로 추종하도록 fixture 재작성</td><td>통과 fixture와 의도적 중간 divergence 반례가 분리됨</td></tr>
+<tr><td>Strict adjacent pair 검사에서 마지막 sample이 누락</td><td><code>zip(..., strict=True)</code>에 길이가 다른 slice를 전달</td><td>같은 길이 index pair로 간격을 검사</td><td>모든 adjacent interval과 exact event insertion test 통과</td></tr>
+<tr><td>Planning full discovery에서 OpenCV module 3개 import 실패</td><td>Planning 환경은 의도적으로 <code>cv2</code>를 포함하지 않음</td><td>Core planning과 calibration 회귀를 각 환경에서 실행</td><td>Core dependency를 오염시키지 않고 calibration 실제 test를 별도 검증</td></tr>
+<tr><td>PBS <code>115183</code>이 5초 안에 로그 없이 종료</td><td><code>set -u</code> 뒤 <code>/etc/profile</code>을 source해 scheduler shell의 미정의 변수를 건드림</td><td>Compute script에서 profile source를 제거</td><td>Shell 초기화 실패와 test failure를 분리함</td></tr>
+<tr><td>PBS <code>115184</code>가 15분 walltime을 초과</td><td>102개 모듈의 과도한 ad hoc smoke와 종료 후 stage-out 방식 때문에 진행 위치를 볼 수 없었음</td><td>Progressive log로 28개 핵심 module을 분리하고, 최종 검증은 표준 regression script로 전환</td><td><code>115186</code>은 28/28, 표준 <code>115187</code>은 42/42 통과</td></tr>
+</table>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Planning 환경의 full discovery는 <code>444</code>개를 수집했고, OpenCV import 3개를 제외한 <code>441</code>개가 통과했다.</li>
+<li>분리된 calibration 환경에서 해당 OpenCV 의존 module의 실제 test <code>14/14</code>가 통과했다.</li>
+<li>최종 local 영향 범위는 moving contact·chase·event trajectory와 path-family engine <code>42/42</code>가 통과했다.</li>
+<li>Middle divergence, nonzero object angular velocity, digest 치환, sample capacity와 event insertion negative test가 통과했다.</li>
+<li>Visualization 환경에서 Viser CLI가 optional <code>--moving-chase-assessment</code> 입력을 노출하고 import가 통과했다.</li>
+<li>Line length, stale event field, 제거된 legacy converter reference와 <code>git diff --check</code>를 다시 검사했다.</li>
+<li><code>junjinyong</code> A6000 focused PBS <code>115186</code>은 source <code>e0c1cdd</code>에서 <code>28/28</code>, scheduler exit 0을 기록했다.</li>
+<li>표준 CPU-only planning regression PBS <code>115187</code>은 최종 source <code>1bf2269</code>에서 <code>42/42</code>, scheduler·run status exit 0을 기록했다.</li>
+<li><code>115187</code>의 compute clock은 run filesystem보다 367초 느려 <code>timing_evidence_authorized=false</code>다. 따라서 test 기능 통과만 근거로 사용하고 1.399초 test runtime을 latency 근거로 사용하지 않는다.</li>
+</ul>
+
+<h2>남은 권한과 다음 순서</h2>
+<ol>
+<li>Closing hand의 실제 link geometry를 포함한 continuous/swept self·object·belt·table collision을 검증한다.</li>
+<li>Interception window, closure 시간, attach와 deadline을 동시에 만족하는 bounded schedule allocator와 time parameterizer를 구현한다.</li>
+<li>Chase assessment를 compiled path admission에 연결하되 continuous path evidence가 없으면 계속 차단한다.</li>
+<li>실제 xArm·Inspire trajectory로 controller tracking tube, latency와 hand close repeatability를 측정한다.</li>
+<li>Calibration residual과 belt speed uncertainty를 chase threshold 및 robust slack에 전파하고 hardware moving-pick reliability를 별도 승인한다.</li>
+</ol>
+<p>관련 맥락은 <a href="autodex-filter-task-event-reference.html">AutoDex filter와 task-event 감사</a>, <a href="synchronized-event-trajectory.html">synchronized event trajectory</a>, <a href="path-family-validation-authority.html">path validation authority</a>에서 이어진다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
