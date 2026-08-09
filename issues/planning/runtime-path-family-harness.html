@@ -16,7 +16,7 @@
 <h1>검증된 grasp와 path-family를 최신 관측에서 실제 시간 순서로 선택한다.</h1>
 <p class="lede">문서와 개별 계약만 연결해 놓고 real-time pipeline이라고 부르지 않는다. 실제 projector, coordinator, bounded warm-start 경계, capacity-one scheduler와 causal recorder를 한 실행 경로로 묶고, 선택되거나 거부된 결과를 발생 시간 그대로 Viser가 재생할 수 있는 첫 production-shaped vertical slice를 구현했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/3e3de99"><code>3e3de99</code></a>이 runtime engine, latest-generation mailbox와 deferred causal session을 구현한다. <a href="https://github.com/gohyunsu/beltbench/commit/09df7f4"><code>09df7f4</code></a>는 서버에서 발견한 non-usrmerge Linux test 결함을 수정한다. 모든 trajectory는 계속 <code>execution_blocked</code>이며 controller command 권한이 없다.</div>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/3e3de99"><code>3e3de99</code></a>이 runtime engine, latest-generation mailbox와 deferred causal session을 구현하고, <a href="https://github.com/gohyunsu/beltbench/commit/697250e"><code>697250e</code></a>가 bounded multi-rate input-to-selection composition을 추가한다. <a href="https://github.com/gohyunsu/beltbench/commit/09df7f4"><code>09df7f4</code></a>는 서버에서 발견한 non-usrmerge Linux test 결함을 수정한다. 모든 trajectory는 계속 <code>execution_blocked</code>이며 controller command 권한이 없다.</div>
 
 <h2>Grasp 선택 기준을 다시 연결한 결론</h2>
 <p>AutoDex source 감사 결과는 바뀌지 않았다. BODex residual과 provider 순서, zero-margin sampled sphere collision, squeeze overlap, 한 방향 gravity hold, scene set cover, coverage 순서의 첫 planning 성공은 proposal 생성과 static diagnostic에는 유용하지만 moving conveyor command의 승인 기준은 아니다.</p>
@@ -84,6 +84,50 @@
 <li>그 3개 module은 OpenCV가 있는 calibration 환경에서 실제 test 14개가 모두 통과했다. 중복 import placeholder를 제외한 총 실제 통과 수는 373개다.</li>
 <li>Bundle/projector mismatch, missing backend, failed warm start, stop action, stale supersession, capacity transaction, undersized policy, context splice, playback mutation, rejection-only session을 negative test로 고정했다.</li>
 <li>Source HEAD <code>09df7f4</code>와 server HEAD가 같고 server의 기존 untracked BODex native build는 수정하거나 삭제하지 않았다.</li>
+</ul>
+
+<h2>2026-08-10: multi-rate 입력에서 selection까지 조합</h2>
+<p>기존 engine과 capacity-one harness는 한 번 받은 <code>RuntimePlanningObservation</code>을 올바르게 처리했지만, 그 observation을 누가 어떤 encoder·robot snapshot으로 만드는지는 caller에게 열려 있었다. 실제 시스템에서는 camera fusion, encoder와 robot state가 서로 다른 rate로 도착하므로 이 경계를 수동 조립으로 남기면 최신 encoder를 잘못 붙이거나 clock과 deadline을 중복 정의하기 쉽다.</p>
+
+<h3>AutoDex 필터를 다시 본 뒤 채택한 범위</h3>
+<table class="table">
+<tr><th>AutoDex의 실제 단계</th><th>BeltBench 판단</th><th>이유</th></tr>
+<tr><td>Pregrasp world/self collision과 squeeze object overlap</td><td>저비용 static worklist prefilter 개념만 채택</td><td>Named contact, penetration, support clearance와 retention path를 증명하지 못함</td></tr>
+<tr><td>0.1 kg object의 한 tabletop-gravity MuJoCo hold, 5 cm/15 deg 기준</td><td>임계값과 통과 결과를 상속하지 않음</td><td>Payload, acceleration, moving contact, belt timing과 task-wrench authority가 없음</td></tr>
+<tr><td>Greedy scene set cover</td><td>Offline coverage/diversity 개념만 채택</td><td>Coverage 순서는 robustness 또는 complete-path feasibility가 아님</td></tr>
+<tr><td>Endpoint collision, hand heuristic, IK, 5 cm lift 뒤 first-success</td><td>채택하지 않음</td><td>Hand-specific·order-dependent하며 conveyor complete path와 stop을 평가하지 않음</td></tr>
+<tr><td><code>coll_valid.npy</code>, <code>sim_eval.json</code>, <code>sim_only</code> shortcut</td><td>증거로 사용하지 않음</td><td>완전한 evaluator/input checksum 없이 squeeze 재계산까지 생략할 수 있음</td></tr>
+</table>
+<p>따라서 provider metadata는 provenance로만 보존한다. BeltBench의 실제 authority는 intrinsic contact·clearance·retention·task-wrench, robot/connector/workcell deployment, yaw×horizon uncertainty support, moving-contact pose/twist, complete-path collision·timing·stop·freshness hard gate를 모두 통과한 뒤 complete normalized slack의 deterministic maximin으로 비교한다. AutoDex의 첫 성공 후보나 hand별 heuristic은 순위 권한이 없다.</p>
+
+<h3>구현한 경계</h3>
+<ol>
+<li><code>RuntimePlanningRunner</code>가 independent conveyor-state publisher, latest synchronized robot-state publisher와 fused-track submission을 조합한다. Perception 자체는 구현하지 않고 typed fused-track adapter output만 소비한다.</li>
+<li>Track의 exact <code>conveyor_state_id</code>가 configured bounded history에 있을 때만 observation을 만든다. 더 최신 state가 있어도 대체하지 않으며 evicted/missing state는 hard error다.</li>
+<li>Robot state가 없으면 generation을 소비하지 않는다. Identity는 immutable이고 timestamp는 strictly increasing이며 zero derivative를 합성하지 않는다. 실제 freshness는 deployment policy가 query 시점에 다시 gate한다.</li>
+<li><code>PathFamilyRuntimeEngine</code>이 finite 값을 강제하는 한 runtime clock을 소유하고 runner, harness와 coordinator가 같은 callable을 사용한다. Commit deadline은 recorder의 exact causality policy에서만 파생한다.</li>
+<li>Input-history policy를 첫 observation의 typed configured artifact로 기록한다. Materialization staging에서 모든 source digest, policy identity/ancestry와 causal assessment를 다시 검증한 뒤에만 atomic rename한다.</li>
+<li>Runner는 selection에서 끝난다. Blocking controller callback을 삽입하지 않았고 기존 pure-delay feedback generator를 live loop로 연결했다고 주장하지 않는다.</li>
+</ol>
+
+<h3>발생한 문제와 처리</h3>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>Track보다 새 encoder state가 먼저 오면 caller가 newest state를 붙일 수 있음</td><td>Latest-only admission과 manual observation assembly</td><td>Insertion-order bounded history와 exact ID lookup 추가</td><td>Fusion이 사용한 과거 resident state를 보존하고 latest substitution 제거</td></tr>
+<tr><td>Runner, harness와 coordinator가 다른 clock callable을 받을 수 있음</td><td>각 계층이 독립 default clock을 소유</td><td>Engine이 finite-validated clock을 한 번 감싸고 동일 callable을 공유</td><td>Deadline과 event ordering의 clock-domain 불일치 제거</td></tr>
+<tr><td>직접 생성한 runner policy에 boolean capacity가 통과할 수 있음</td><td><code>from_payload()</code>만 strict integer를 검사하고 dataclass <code>validate()</code>가 type을 재검사하지 않음</td><td>Direct construction에도 int/non-bool gate 추가</td><td>Schema 우회 경로를 negative test로 고정</td></tr>
+<tr><td>History에 남은 오래된 state ID를 변조해 다시 publish하면 stale sequence로 조용히 폐기</td><td>Sequence 비교가 resident identity 검사보다 먼저 실행</td><td>모든 resident ID의 payload fingerprint를 sequence 판단 전에 비교</td><td>오래된 resident identity mutation도 fail-closed</td></tr>
+<tr><td>Staging verifier 추가 후 materialization test 7개가 실패</td><td><code>verify_runtime_causality_assessment</code>를 존재하지 않는 3-argument signature로 호출</td><td>정확한 session·assessment 2-argument 호출로 수정하고 policy equality를 별도 검사</td><td>집중 회귀가 50/50으로 복구</td></tr>
+<tr><td>Server <code>git pull</code>이 invalid username/token으로 실패</td><td>Server GitHub HTTPS credential 만료</td><td><code>6ab325a..697250e</code> incremental Git bundle을 검증·전송하고 <code>--ff-only</code> 적용</td><td>Credential을 배포하지 않고 exact source sync, 기존 BODex native output 3개 보존</td></tr>
+</table>
+
+<h3>검증과 한계</h3>
+<ul>
+<li>Local focused runtime/session suite는 50개, 전체 planning suite는 493개, calibration suite는 9개가 통과했다.</li>
+<li><code>junjinyong</code> pinned planning environment에서 focused 50개와 전체 planning 493개가 각각 2.061초, 58.088초에 통과했다. 이는 CPU functional regression이며 p95 latency나 hard-real-time evidence가 아니다.</li>
+<li>Local, GitHub <code>main</code>과 server source는 <code>697250e</code>로 일치한다. Server worktree에는 사전에 있던 BODex native output 3개만 untracked로 남았다.</li>
+<li>Session의 <code>conveyor_state_published</code>는 raw encoder callback 시간이 아니라 exact snapshot을 planning generation에 넘긴 시간이다. Sensor/fusion/controller end-to-end latency에는 별도 bounded native trace가 필요하다.</li>
+<li>현재 수직 슬라이스는 typed event request 선택에서 끝난다. Nonblocking selected-request handoff, controller-rate sampler, measured feedback adapter와 bounded fault injection이 다음 구현 경계다.</li>
 </ul>
 
 <h2>남은 신뢰 경계와 다음 순서</h2>
