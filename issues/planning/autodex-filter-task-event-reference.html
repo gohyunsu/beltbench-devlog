@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AutoDex filter와 task event reference 재감사 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-030 · 2026-08-09 · grasp filter and task events</div>
+<h1>AutoDex의 정적 grasp filter를 moving conveyor의 실행 기준으로 과장하지 않고, task 사건과 actual-time reference까지 닫는다.</h1>
+<p class="lede">AutoDex가 실제로 거르는 조건과 BeltBench가 채택한 조건을 최신 public branch에서 다시 대조했다. 정적 후보 생성·collision·hold·coverage는 유용하지만 moving grasp의 상대 속도, arm-hand 동기 closure, release와 controller authority를 증명하지 않는다. 이번 구현은 그 차이를 숨기지 않고 task별 필수 사건과 grasp command를 schema 수준에서 강제하고, 같은 desired trajectory를 실제 시간축으로 Viser에 표시한다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/bdc5cd0"><code>bdc5cd0</code></a>이 task-event schema 2.0, release-command 결속, actual-time desired reference와 Viser adapter를 구현한다. Complete chase interval, continuous collision, controller tracking과 hardware attachment가 없으므로 실행 권한은 계속 차단한다.</div>
+
+<h2>감사 source와 branch</h2>
+<p>2026-08-09에 <code>willi19/autodex-code</code> remote를 다시 fetch했다. 공개 remote branch는 <code>main</code> 하나이며 감사 commit은 <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. 로컬에는 이름이 같은 과거 checkout과 개인 fork가 함께 있으므로 working tree HEAD를 신뢰하지 않고 <code>autodex/autodex-code:origin/main</code>의 blob을 직접 읽었다. Site repository인 <code>autodex</code>, GoTrack perception, BODex proposal generator와 grasp acceptance를 같은 모듈로 취급하지 않았다.</p>
+
+<h2>AutoDex의 effective filter</h2>
+<table class="table">
+<tr><th>단계</th><th>코드가 실제로 적용하는 기준</th><th>비판적 판단</th></tr>
+<tr><td>BODex output</td><td>Optimizer success, residual과 provider 순서가 후보 파일에 남는다.</td><td>같은 모델이 만든 proposal provenance다. 독립적인 물리 승인 점수로 사용하면 안 된다.</td></tr>
+<tr><td>Pregrasp collision</td><td>Scene을 넣은 cuRobo hand sphere의 world·self collision을 activation distance 0에서 한 endpoint로 검사한다.</td><td>정적 pregrasp prefilter로는 유용하지만 양의 clearance, named contact, complete approach path를 보장하지 않는다.</td></tr>
+<tr><td>Squeeze contact</td><td><code>squeeze = 2 × grasp - pregrasp</code>에서 hand sphere와 object world collision이 하나라도 있으면 contact로 간주한다.</td><td>어느 link가 닿았는지, 접촉 수, 침투량, 비접촉 link clearance와 self-collision을 구분하지 않는다.</td></tr>
+<tr><td>MuJoCo hold</td><td>0.1 kg object에 tabletop pose의 gravity 한 방향으로 힘을 주고 이동 5 cm 또는 회전 15도를 넘으면 실패한다.</td><td><code>FORCE_DIRECTIONS</code> 6축과 <code>MAX_PENE</code>는 선언됐지만 effective rule에서 사용되지 않는다. Torque, friction·mass uncertainty와 moving contact가 빠져 있다.</td></tr>
+<tr><td>Cache</td><td><code>coll_valid.npy</code>와 <code>sim_eval.json</code>이 있으면 재사용한다. 일부 경로는 sim result 존재를 collision pass로 간주하고 <code>sim_only</code>는 squeeze contact를 생략한다.</td><td>빠르지만 immutable source binding과 독립 재현 검사가 없다. BeltBench authority artifact로 직접 import하지 않는다.</td></tr>
+<tr><td>Adaptive generation</td><td>Scene마다 simulation survivor가 최소 5개가 될 때까지 gap·seed 수를 늘린다.</td><td>후보 pool 확보 조건이지 개별 grasp quality threshold가 아니다.</td></tr>
+<tr><td>Coverage order</td><td>같은 tabletop pose와 scene에서 collision 또는 MuJoCo를 통과한 binary matrix를 greedy set cover로 정렬한다.</td><td>Coverage는 hard gate 뒤 portfolio 구성에만 유효하다. Clearance, timing, uncertainty failure를 보상할 수 없다.</td></tr>
+<tr><td>Runtime planning</td><td>Orientation heuristic, endpoint collision, grasp·lift IK와 motion planning 뒤 우선순위상 첫 성공을 사용한다.</td><td>필요한 검사지만 최신 track, deadline, full swept path, moving relative twist와 robust slack이 없다.</td></tr>
+</table>
+
+<h2>BeltBench가 채택한 기준</h2>
+<ol>
+<li><strong>Proposal boundary:</strong> provider success·residual·순서는 source와 생성 맥락으로 보존하되 acceptance에 사용하지 않는다.</li>
+<li><strong>Intrinsic endpoint:</strong> named allowed contact, 최소 contact 수, bounded penetration, non-contact object·self·support clearance와 signed force·moment task-wrench margin을 독립 hard gate로 둔다.</li>
+<li><strong>Intrinsic path:</strong> object-relative approach, closure와 task에 필요한 release 전 경로를 sample별로 검사한다. Endpoint success가 path failure를 덮지 못한다.</li>
+<li><strong>Robot deployment:</strong> exact arm·hand·connector·object·workcell ancestry에서 IK, assembly/workcell/object clearance, joint-limit과 singularity margin을 검사한다.</li>
+<li><strong>Yaw·horizon atlas:</strong> 측정 yaw uncertainty와 intercept horizon이 걸치는 모든 cell의 hard-gated grasp 교집합만 online candidate로 반환한다. 빈 교집합에는 nominal fallback이 없다.</li>
+<li><strong>Portfolio selection:</strong> 모든 threshold를 통과한 후보에만 coverage를 적용하고, redundancy는 dimensionless normalized slack의 deterministic lexicographic maximin으로 정렬한다.</li>
+<li><strong>Moving path:</strong> complete task·stop path, deadline, tracking·correction tube, latch와 continuous/swept collision evidence를 endpoint grasp와 별도 authority로 요구한다.</li>
+<li><strong>Moving contact:</strong> exact contact <code>q/qdot</code>, Jacobian, object pose·twist와 connector-aware object-from-tool transform으로 pose와 상대 선·각속도를 각각 hard gate한다.</li>
+<li><strong>Runtime·physical authority:</strong> fresh synchronized track·encoder·robot state, latest generation과 stop slack을 다시 검사한다. Hardware reliability와 controller commit은 geometry와 분리한다.</li>
+</ol>
+<p>AutoDex의 pregrasp collision과 scene coverage라는 개념은 채택했지만 구현 threshold와 authority는 그대로 복사하지 않았다. Squeeze overlap과 단일 gravity hold는 참고 diagnostic일 수 있으나 moving execution 승인에는 사용하지 않는다.</p>
+
+<h2>발견한 task-state 결함</h2>
+<p>기존 <code>EventScheduledTrajectoryRequest.task_mode</code>는 허용 문자열만 검사했다. 따라서 <code>pick_and_drop</code>이라고 선언하면서 release 사건이 하나도 없는 trajectory가 유효할 수 있었고, 실제 test fixture도 이 모순을 포함했다. 시각화가 attach 뒤 임의로 object를 떨어뜨리면 그럴듯해 보이지만 grasp의 release capability와 hand command가 trajectory에 존재한다는 증거는 아니었다.</p>
+<p>Schema <code>2.0</code>은 task mode를 정확한 event state machine으로 바꿨다.</p>
+<ul>
+<li><code>pick_only</code>: <code>hand_close_start &lt; contact &lt; hand_close_complete &lt;= attach</code></li>
+<li><code>pick_and_drop</code>: pick 사건 뒤 <code>attach &lt; release_open_start &lt; detach</code></li>
+<li><code>pick_and_place</code>: pick 사건 뒤 <code>attach &lt; placement_contact &lt;= release_open_start &lt; detach</code></li>
+<li>선택적인 <code>replan_cutoff</code>은 closure 시작 뒤에 올 수 없다.</li>
+<li>Task에 없는 추가 사건, 필수 사건 누락과 물리적으로 뒤집힌 순서는 모두 거부한다.</li>
+</ul>
+<p>Release task는 선택 grasp가 <code>drop_release</code> 또는 <code>tabletop_release</code> capability와 명시적 <code>release_command</code>를 가져야 한다. Release 시작은 final grasp command를 유지하고 detach는 selected release command에 도달하며, 두 boundary의 prescribed hand velocity·acceleration은 0이어야 한다.</p>
+
+<h2>Actual-time desired reference</h2>
+<p><code>EventTrajectoryReferenceTimeline</code>은 저장 frame을 선형 보간하지 않고 같은 piecewise quintic을 actual time에 평가한다. Attach 전 object는 측정된 초기 orientation을 유지한 채 contact pose와 belt velocity에서 평행이동한다. Attach 뒤에는 robot-neutral FK protocol과 exact object-from-tool transform으로 tool을 따라가며, detach 뒤에는 명시적 static place 또는 ballistic drop display model을 적용한다.</p>
+<p>Viser adapter는 실제 robot·hand·connector·object·workcell asset identity를 확인하고 arm, hand, connector, object, conveyor·table·bin, path, frames와 전체 label을 독립 제어한다. 기본 Play와 Loop는 켜져 있다. FK는 visualization 환경의 <code>yourdfpy</code>를 사용해 Pinocchio·cuRobo·controller SDK를 renderer에 끌어오지 않는다.</p>
+<p>이 layer는 status panel에서 <code>desired event-trajectory reference</code>라고 표시하며 command나 measured feedback이 아니다. Position-only legacy <code>PickPlayback</code>를 새 evidence로 자동 승격하지 않는다. 별도 release-motion JSON도 display input일 뿐 checksum으로 결속된 execution artifact가 아니다.</p>
+
+<h2>발생한 문제, 원인, 해결, 결과</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>Drop task에 release가 없어도 valid</td><td>Task mode가 enum 확인만 하고 event set을 소유하지 않음</td><td>Schema 2.0 task별 exact event state machine과 strict order 추가</td><td>누락·추가·순서 역전 task가 contract boundary에서 거부됨</td></tr>
+<tr><td>Release 동작이 grasp와 분리</td><td>Viewer가 detach를 임의 연출할 수 있었음</td><td>Grasp capability, final command, release command와 zero derivative boundary 결속</td><td>같은 grasp ID의 다른 release command 치환 test가 실패하도록 수정</td></tr>
+<tr><td>새 planning reference가 legacy playback module에 의존</td><td><code>ReleaseMotion</code> 정의가 과거 viewer request 안에 있었음</td><td>중립 <code>contracts.object_release</code>로 한 번만 정의하고 양쪽 consumer가 import</td><td>표현 중복과 새 core의 legacy dependency 제거</td></tr>
+<tr><td>Release vector와 duration이 boolean·문자열을 숫자로 변환</td><td><code>np.asarray(..., dtype=float)</code>와 <code>float()</code>가 입력 type을 지움</td><td>Raw scalar type, shape, finite와 positive duration을 변환 전에 검사</td><td>Boolean·numeric string·zero acceleration negative test 통과</td></tr>
+<tr><td>Visualization 환경에 Pinocchio가 없음</td><td>초기 FK adapter가 planning backend를 renderer에 요구</td><td>Robot-neutral protocol 뒤에 <code>yourdfpy</code> adapter 구현</td><td>실제 xArm URDF의 6개 joint와 <code>link6</code> FK load 통과</td></tr>
+<tr><td>동명 AutoDex checkout의 HEAD가 서로 다름</td><td>Site, fork와 upstream clone이 같은 workspace에 공존</td><td>Remote URL과 branch를 대조하고 fetch한 upstream <code>origin/main</code> blob만 감사</td><td>과거 <code>350b1b1</code>/<code>52add68</code> 대신 최신 <code>5ada1c0</code>을 근거로 고정</td></tr>
+<tr><td>Planning full discovery의 OpenCV import error 3개</td><td>Core planning 환경은 의도적으로 <code>cv2</code>를 설치하지 않음</td><td>Planning과 calibration 환경 회귀를 분리</td><td>Core dependency를 섞지 않고 OpenCV 실제 test 14개 별도 통과</td></tr>
+<tr><td>서버 <code>git pull</code> 인증 실패</td><td>서버의 GitHub HTTPS credential 만료</td><td>로컬에서 이미 push된 <code>main</code> bundle을 전송해 <code>--ff-only</code> 동기화</td><td>Tracked checkout만 <code>bdc5cd0</code>으로 이동하고 native build 산출물은 보존</td></tr>
+</table>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Task state, release, actual-time reference, legacy playback와 moving-contact focused regression <code>35/35</code>가 통과했다.</li>
+<li>수정 전 마지막 full planning discovery는 <code>436</code>개를 수집해 OpenCV import 3개를 제외한 <code>433</code>개가 통과했다. Strict release numeric 검증 뒤 영향 모듈은 focused regression으로 다시 통과했다.</li>
+<li>분리된 calibration 환경에서 OpenCV 의존 module의 실제 test <code>14/14</code>가 통과했다.</li>
+<li>AST 11개 파일, public export 중복, line length와 <code>git diff --check</code>가 통과했다.</li>
+<li>실제 xArm asset으로 visualization FK를 계산했고 Viser CLI <code>--help</code>와 planning/public import를 검증했다.</li>
+<li><code>junjinyong</code> PBS job <code>115176</code>은 source <code>bdc5cd0</code>, CPU 1개, 4 GB, GPU 0개에서 관련 regression <code>34/34</code>를 통과했고 scheduler와 run status 모두 exit 0이다.</li>
+<li>PBS test log의 11.845초는 기능 회귀 소요 시간일 뿐 latency 근거가 아니다. Compute clock이 filesystem보다 367초 느려 status가 <code>timing_evidence_authorized=false</code>로 정확히 차단했다.</li>
+</ul>
+
+<h2>남은 구현 순서</h2>
+<ol>
+<li>Contact부터 attach까지 complete chase interval의 pose·twist tracking tube와 closing-hand collision을 검증한다.</li>
+<li>Event window와 intercept deadline을 동시에 만족하는 schedule allocator·time parameterizer를 구현한다.</li>
+<li>Exact interpolated arm·hand·connector·object에 대해 continuous/swept collision과 controller tracking bound를 독립 검증한다.</li>
+<li>Release motion과 bin containment를 source-bound artifact로 만들되 display model을 실행 authority로 재사용하지 않는다.</li>
+<li>Hardware가 준비되면 calibration residual, latency, controller·hand feedback과 moving-pick reliability를 측정해 physical commit gate를 연다.</li>
+</ol>
+<p>관련 맥락은 <a href="synchronized-event-trajectory.html">synchronized event trajectory</a>, <a href="runtime-grasp-selection.html">runtime grasp selection 재감사</a>, <a href="path-family-validation-authority.html">path validation authority</a>에 이어서 확인한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
