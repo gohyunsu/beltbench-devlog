@@ -16,7 +16,7 @@
 <h1>AutoDex의 정적 grasp filter를 moving conveyor의 실행 기준으로 과장하지 않고, task 사건과 actual-time reference까지 닫는다.</h1>
 <p class="lede">AutoDex가 실제로 거르는 조건과 BeltBench가 채택한 조건을 최신 public branch에서 다시 대조했다. 정적 후보 생성·collision·hold·coverage는 유용하지만 moving grasp의 상대 속도, arm-hand 동기 closure, release와 controller authority를 증명하지 않는다. 후속 구현은 첫 접촉 <code>q_grasp</code>와 운반 유지 <code>q_sqz</code>를 분리하고, intrinsic·deployment·shortlist·event·Viser·hardware evidence가 같은 retention 명령을 사용하도록 결속한다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/368375c"><code>368375c</code></a>까지 first-contact/retention 분리와 runtime path-family 선택을 startup-verified resident event request에 결속한다. 보정 resolution은 <code>identity</code>, 비활성 family의 timing-only <code>absolute_schedule</code>, 새 joint reference가 필요한 <code>unmaterialized</code>를 구분한다. Active phase 또는 spatial·yaw·belt-speed 보정은 독립 재검증된 결과가 없으면 계속 fail-closed한다. Current Pepsi artifact는 새 retention/contact gate 이전 결과이고 protocol·stable pose·hardware evidence도 없으므로 실행 권한은 계속 차단한다.</div>
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/57c290f"><code>57c290f</code></a>까지 first-contact/retention 분리와 runtime path-family 선택을 startup-verified resident event request에 결속한다. 보정 resolution은 <code>identity</code>, 비활성 family의 timing-only <code>absolute_schedule</code>, 새 joint reference가 필요한 <code>unmaterialized</code>를 구분한다. Causally verified activation은 legacy <code>PickPlayback</code> 없이 recorded monotonic time으로 Viser에서 재생할 수 있다. Active phase 또는 spatial·yaw·belt-speed 보정은 독립 재검증된 결과가 없으면 계속 fail-closed하며, Current Pepsi artifact에도 protocol·stable pose·hardware evidence가 없어 실행 권한은 차단한다.</div>
 
 <h2>감사 source와 branch</h2>
 <p>2026-08-10에도 <code>willi19/autodex-code</code> remote를 다시 fetch했다. 공개 remote branch는 <code>main</code> 하나이며 감사 commit은 <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. 로컬에는 이름이 같은 과거 checkout과 개인 fork가 함께 있으므로 working tree HEAD를 신뢰하지 않고 <code>autodex/autodex-code:origin/main</code>의 blob을 직접 읽었다. Site repository인 <code>autodex</code>, GoTrack perception, BODex proposal generator와 grasp acceptance를 같은 모듈로 취급하지 않았다.</p>
@@ -211,11 +211,32 @@
 <li>MoveIt Hybrid Planning의 global-reference/local-adaptation 분리와 MoveIt Servo의 replaceable feedback adapter는 후속 controller 경계 참고 구조로만 채택한다. 두 구현 자체를 collision·moving-contact·deadline authority로 간주하지 않는다.</li>
 </ul>
 
+<h2>2026-08-10 후속: runtime-selected actual-time Viser를 legacy playback에서 분리</h2>
+<p>Correction resolution을 session에 저장해도 recorder는 unrelated <code>RuntimePlaybackBinding</code>을 생성자에서 필수로 요구했고, selection event는 그 legacy playback을 출력해야만 session validation을 통과했다. 따라서 viewer만 event request를 읽도록 바꿔도 production session 생성에는 고정 playback 의존성이 남았다. 또한 standalone event viewer는 request-relative time만 표시해 saved activation의 monotonic start·contact·attach와 runtime selection 시점을 직접 설명하지 못했다.</p>
+
+<table>
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>Runtime recorder가 unrelated legacy playback을 필수 요구</td><td><code>diagnostic_selected</code> 출력 계약이 <code>trajectory</code> 또는 <code>pick_playback</code>만 허용</td><td>Diagnostic selection에 한해서 exact <code>event_trajectory_request</code>를 planned output으로 허용하고 <code>RuntimePlaybackBinding</code>을 optional compatibility layer로 축소</td><td>새 session은 <code>PickPlayback</code> 파일·artifact 없이 materialize·source verify·causality verify 가능</td></tr>
+<tr><td>Viewer가 runtime decision과 별도 trajectory path를 입력받음</td><td>Standalone CLI만 존재해 선택된 generation·family·correction과 request의 결속을 consumer가 확인하지 않음</td><td><code>--runtime-session</code>과 <code>--causality-assessment</code> mode에서 exactly one verified activation을 loader가 재현하고 그 request를 직접 사용</td><td>Legacy playback 파일을 삭제해도 같은 activation/request ID로 replay가 로드됨</td></tr>
+<tr><td>Request-relative slider가 recorded timing을 숨김</td><td>Activation absolute timestamps와 quintic relative time이 별도 객체</td><td><code>VerifiedRuntimeEventTrajectoryReplay</code>가 path time과 monotonic timestamp를 strict range로 왕복하고 start/contact/attach·selection 시각을 status에 표시</td><td>1x looping 간격은 유지하면서 selection 이전 active-path 구간은 retrospective reference로 명시</td></tr>
+<tr><td>시각화 scene이 runtime workcell과 바뀔 가능성</td><td>Event request 자체에는 workcell ID가 없고 standalone scene loader는 geometry 유효성만 검사</td><td>Runtime mode에서 deployment request의 <code>workcell_id</code>와 loaded scene ID를 추가 대조</td><td>다른 conveyor/table/bin scene으로 same request를 표시하면 startup에서 거부</td></tr>
+<tr><td>Monotonic activation이 음수 start를 허용하고 selection이 contact 뒤여도 evidence가 통과할 여지</td><td>Timestamp 순서만 검사하고 clock-domain lower bound와 selection deadline을 activation binding에서 직접 확인하지 않음</td><td>Activation start를 0 이상으로 제한하고 verified trajectory selection event가 scheduled contact보다 늦으면 거부</td><td>Viewer 전용 조건이 아니라 공통 runtime evidence 불변식으로 fail-closed</td></tr>
+</table>
+
+<h3>검증과 제한</h3>
+<ul>
+<li>Source <a href="https://github.com/gohyunsu/beltbench/commit/57c290f"><code>57c290f</code></a>를 <code>main</code>에 push했다.</li>
+<li>로컬 planning <code>479/479</code>, calibration/OpenCV <code>14/14</code>, 합계 <code>493/493</code>가 통과했다. Legacy-free recorder·session·causality·event replay focused regression은 <code>58/58</code>이다.</li>
+<li><code>junjinyong</code> checkout을 <code>368375c..57c290f</code> 증분 bundle로 exact <code>57c290f0</code>까지 fast-forward했다. 첫 focused 실행은 SSH cwd가 home이라 상대 config 경로 한 건만 실패했고, <code>env --chdir=/home/junjinyong/projects/beltbench</code>로 실행 위치를 고정한 동일 코드가 <code>58/58</code>를 통과했다. Native BODex/CuRobo 산출물은 보존했다.</li>
+<li>현재 저장된 <code>runtime-path-family-wallclock-v1</code>은 event activation/wrapper schema 이전 session이라 추론 변환하지 않았다. Runtime-mode actual-asset startup smoke는 current retention·contact·path-family evidence로 새 xArm/Inspire/Pepsi session을 생성한 뒤 수행해야 한다. Standalone event viewer의 actual asset·FK·loop renderer는 그대로 재사용한다.</li>
+<li>이 변경은 Viser와 planned evidence 경계만 닫는다. Spatial/active correction materialization, continuous collision, controller conversion과 hardware authority는 여전히 없다.</li>
+</ul>
+
 <h2>남은 구현 순서</h2>
 <ol>
 <li>Current proposal batch를 schema 2.0 intrinsic evaluator로 다시 실행해 retention endpoint/path artifact와 deployment·yaw atlas를 재생성한다.</li>
 <li>Spatial·yaw·belt-speed와 active phase correction을 적용해 exact corrected arm-hand trajectory를 출력하는 typed backend를 구현하고 request·contact·continuous collision을 독립 재검증한다.</li>
-<li>Runtime Viser가 verified event-request artifact와 corrected output을 actual monotonic path phase에서 직접 재생하도록 legacy playback 선택과 분리한다.</li>
+<li>Current evidence로 legacy-free xArm/Inspire/Pepsi runtime session을 생성해 runtime-selected actual-asset Viser startup을 검증한다.</li>
 <li>Exact interpolated arm·hand·connector·object에 대해 continuous/swept collision과 controller tracking bound를 독립 검증한다.</li>
 <li>Release motion과 bin containment를 source-bound artifact로 만들되 display model을 실행 authority로 재사용하지 않는다.</li>
 <li>Hardware가 준비되면 calibration residual, latency, controller·hand feedback과 exact-grasp moving-pick reliability를 측정해 physical commit gate를 연다.</li>
