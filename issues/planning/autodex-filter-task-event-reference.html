@@ -16,7 +16,7 @@
 <h1>AutoDex의 정적 grasp filter를 moving conveyor의 실행 기준으로 과장하지 않고, task 사건과 actual-time reference까지 닫는다.</h1>
 <p class="lede">AutoDex가 실제로 거르는 조건과 BeltBench가 채택한 조건을 최신 public branch에서 다시 대조했다. 정적 후보 생성·collision·hold·coverage는 유용하지만 moving grasp의 상대 속도, arm-hand 동기 closure, release와 controller authority를 증명하지 않는다. 후속 구현은 첫 접촉 <code>q_grasp</code>와 운반 유지 <code>q_sqz</code>를 분리하고, intrinsic·deployment·shortlist·event·Viser·hardware evidence가 같은 retention 명령을 사용하도록 결속한다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/ec84020"><code>ec84020</code></a>까지 first-contact/retention 분리와 runtime path-family 선택을 startup-verified resident event request에 결속한다. 기록된 request는 nominal reference이며, nonzero correction은 적용·재검증된 결과가 없으면 candidate admission에서 fail-closed한다. Current Pepsi artifact는 새 retention/contact gate 이전 결과이고 protocol·stable pose·hardware evidence도 없으므로 실행 권한은 계속 차단한다.</div>
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/368375c"><code>368375c</code></a>까지 first-contact/retention 분리와 runtime path-family 선택을 startup-verified resident event request에 결속한다. 보정 resolution은 <code>identity</code>, 비활성 family의 timing-only <code>absolute_schedule</code>, 새 joint reference가 필요한 <code>unmaterialized</code>를 구분한다. Active phase 또는 spatial·yaw·belt-speed 보정은 독립 재검증된 결과가 없으면 계속 fail-closed한다. Current Pepsi artifact는 새 retention/contact gate 이전 결과이고 protocol·stable pose·hardware evidence도 없으므로 실행 권한은 계속 차단한다.</div>
 
 <h2>감사 source와 branch</h2>
 <p>2026-08-10에도 <code>willi19/autodex-code</code> remote를 다시 fetch했다. 공개 remote branch는 <code>main</code> 하나이며 감사 commit은 <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. 로컬에는 이름이 같은 과거 checkout과 개인 fork가 함께 있으므로 working tree HEAD를 신뢰하지 않고 <code>autodex/autodex-code:origin/main</code>의 blob을 직접 읽었다. Site repository인 <code>autodex</code>, GoTrack perception, BODex proposal generator와 grasp acceptance를 같은 모듈로 취급하지 않았다.</p>
@@ -191,10 +191,30 @@
 <li>이번 변경은 correction backend가 아니다. 다음 단계는 correction 좌표를 Cartesian target과 event timing에 적용해 IK·동역학·moving-contact·continuous collision을 재검증한 새 request를 산출하는 typed materializer다.</li>
 </ul>
 
+<h2>2026-08-10 후속: schedule-only correction과 joint-reference correction 분리</h2>
+<p>모든 nonzero correction을 같은 종류로 차단한 규칙도 지나치게 보수적이었다. 비활성 family의 <code>timing_correction_s</code>는 실제 예측 교차 horizon과 family nominal horizon의 차이다. Projection은 이미 실제 교차시각에서 contact하도록 absolute monotonic start·contact·attach를 계산하므로, spatial·yaw·belt-speed 오차가 0이면 resident joint state와 상대 event offset을 바꾸지 않고 정확히 실현된다. 반대로 실행 중인 family의 timing correction은 committed path phase를 바꾸며, 위치·yaw·belt-speed correction은 moving contact의 joint position 또는 velocity reference를 바꾸므로 단순 timestamp 이동으로 처리할 수 없다.</p>
+
+<table>
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>보정 경계의 boolean 이름이 전체 후보 승인을 암시</td><td><code>candidate_admissible</code>은 collision·deadline·controller authority까지 통과한 것처럼 읽힐 수 있음</td><td><code>RuntimeTrajectoryCorrectionResolution.correction_realized</code>로 책임을 좁히고 resolution ID·activation·request·generation·family·projection·correction을 결정적으로 결속</td><td>보정 실현 여부가 전체 실행 승인과 분리되고 wrapper 임의 변조를 verifier가 재현 비교로 거부</td></tr>
+<tr><td>비활성 timing-only correction도 불필요하게 거부</td><td>Correction vector의 모든 축을 joint-path 변경으로 간주</td><td><code>identity</code>, <code>absolute_schedule</code>, <code>unmaterialized</code> mode를 도입하고 실제 selected family의 active 상태로 판정</td><td>비활성 timing-only reference만 ready 경계를 통과하며 active phase와 spatial·yaw·speed correction은 계속 <code>runtime_trajectory_correction_not_materialized</code></td></tr>
+<tr><td>Session artifact가 보정 판정 근거를 보존하지 않음</td><td>Activation correction만 있고 어떤 capability로 통과·거부했는지 없음</td><td>Trajectory wrapper schema를 <code>2.0</code>으로 올려 exact resolution을 저장하고 loader가 deployment query에서 다시 계산</td><td>저장된 mode나 boolean만 바꾼 artifact는 실행 차단 상태여도 검증 실패</td></tr>
+<tr><td>전체 suite에서 capacity-one timing test가 한 차례 불안정</td><td>10 ms production compute budget을 synthetic fixture의 실제 <code>perf_counter</code>로 재어 suite 부하가 의미 판정을 바꿈</td><td>Monotonic event clock과 compute-duration clock을 별도 주입하고 관련 projector·engine fixture에는 deterministic compute clock 사용</td><td>실제 production default는 유지하면서 test 결과가 host load와 분리됨</td></tr>
+</table>
+
+<h3>검증 결과</h3>
+<ul>
+<li>Source <a href="https://github.com/gohyunsu/beltbench/commit/368375c"><code>368375c</code></a>를 <code>main</code>에 push했다.</li>
+<li>로컬 planning <code>479/479</code>, calibration/OpenCV <code>14/14</code>, 합계 <code>493/493</code>가 통과했다. Correction/runtime focused regression은 <code>46/46</code>이다.</li>
+<li>Read-only sandbox에서 첫 focused 실행의 임시 파일 11개가 실패한 것은 구현 실패가 아니라 <code>TemporaryDirectory</code> 생성 권한 문제였으며, 쓰기 가능한 동일 환경에서 <code>46/46</code>으로 재검증했다. Planning 환경에 없는 <code>cv2</code> 모듈 14개는 calibration 환경에서 분리 검증했다.</li>
+<li><code>junjinyong</code> checkout을 검증한 <code>ec84020..368375c</code> 증분 bundle로 exact <code>368375c3</code>까지 fast-forward했고 pinned planning environment에서 같은 <code>46/46</code>를 통과했다. 기존 BODex/CuRobo native 산출물은 보존했다.</li>
+<li>MoveIt Hybrid Planning의 global-reference/local-adaptation 분리와 MoveIt Servo의 replaceable feedback adapter는 후속 controller 경계 참고 구조로만 채택한다. 두 구현 자체를 collision·moving-contact·deadline authority로 간주하지 않는다.</li>
+</ul>
+
 <h2>남은 구현 순서</h2>
 <ol>
 <li>Current proposal batch를 schema 2.0 intrinsic evaluator로 다시 실행해 retention endpoint/path artifact와 deployment·yaw atlas를 재생성한다.</li>
-<li>Nonzero longitudinal·timing·lateral·yaw correction을 적용해 exact corrected arm-hand trajectory를 출력하는 typed backend를 구현하고 request·contact·continuous collision을 독립 재검증한다.</li>
+<li>Spatial·yaw·belt-speed와 active phase correction을 적용해 exact corrected arm-hand trajectory를 출력하는 typed backend를 구현하고 request·contact·continuous collision을 독립 재검증한다.</li>
 <li>Runtime Viser가 verified event-request artifact와 corrected output을 actual monotonic path phase에서 직접 재생하도록 legacy playback 선택과 분리한다.</li>
 <li>Exact interpolated arm·hand·connector·object에 대해 continuous/swept collision과 controller tracking bound를 독립 검증한다.</li>
 <li>Release motion과 bin containment를 source-bound artifact로 만들되 display model을 실행 authority로 재사용하지 않는다.</li>
