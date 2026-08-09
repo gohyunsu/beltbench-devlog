@@ -116,6 +116,7 @@
 <h3>검증과 현재 결론</h3>
 <ul>
 <li>Source <a href="https://github.com/gohyunsu/beltbench/commit/2614962"><code>2614962</code></a>를 <code>main</code>에 push했다. Planning <code>470/470</code>, 분리된 calibration <code>14/14</code>, 총 <code>484/484</code> regression이 통과했고 <code>git diff --check</code>와 두 Viser CLI import도 통과했다.</li>
+<li><code>junjinyong</code> checkout을 git bundle로 exact source <code>2614962514e89c9b413e8ddb87822a9953d098cb</code>까지 fast-forward하고 retention 중심 regression <code>85/85</code>를 통과했다. 첫 실행은 remote current directory를 지정하지 않아 <code>tests</code> import 9개가 실패했으며, <code>env -C /home/junjinyong/projects/beltbench</code>로 원인을 제거한 동일 test가 통과했다. 기존 BODex build directory와 native <code>.so</code>는 untracked 상태로 보존했다.</li>
 <li>실제 Inspire-left URDF에서 gain 2 retention은 thumb <code>(0.635232, 0.273136)</code>, index·middle·ring·little <code>1.6</code>이며 mimic limit까지 포함한 재계산과 library 값이 정확히 일치한다. Complete grasp digest는 <code>ab0bdde930d3227c871fcaed2503cd2cb882398d3d03ca2e0a3d7a8f09348f0c</code>다.</li>
 <li>현재 Pepsi drop request의 해석 결과는 계속 <code>synthesis_required</code>다. Retention command를 결정적으로 만들었다는 사실은 contact quality, stable pose, release path나 hardware reliability를 새로 검증했다는 뜻이 아니다.</li>
 <li>기존 117개 geometry-clear와 관련 intrinsic artifact는 retention schema 이전 결과다. 새 evaluator로 재생성·source verify하기 전에는 shortlist나 moving execution authority로 사용할 수 없다.</li>
