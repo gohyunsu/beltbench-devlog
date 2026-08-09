@@ -12,11 +12,11 @@
 <nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
 </div></header>
 <main class="wrap article">
-<div class="eyebrow">ISSUE-022 · 2026-08-09 · runtime vertical slice</div>
+<div class="eyebrow">ISSUE-022 · 2026-08-10 · selection-to-controller boundary</div>
 <h1>검증된 grasp와 path-family를 최신 관측에서 실제 시간 순서로 선택한다.</h1>
 <p class="lede">문서와 개별 계약만 연결해 놓고 real-time pipeline이라고 부르지 않는다. 실제 projector, coordinator, bounded warm-start 경계, capacity-one scheduler와 causal recorder를 한 실행 경로로 묶고, 선택되거나 거부된 결과를 발생 시간 그대로 Viser가 재생할 수 있는 첫 production-shaped vertical slice를 구현했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/3e3de99"><code>3e3de99</code></a>이 runtime engine, latest-generation mailbox와 deferred causal session을 구현하고, <a href="https://github.com/gohyunsu/beltbench/commit/697250e"><code>697250e</code></a>가 bounded multi-rate input-to-selection composition을 추가한다. <a href="https://github.com/gohyunsu/beltbench/commit/09df7f4"><code>09df7f4</code></a>는 서버에서 발견한 non-usrmerge Linux test 결함을 수정한다. 모든 trajectory는 계속 <code>execution_blocked</code>이며 controller command 권한이 없다.</div>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/3e3de99"><code>3e3de99</code></a>이 runtime engine과 causal session, <a href="https://github.com/gohyunsu/beltbench/commit/697250e"><code>697250e</code></a>가 bounded multi-rate input-to-selection, <a href="https://github.com/gohyunsu/beltbench/commit/66f1061"><code>66f1061</code></a>이 exact future-start whole-trajectory handoff를 구현한다. Receipt는 diagnostic evidence일 뿐이며 모든 trajectory는 계속 <code>execution_blocked</code>, <code>execution_authorized=false</code>다.</div>
 
 <h2>Grasp 선택 기준을 다시 연결한 결론</h2>
 <p>AutoDex source 감사 결과는 바뀌지 않았다. BODex residual과 provider 순서, zero-margin sampled sphere collision, squeeze overlap, 한 방향 gravity hold, scene set cover, coverage 순서의 첫 planning 성공은 proposal 생성과 static diagnostic에는 유용하지만 moving conveyor command의 승인 기준은 아니다.</p>
@@ -127,7 +127,53 @@
 <li><code>junjinyong</code> pinned planning environment에서 focused 50개와 전체 planning 493개가 각각 2.061초, 58.088초에 통과했다. 이는 CPU functional regression이며 p95 latency나 hard-real-time evidence가 아니다.</li>
 <li>Local, GitHub <code>main</code>과 server source는 <code>697250e</code>로 일치한다. Server worktree에는 사전에 있던 BODex native output 3개만 untracked로 남았다.</li>
 <li>Session의 <code>conveyor_state_published</code>는 raw encoder callback 시간이 아니라 exact snapshot을 planning generation에 넘긴 시간이다. Sensor/fusion/controller end-to-end latency에는 별도 bounded native trace가 필요하다.</li>
-<li>현재 수직 슬라이스는 typed event request 선택에서 끝난다. Nonblocking selected-request handoff, controller-rate sampler, measured feedback adapter와 bounded fault injection이 다음 구현 경계다.</li>
+<li>이 시점의 수직 슬라이스는 typed event request 선택에서 끝났다. 아래 갱신에서 controller-rate sampler 계획은 폐기하고 exact whole-trajectory diagnostic handoff와 bounded lifecycle fault injection을 구현했다.</li>
+</ul>
+
+<h2>2026-08-10: 선택 결과를 controller 경계까지 전달</h2>
+<p>처음 계획은 선택된 trajectory를 Python에서 controller rate로 sampling해 setpoint stream을 만드는 것이었다. 그러나 <a href="https://design.ros2.org/articles/realtime_proposal.html">ROS 2 real-time proposal</a>, <a href="https://control.ros.org/kilted/doc/ros2_control/controller_manager/doc/userdoc.html"><code>ros2_control</code> Controller Manager</a>와 <a href="https://control.ros.org/lyrical/doc/ros2_controllers/joint_trajectory_controller/doc/trajectory.html">joint trajectory 표현·교체 의미</a>를 다시 검토하면 이 구조는 planning process에 불필요한 jitter, scheduling과 interpolation 책임을 중복시킨다. 이미 event request가 arm과 end effector의 position·velocity·acceleration을 한 time axis에 담고 있으므로, planning은 그 exact whole trajectory를 한 번 넘기고 controller backend가 deterministic interpolation과 periodic loop를 소유하는 편이 더 작고 검증 가능하다.</p>
+
+<h3>AutoDex 선택 기준 재감사와 채택 범위</h3>
+<p><code>willi19/autodex-code</code> remote를 다시 fetch한 결과 공개 branch는 <code>main</code> 하나이며 감사 기준은 <a href="https://github.com/willi19/autodex-code/commit/5ada1c077f60bae9af6f27b07619218f58422e50"><code>origin/main@5ada1c0</code></a>이다. Cache shortcut과 정상 평가 경로를 구분해 실제 source를 다시 읽었다.</p>
+<table class="table">
+<tr><th>AutoDex 단계</th><th>BeltBench에서의 역할</th><th>최종 선택 권한이 아닌 이유</th></tr>
+<tr><td>BODex 생성 결과와 provider 순서</td><td>Checksummed proposal provenance</td><td>Provider success는 task·robot·path feasibility가 아님</td></tr>
+<tr><td>Pregrasp world/self collision, squeeze object overlap</td><td>Offline 저비용 worklist 축소 개념</td><td>Named contact, penetration, support와 complete closure path를 증명하지 못함</td></tr>
+<tr><td>0.1 kg, 한 tabletop gravity 방향 MuJoCo hold, 5 cm/15 deg</td><td>독립 평가를 설계할 때 참고하는 정적 diagnostic</td><td>실제 payload, acceleration, moving contact, hand closing timing과 불일치</td></tr>
+<tr><td>Scene greedy set cover</td><td>Bounded shortlist의 yaw/horizon coverage와 pose/hand diversity에만 채택</td><td>Coverage 수는 robustness margin이나 complete-path 실행 가능성이 아님</td></tr>
+<tr><td>Endpoint collision, wrist heuristic, fixed-start IK, short lift와 first-success</td><td>채택하지 않음</td><td>Hand-specific, provider-order dependent이며 belt timing·stop·uncertainty를 보지 않음</td></tr>
+</table>
+<p>BeltBench는 intrinsic contact·non-contact/self/support clearance·task wrench·approach/closure/retention/release path를 먼저 hard gate한다. 그 다음 exact robot, hand, connector, object, stable pose와 workcell에서 endpoint IK·collision·joint-limit·singularity와 yaw×horizon support를 검사한다. Runtime은 moving-contact pose/twist, complete task/stop path, collision·dynamics·timing·freshness·deadline·correction support를 모두 통과한 후보만 complete normalized-slack vector의 lexicographic maximin으로 비교한다. Offline set cover는 resident 후보 수를 제한하지만 runtime 순위를 대신하지 않는다. Hardware reliability evidence가 없는 grasp는 수치가 좋아도 실행 권한을 얻지 못한다.</p>
+
+<h3>구현한 controller handoff</h3>
+<ol>
+<li>Path start 전 projection에서 요청 phase가 없으면 임의 mid-path가 아니라 path time 0의 certified latch만 평가한다. 현재 robot state가 그 latch와 request 첫 waypoint에 joint 이름·position·velocity·acceleration까지 exact 일치해야 하며 arm과 hand derivative는 모두 zero여야 한다.</li>
+<li><code>ControllerTrajectoryAdapterCapability</code>은 future start, pre-start hold, exact arm/end-effector joints, position/velocity/acceleration, synchronized arm-hand, cancel, prevalidated stop, lead time과 bounded waypoint/duration을 선언한다. 두 독립 topic을 비슷한 시각에 publish하는 것은 atomicity로 인정하지 않는다.</li>
+<li><code>RuntimeSelectionControlCoordinator</code>는 planner와 mailbox가 같은 clock callable을 사용할 때만 구성된다. 새 <code>latch_precompiled</code>만 publish하고, <code>retain_active</code>는 controller가 이미 소유한 trajectory를 재전송하지 않는다. Warm start와 <code>switch_latch</code>는 각각 event materialization과 replacement/splice protocol이 없어 명시적으로 차단한다.</li>
+<li>Mailbox는 capacity one이며 file I/O, serialization, ROS/backend callback을 lock 안에서 수행하지 않는다. Worker take와 adapter ack budget을 future-start lead time에서 함께 예약하고 deadline miss는 retry 없이 terminal expiry로 닫는다.</li>
+<li>Snapshot은 exact request·activation·correction·initial robot state와 lifecycle timestamp를 causal runtime session에 다시 결속한다. Viser는 실제 발생 시각과 terminal-to-start lead를 표시하지만 adapter acceptance를 execution authority로 표현하지 않는다.</li>
+<li>Normal acceptance, worker-take timeout, adapter-ack timeout과 explicit rejection은 sleep 없는 virtual clock으로 같은 mailbox 구현을 통과한다. 이는 lifecycle plumbing만 검증하며 perception·tracking·controller response·stop fault를 대체하지 않는다.</li>
+</ol>
+
+<h3>발견한 문제, 원인, 해결과 결과</h3>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>기존 성공 fixture의 trajectory start가 이미 과거인데 full path를 다시 보낼 수 있었음</td><td><code>retain_active</code>와 새 dispatch를 구분하지 않음</td><td>Active retain은 no-dispatch disposition으로 고정</td><td>실행 중 trajectory의 재시작과 시간축 불연속 차단</td></tr>
+<tr><td>초기 future path가 항상 warm start로 분류됨</td><td>Requested path phase가 없으면 모든 latch를 부적합 처리</td><td>Start 전에는 exact path-time-zero latch만 허용</td><td>새 precompiled command의 유일한 안전한 진입 경로 확보</td></tr>
+<tr><td>Runtime robot joint는 <code>a1/a2/h1</code>, fixture request는 <code>axis</code>여도 기존 단계가 통과</td><td>Catalog와 activation이 첫 waypoint의 current-state continuity를 검사하지 않음</td><td>Exact joint identity·state·zero derivative를 envelope hard gate로 추가하고 fixture 자체를 수정</td><td>이름만 다른 synthetic command를 허용하는 우회 제거</td></tr>
+<tr><td>Take deadline이 ack budget을 남기지 않음</td><td>Worker take와 adapter ack를 독립 최대 지연으로 계산</td><td><code>start - minimum lead - maximum ack</code>를 take deadline 상한에 포함</td><td>제시간에 take한 뒤 ack 때문에 start lead를 깨는 구성 차단</td></tr>
+<tr><td>Snapshot JSON/hash 작업이 mailbox lock 안에 들어갈 가능성</td><td>상태 복사와 validation/materialization 책임이 섞임</td><td>Lock에서는 immutable snapshot 값만 복사하고 validation·I/O는 밖에서 수행</td><td>Planning callback의 unbounded lock hold 제거</td></tr>
+<tr><td>995줄 단일 계약 파일</td><td>Capability, trajectory envelope와 lifecycle evidence를 한 모듈에 누적</td><td>세 계약 모듈로 분리하고 public export만 안정적으로 유지</td><td>Backend capability와 evidence lifecycle을 독립 변경·검토 가능</td></tr>
+<tr><td>첫 server 전체 회귀의 한 subprocess가 SIGTERM</td><td>직전 SSH test session이 exit 255로 끊긴 뒤 검증 세션이 겹친 일시적 간섭</td><td>남은 process가 없음을 확인하고 실패 test 단독 재실행 후 전체 suite 재실행</td><td>단독 test와 최종 planning 509개 모두 통과, code failure와 session failure 분리</td></tr>
+</table>
+
+<h3>검증 결과와 남은 한계</h3>
+<ul>
+<li>Local은 새 handoff 16개, OpenCV 없는 planning 경로 509개, calibration 환경 14개가 통과했다. 전체 Python compile과 Viser CLI import도 통과했다.</li>
+<li><code>junjinyong</code> pinned planning 환경에서 handoff 16개는 2.013초, 전체 planning 509개는 최종 56.323초에 통과했다.</li>
+<li>Local, GitHub <code>main</code>과 server는 <code>66f1061</code>로 일치한다. Server에는 기존 BODex native output 3개만 untracked로 남았다.</li>
+<li>Concrete ROS 2/<code>ros2_control</code> adapter, combined arm-hand endpoint 또는 two-phase prepare/commit, measured controller feedback, cancellation/stop latency와 native p95/p99 trace는 아직 없다.</li>
+<li>Warm-start 결과의 typed event request materialization과 active trajectory replacement/splice도 아직 없다. Diagnostic receipt는 어떤 경우에도 hardware execution을 승인하지 않는다.</li>
 </ul>
 
 <h2>남은 신뢰 경계와 다음 순서</h2>
@@ -137,7 +183,7 @@
 <li>Reference oracle과 비교 가능한 accelerated warm-start solver와 별도 continuous validator를 nonblocking worker로 연결한다.</li>
 <li>Recorded camera·encoder·controller snapshot을 원래 cadence로 replay해 p50/p95/p99, worst case, miss, supersession, cancellation과 memory high-water를 측정한다.</li>
 <li>ROS 2 경계에는 Python JSON recorder 대신 LTTng/<code>ros2_tracing</code> 또는 동등한 low-overhead tracepoint adapter를 둔다.</li>
-<li>Controller simulation에서 commit, setpoint, measured robot/object, watchdog, stop과 bin containment를 독립 feedback으로 기록한다.</li>
+<li>Controller simulation에서 whole-trajectory prepare/commit, measured robot/object, watchdog, stop과 bin containment를 독립 feedback으로 기록한다.</li>
 <li>실제 calibration·connector metrology·hardware reliability lower bound가 준비된 뒤에만 physical commit authority를 추가한다.</li>
 </ol>
 <p><a href="runtime-grasp-selection.html">AutoDex와 BeltBench grasp authority 감사</a>, <a href="bounded-warm-start-boundary.html">bounded warm-start 경계</a>, <a href="runtime-event-session.html">causal session 계약</a>이 각각 이 runtime의 offline 입력, update 권한과 evidence 의미를 설명한다.</p>
