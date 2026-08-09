@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>동기 event trajectory reference · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-029 · 2026-08-09 · synchronized event trajectory</div>
+<h1>AutoDex grasp를 moving pick에 쓰기 전에 arm과 hand의 실제 시간 사건을 하나의 검증 경계로 묶는다.</h1>
+<p class="lede">정적 grasp가 통과했다는 사실과 moving conveyor에서 접촉할 수 있다는 사실 사이에는 동기 궤적이 필요하다. Arm과 hand의 위치만 그럴듯하게 보간하지 않고, closure 시작, first contact, closure 완료, attach를 같은 시간축의 <code>q</code>, <code>qdot</code>, <code>qddot</code> 상태로 고정했다. 구간 내부 관절 한계는 sampling이 아니라 다항식 극값으로 검사한다. 이 reference는 시간 배정 optimizer나 continuous collision authority가 아니다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/1b3e948"><code>1b3e948</code></a>이 동기 event 계약, piecewise-quintic reference, analytic joint-limit assessment, grasp/connector 결속과 moving-contact adapter를 구현한다. 실제 xArm/Inspire controller trajectory, continuous collision, chase interval과 hardware closure가 없으므로 모든 결과는 <code>execution_blocked</code>다.</div>
+
+<h2>AutoDex 기준을 다시 확인한 결론</h2>
+<p>감사 대상은 public <code>willi19/autodex-code:main</code> <code>5ada1c0</code>이다. BODex residual과 provider order는 생성 provenance이고, static sphere collision, squeeze overlap, 고정 0.1 kg MuJoCo hold, adaptive scene당 다섯 survivor, binary set cover와 runtime first-success planning은 정적 후보를 줄이는 절차다. 어느 단계도 moving object와 tool의 접촉 상대 속도, arm-hand 동기 closure, event deadline 또는 controller tracking을 검사하지 않는다.</p>
+<table class="table">
+<tr><th>기준</th><th>이번 방법론의 결정</th><th>이유</th></tr>
+<tr><td>Provider residual·순서</td><td>Proposal provenance로만 보존</td><td>생성기 자체 점수이며 독립 검증이 아니다.</td></tr>
+<tr><td>Pregrasp collision 개념</td><td>Named mesh와 양의 margin의 endpoint/path gate로 교체</td><td>Zero-margin sphere endpoint만으로 swept clearance를 알 수 없다.</td></tr>
+<tr><td>Squeeze overlap·MuJoCo hold</td><td>Acceptance에서 제외하거나 optional diagnostic으로 제한</td><td>Named contact, 침투, signed wrench, moving timing과 불확실성이 없다.</td></tr>
+<tr><td>Coverage·first success</td><td>Hard gate 뒤 bounded portfolio에서만 사용</td><td>탐색 순서가 collision, deadline 또는 robust slack을 보상할 수 없다.</td></tr>
+<tr><td>선택된 object-relative grasp</td><td>Complete payload SHA-256으로 event trajectory에 결속</td><td>같은 grasp ID의 다른 pose·command·source 치환을 막아야 한다.</td></tr>
+</table>
+
+<h2>채택한 실행 전 filter</h2>
+<ol>
+<li><strong>Grasp ancestry:</strong> object, stable pose, hand, grasp ID와 complete semantic grasp payload hash가 일치해야 한다.</li>
+<li><strong>Connector ancestry:</strong> connector ID뿐 아니라 <code>arm_tip_from_hand_root</code> transform hash가 일치해야 한다. AutoDex hand root를 arm flange로 직접 간주하지 않는다.</li>
+<li><strong>동기 상태:</strong> 모든 waypoint가 같은 arm/hand named-joint order와 하나의 시간축에서 <code>q</code>, <code>qdot</code>, <code>qddot</code>를 가져야 한다.</li>
+<li><strong>Event window:</strong> 각 사건의 지정 시각이 선언된 window 안에 있고 사건 tuple이 시간 순서를 거슬러서는 안 된다.</li>
+<li><strong>Closure semantics:</strong> <code>hand_close_start &lt; contact &lt; hand_close_complete &lt;= attach</code>를 요구한다. Closure 시작은 pregrasp command, 완료와 attach는 final grasp command 및 prescribed zero hand velocity/acceleration이어야 한다. First contact의 hand state는 닫히는 중인 intermediate state를 허용한다.</li>
+<li><strong>Continuous joint limits:</strong> piecewise quintic의 position, velocity, acceleration, jerk 극값을 polynomial root로 구해 joint별 독립 hard gate로 검사한다.</li>
+<li><strong>Moving contact:</strong> contact의 exact arm <code>q</code>/<code>qdot</code>와 Jacobian, object pose·twist로 pose error와 상대 선·각속도를 독립 검사한다.</li>
+</ol>
+<p>모든 hard gate를 통과한 뒤에만 normalized slack의 deterministic lexicographic maximin으로 후보를 비교한다. Provider order, weighted sum, 가장 먼 intercept와 첫 planning 성공은 최종 선택 규칙이 아니다.</p>
+
+<h2>구현한 reference와 의도적 한계</h2>
+<p><code>EventScheduledTrajectoryRequest</code>는 exact geometric-path, grasp, connector transform, motion-limit profile digest를 저장한다. Arm과 hand를 따로 retime하지 않고 동일한 waypoint time과 semantic event를 사용한다. Artifact는 write-once이며 assessment는 request와 limit profile의 canonical hash에서 완전히 재현해야 한다.</p>
+<p><code>reference.event_piecewise_quintic.v1</code>는 각 구간 경계의 위치·속도·가속도를 정확히 만족하는 normalized-time quintic을 만든다. Position extrema는 velocity root, velocity extrema는 acceleration root, acceleration extrema는 jerk root, jerk extrema는 snap root와 구간 양 끝에서 계산한다. 따라서 frame stride 사이의 위반도 검출한다.</p>
+<p>이 구현은 schedule allocator가 아니다. Event 시각을 선택하거나 deadline 안에 재배치하지 않으며 collision-free geometric path를 만들지 않는다. Quintic은 waypoint 사이에서 원래 path를 벗어나거나 overshoot할 수 있으므로 exact interpolated arm-hand-connector-object geometry에 대한 continuous/swept collision 검증이 반드시 다시 필요하다. Draft joint limits의 통과도 manufacturer 또는 measured authority를 만들지 않는다.</p>
+<p>Ruckig Community는 local state-to-state latch·stop·작은 correction 후보로 남긴다. Intermediate waypoint는 Community에서 local solver가 아니며 exact multi-event duration도 이 task에 필요한 방식으로 보장하지 않으므로 main task path의 임시 fallback으로 설치하지 않았다. Position-only playback finite difference도 contact <code>qdot</code>를 보존하지 않아 폐기했다.</p>
+
+<h2>발생한 문제, 원인, 해결, 결과</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>첫 7개 test가 정상 request도 모두 거부</td><td>인접 pair 검사에서 전체 tuple과 한 칸 짧은 slice를 <code>zip(..., strict=True)</code>로 결합</td><td>양쪽을 <code>[:-1]</code>과 <code>[1:]</code>의 같은 길이로 수정</td><td>Event·waypoint strict ordering은 유지하면서 정상 round-trip 통과</td></tr>
+<tr><td>Boolean twist rejection test가 실패</td><td>Test가 함수 호출 전에 <code>np.asarray</code>로 <code>True</code>를 float 1.0으로 바꿔 원래 type 정보를 제거</td><td>Raw list 입력으로 contract boundary를 시험</td><td>불가능한 과거 type 추정 fallback 없이 실제 untyped input을 거부</td></tr>
+<tr><td>Connector digest focused test 2개가 error</td><td><code>request</code> 지역 변수를 digest 검사 뒤에 초기화</td><td>검사 전 request를 명시적으로 가져오도록 순서 수정</td><td>정상 connector는 통과하고 same-ID 다른 transform은 거부</td></tr>
+<tr><td>처음에는 grasp ID와 connector ID만 결속</td><td>Identity가 같으면 pose·command·source 또는 mount를 바꿀 수 있음</td><td>Complete grasp payload와 mount transform canonical SHA-256 추가</td><td>같은 ID의 source 또는 connector substitution negative test 통과</td></tr>
+<tr><td>Planning full discovery에서 세 import error</td><td>Core planning 환경에 의도적으로 OpenCV가 없음</td><td>나머지 427개와 OpenCV 3 module을 calibration 환경으로 분리</td><td>Dependency를 섞지 않고 calibration 실제 test 14개 별도 통과</td></tr>
+<tr><td>첫 incremental bundle 생성이 empty로 거부</td><td>Raw commit range만 주어 bundle이 광고할 ref가 없음</td><td><code>main</code> ref를 포함하고 base commit만 제외</td><td>Server를 fast-forward하고 기존 native build 3개를 보존</td></tr>
+<tr><td>PBS 완료 시각이 compute clock과 367초 차이</td><td>Compute node clock이 scheduler/filesystem보다 느림</td><td>Status schema 2.0의 clock authority를 그대로 적용</td><td>기능 회귀는 채택하되 latency·deadline·event timing 근거는 차단</td></tr>
+</table>
+
+<h2>검증 결과</h2>
+<ul>
+<li>새 event trajectory, moving contact, grasp library focused test <code>26/26</code>이 local planning 환경에서 통과했다.</li>
+<li>Planning full discovery는 <code>430</code>개를 수집했고 OpenCV import 3개를 제외한 <code>427</code>개가 통과했다. 분리된 calibration 환경에서 해당 module의 실제 test <code>14/14</code>가 통과했다.</li>
+<li>Public export는 contracts <code>335</code>, planning <code>89</code>개이며 중복 없이 import됐다.</li>
+<li><code>junjinyong</code> PBS job <code>115169</code>는 source <code>1b3e948</code>, CPU 1개, 4 GB, GPU 0개에서 관련 <code>34/34</code>를 10.567초에 통과했고 scheduler와 run status 모두 exit 0을 기록했다.</li>
+<li>같은 PBS status의 <code>compute_minus_filesystem_clock_s=-367</code>, <code>timing_evidence_authorized=false</code>를 보존했다. 10.567초는 test log duration일 뿐 real-time planning 성능 근거가 아니다.</li>
+</ul>
+
+<h2>다음 구현 순서</h2>
+<ol>
+<li>Offline compiler가 bounded belt speed·yaw·intercept cell마다 collision-free geometric path와 semantic event window를 생성한다.</li>
+<li>Event window와 deadline을 보존하는 local time-parameterizer를 별도 capability로 구현하고 이 quintic reference와 agreement를 검사한다.</li>
+<li>Exact interpolated arm·hand·connector·object path의 continuous/swept collision과 chase interval moving-contact를 검증한다.</li>
+<li>같은 actual-time trajectory를 desired stream과 Viser 자동 반복 재생에 연결하되 simulation feedback과 execution evidence를 구분한다.</li>
+<li>Hardware가 준비된 뒤 controller tracking, hand closing/attachment, connector metrology, moving-pick reliability를 측정해 physical commit authority를 별도로 연다.</li>
+</ol>
+<p>관련 배경은 <a href="path-family-validation-authority.html">path validation authority</a>, <a href="realtime-conveyor-architecture.html">real-time conveyor architecture</a>, <a href="runtime-grasp-selection.html">AutoDex selection 감사</a>에 이어서 기록한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
