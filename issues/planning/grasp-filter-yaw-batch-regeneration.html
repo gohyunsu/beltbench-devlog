@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Grasp filter 재감사와 full-yaw batch 재생성 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-028 · 2026-08-09 · grasp filtering and yaw batching</div>
+<h1>AutoDex의 필터는 참고하되, moving pick의 권한 기준으로 복사하지 않는다.</h1>
+<p class="lede">Pinned AutoDex source의 proposal generation, static simulation filter, cross-pose order, runtime planner와 hardware-stat order를 다시 대조했다. BeltBench는 contact·clearance·wrench·path·robot deployment를 서로 다른 hard-gate owner로 유지하고, 모든 gate를 통과한 뒤에만 coverage와 maximin을 적용한다. 동시에 12개 yaw마다 같은 intrinsic ancestry와 robot model을 다시 읽던 offline 병목을 shared batch로 교체했다.</p>
+
+<div class="callout"><strong>현재 source:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/5cd83fb"><code>5cd83fb</code></a>이 shared preparation, yaw batch producer와 batch verifier를 구현했다. <a href="https://github.com/gohyunsu/beltbench/commit/f8af1b5"><code>f8af1b5</code></a>는 nominal shortlist가 full-yaw atlas의 whitelist가 될 수 없다는 권한 경계를 AGENTS와 방법론에 명시했다. 측정 resource 사용량을 반영한 <a href="https://github.com/gohyunsu/beltbench/commit/0fff6a3"><code>0fff6a3</code></a>은 순차 grasp PBS job을 1 CPU와 실제 메모리 여유에 맞췄다. 모든 산출물은 execution-blocked다.</div>
+
+<h2>AutoDex에서 확인한 필터와 채택 판단</h2>
+<table class="table">
+<tr><th>AutoDex 기준</th><th>실제 역할</th><th>BeltBench 판단</th></tr>
+<tr><td>BODex feasibility와 residual order</td><td>동일 optimizer가 만든 후보의 수렴·정렬 정보</td><td>깨진 generator output을 거르는 provenance로만 사용한다. 독립 품질이나 최종 순위가 아니다.</td></tr>
+<tr><td>Zero-distance pregrasp collision</td><td>Sphere 기반 hand/world와 self endpoint 검사</td><td>개념만 채택하고 named mesh pair, signed distance, 양의 pair-specific margin과 sampled path로 대체한다.</td></tr>
+<tr><td>Squeeze posture의 any overlap</td><td>하나의 hand sphere라도 object와 겹치면 contact 통과</td><td>거부한다. Intended geometry, 최소 contact 수, penetration, non-contact clearance와 task wrench를 별도 검사한다.</td></tr>
+<tr><td>0.1 kg, gravity 한 방향 MuJoCo hold</td><td>5 cm·15도 이탈 threshold의 정적 simulation</td><td>Optional diagnostic만 허용한다. Moving contact, torque, friction·mass uncertainty와 actuator capability를 대신하지 못한다.</td></tr>
+<tr><td><code>coll_valid.npy</code>·<code>sim_eval.json</code></td><td>Path-keyed mutable cache, <code>--sim_only</code>에서 squeeze contact 생략</td><td>Authority로 거부한다. Checksummed immutable input·evaluator ancestry가 맞을 때만 계산 가속으로 재사용한다.</td></tr>
+<tr><td>Binary cross-pose greedy set cover</td><td>여러 tabletop scene을 적은 grasp로 덮는 순서</td><td>모든 hard gate 뒤 bounded portfolio coverage 개념으로만 채택한다.</td></tr>
+<tr><td>Fixed-start IK, 3 cm lift IK, first plan success</td><td>Provider/coverage 순서에서 첫 planning success 반환</td><td>IK와 motion planning 필요성만 채택한다. Latest robot state, complete path, uncertainty, deadline과 normalized maximin이 별도 필요하다.</td></tr>
+<tr><td>Laplace-smoothed hardware point estimate</td><td><code>(successes+1)/(attempts+2)</code> 우선순위</td><td>실험 우선순위로만 사용한다. 실행 권한은 exact-context 최소 trial 수와 one-sided Wilson lower bound로 분리한다.</td></tr>
+</table>
+
+<h2>BeltBench filter funnel</h2>
+<ol>
+<li><strong>Identity/provenance:</strong> object, stable pose, hand, provider revision, command joint, exact source checksum을 확인한다.</li>
+<li><strong>Intrinsic endpoint:</strong> named contact, 최소 contact 수, allowed penetration, non-contact·self·support clearance와 signed force/moment 12방향 task-wrench quality를 검사한다.</li>
+<li><strong>Intrinsic path:</strong> object-relative approach, closure와 required drop release를 sampled path 전체에서 검사한다.</li>
+<li><strong>Robot deployment:</strong> exact intrinsic object manifest와 content-equivalent hand collision model을 결속하고 yaw·horizon마다 multi-seed IK, arm·hand·connector·workcell·object endpoint collision을 검사한다.</li>
+<li><strong>Shortlist/atlas:</strong> horizon 또는 context support, static quality, support·assembly·object clearance, joint-limit과 length-normalized Jacobian singular-value threshold를 모두 hard gate로 적용한다.</li>
+<li><strong>Ranking:</strong> 통과 후보만 coverage-first와 deterministic lexicographic maximin, configured diversity로 줄인다. 점수 합으로 실패 gate를 보상하지 않는다.</li>
+<li><strong>Online/path authority:</strong> measured yaw uncertainty와 horizon bracket의 atlas 교집합, latest pose·robot state, complete task/stop path, timing·cutoff·reliability를 다시 검사한다.</li>
+</ol>
+
+<h2>Nominal shortlist를 atlas whitelist로 쓰지 않는 이유</h2>
+<p>한 nominal yaw에서 탈락한 grasp가 다른 yaw에서는 유일하게 유효할 수 있다. Nominal top-K를 full-yaw atlas 앞에 넣으면 context-specific reachability를 보기도 전에 후보를 영구 제거한다. 따라서 nominal schema-2 shortlist는 모든 후보의 decision vector와 ranking을 재현하는 diagnostic artifact다. Atlas는 complete verified intrinsic geometry-clear worklist에서 시작해 각 yaw×horizon cell의 hard gate를 독립 적용하고, online에서는 측정 uncertainty가 지지하는 cell의 공통 후보만 반환한다.</p>
+
+<h2>발견한 계산 병목</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>위험</th></tr>
+<tr><td>Yaw 하나당 별도 deployment process</td><td>Single-assessment CLI가 full-evaluation record, model identity와 Pinocchio/HPP-FCL model을 매번 준비</td><td>12 yaw에서 같은 immutable source를 12회 확인하고 같은 model을 12회 load한다.</td></tr>
+<tr><td>검증 최적화와 acceptance 생략이 혼동될 수 있음</td><td>AutoDex의 cache 재사용은 일부 contact gate까지 건너뜀</td><td>속도를 이유로 hard gate를 생략하거나 stale cache를 authority로 오인할 수 있다.</td></tr>
+<tr><td>Batch association의 prediction 바꿔치기 가능성</td><td>공통 source만 확인하면 yaw별 prediction identity가 분리될 수 있음</td><td>선언 yaw와 다른 pose evidence가 atlas cell에 들어갈 수 있다.</td></tr>
+</table>
+
+<h2>구현한 shared batch 경계</h2>
+<ol>
+<li><code>prepare_screened_grasp_deployment()</code>가 full intrinsic ancestry, exact object와 canonical hand collision model을 한 번 확인하고 robot, end effector, object와 combined collision checker를 한 번 load한다.</li>
+<li>Producer는 verified prediction batch의 source order를 따라 각 yaw의 motion prediction만 바꿔 endpoint IK·collision assessment를 생성한다.</li>
+<li>각 assessment의 모든 direct source는 <code>motion_prediction</code>을 제외하고 exact same path여야 한다. 다른 robot, policy, workcell, semantics 또는 evaluator는 batch 중간에 들어갈 수 없다.</li>
+<li>두 column yaw/absolute-assessment reference는 finite, strictly increasing, unique이고 공백 경로를 허용하지 않는다.</li>
+<li>별도 batch verifier가 첫 assessment의 complete intrinsic/model ancestry를 확인하고 이후 assessment의 shared source와 각 prediction path·ID를 ordered batch에 다시 결속한다.</li>
+</ol>
+<p>이 최적화는 gate를 줄이지 않는다. Full intrinsic 검증과 model load의 소유 단위를 yaw가 아니라 immutable batch로 올린 것이다. Verifier는 source·context·derived decision integrity를 확인하지만 IK/FCL을 다른 solver로 두 번째 계산하는 physical oracle은 아니다. 따라서 endpoint와 atlas는 prefilter diagnostic이고 complete trajectory의 independent full-mesh/continuous validator가 여전히 필요하다.</p>
+
+<h2>실패한 첫 run과 원인</h2>
+<div class="callout warn"><strong>의도된 fail-closed:</strong> 첫 shared-yaw job <code>115126</code>은 첫 yaw 전에 <code>artifact source checksum changed: atlas_policy</code>로 종료했다. 예전 prediction manifest를 current policy에 강제로 연결하지 않았다.</div>
+<p>Old prediction batch는 atlas 최초 구현 시점의 policy를 참조했다. 후속 <code>048e33f</code>가 ranking metric에 <code>intrinsic_path_clearance</code>를 추가했지만 prediction artifact는 재생성되지 않았다. Yaw sample 수치가 같더라도 정책과 source ancestry가 다르므로 old manifest는 current chain의 입력이 아니다. Current policy, upside-down stable pose, observation template, provisional conveyor calibration과 0.08 m/s belt speed로 v2 prediction batch를 다시 만들었다. 새 batch는 12 prediction과 23 direct source를 독립 재현했다.</p>
+
+<h2>현재 nominal 결과</h2>
+<ul>
+<li>Deployment job <code>115125</code>는 117 candidate×3 horizon 중 225 candidate-time pair를 통과했다. 실패는 pregrasp IK 117, pregrasp non-contact object clearance 6, grasp object penetration 3이다.</li>
+<li>Schema-2 shortlist job <code>115127</code>은 941 source를 확인하고 117개 중 68개를 eligible로 판정해 8개를 선택했다.</li>
+<li>탈락 49개는 horizon coverage 42, non-contact object clearance 6, normalized joint-limit margin 1이다. 모든 탈락은 candidate decision ledger에 남는다.</li>
+<li>Top-8의 bottleneck은 모두 minimum horizon coverage 경계 1.0이었다. 이는 세 nominal horizon을 모두 지원한다는 뜻이지 continuous yaw/time 또는 moving execution이 검증됐다는 뜻이 아니다.</li>
+</ul>
+
+<h2>검증</h2>
+<ul>
+<li>Shared artifact, batch binding, shortlist, atlas, full evaluation과 model identity 영향 test 58개가 local에서 통과했다.</li>
+<li>Planning discovery 402개 중 실제 assertion failure는 0개다. 399개가 통과했고 기존 OpenCV 분리 때문에 calibration·pickplace·pose import 3개만 planning 환경에서 실행되지 않았다.</li>
+<li>Server 영향 test 58개 중 57개는 한 번에 통과했다. Import-order child process 하나가 외부 SIGTERM을 받았지만 단독 재실행에서 8.547초에 통과했다.</li>
+<li>PBS shell syntax, Python compile, line-length와 Git whitespace 검사를 통과했다.</li>
+</ul>
+
+<h2>남은 권한 경계</h2>
+<p>Current intrinsic protocol과 stable pose, conveyor calibration은 provisional이다. Atlas endpoint는 30도 yaw grid와 mean object pose를 검사하며 저장된 positional covariance를 collision margin에 직접 넣지 않는다. 따라서 sample 사이 continuous yaw/time과 correction envelope의 권한은 complete path-family tube가 별도로 소유해야 한다. Endpoint IK와 collision은 complete moving task path, dynamics, stop path, controller limit, moving-contact timing, connector metrology 또는 hardware grasp success를 증명하지 않는다. Full-yaw batch와 atlas가 완료돼도 다음 단계는 sampled task/stop family의 실제 artifact producer, actual-time Viser replay, accelerated backend 대 full-mesh oracle agreement와 p50/p95/p99 측정이다. Continuous validator와 hardware가 없으므로 controller commit은 계속 구현하지 않는다.</p>
+
+<p><a href="grasp-shortlist-decision-ledger.html">Complete shortlist decision ledger</a>, <a href="offline-planning-viser-plan.html#yaw-context-atlas">full-yaw atlas</a>, <a href="sampled-path-family-reference-oracle.html">sampled path oracle</a>가 앞뒤 단계의 근거를 설명한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
