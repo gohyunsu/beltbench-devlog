@@ -16,7 +16,7 @@
 <h1>AutoDex의 정적 grasp filter를 moving conveyor의 실행 기준으로 과장하지 않고, task 사건과 actual-time reference까지 닫는다.</h1>
 <p class="lede">AutoDex가 실제로 거르는 조건과 BeltBench가 채택한 조건을 최신 public branch에서 다시 대조했다. 정적 후보 생성·collision·hold·coverage는 유용하지만 moving grasp의 상대 속도, arm-hand 동기 closure, release와 controller authority를 증명하지 않는다. 후속 구현은 첫 접촉 <code>q_grasp</code>와 운반 유지 <code>q_sqz</code>를 분리하고, intrinsic·deployment·shortlist·event·Viser·hardware evidence가 같은 retention 명령을 사용하도록 결속한다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/2614962"><code>2614962</code></a>가 first-contact/retention 분리, bounded intentional contact, exact grasp digest, task-event 결속과 Viser replay를 구현한다. Current Pepsi artifact는 새 retention gate 이전 결과이며 protocol·stable pose·hardware evidence가 없으므로 실행 권한은 계속 차단한다.</div>
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/c228f44"><code>c228f44</code></a>까지 first-contact/retention 분리, bounded intentional contact, exact grasp digest, 동적 closure의 exact contact, task-event 결속과 runtime state 보존을 구현한다. Current Pepsi artifact는 새 retention/contact gate 이전 결과이며 protocol·stable pose·hardware evidence가 없으므로 실행 권한은 계속 차단한다.</div>
 
 <h2>감사 source와 branch</h2>
 <p>2026-08-10에도 <code>willi19/autodex-code</code> remote를 다시 fetch했다. 공개 remote branch는 <code>main</code> 하나이며 감사 commit은 <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. 로컬에는 이름이 같은 과거 checkout과 개인 fork가 함께 있으므로 working tree HEAD를 신뢰하지 않고 <code>autodex/autodex-code:origin/main</code>의 blob을 직접 읽었다. Site repository인 <code>autodex</code>, GoTrack perception, BODex proposal generator와 grasp acceptance를 같은 모듈로 취급하지 않았다.</p>
@@ -121,6 +121,28 @@
 <li>현재 Pepsi drop request의 해석 결과는 계속 <code>synthesis_required</code>다. Retention command를 결정적으로 만들었다는 사실은 contact quality, stable pose, release path나 hardware reliability를 새로 검증했다는 뜻이 아니다.</li>
 <li>기존 117개 geometry-clear와 관련 intrinsic artifact는 retention schema 이전 결과다. 새 evaluator로 재생성·source verify하기 전에는 shortlist나 moving execution authority로 사용할 수 없다.</li>
 <li>AutoDex physical sequence의 gain 2는 Inspire 예시 protocol로 채택했을 뿐 universal hand rule이 아니다. 다른 hand와 object는 새 protocol·URDF·contact evidence를 요구한다.</li>
+</ul>
+
+<h2>2026-08-10 후속: moving intercept가 exact first contact를 건너뛴 결함</h2>
+<p>Retention을 library와 intrinsic/deployment gate에 추가한 뒤 실제 moving intercept 경로를 다시 추적했다. <code>_moving_tool_targets</code>는 hand를 <code>pregrasp_command</code>에서 <code>retention_command</code>까지 한 번에 보간하고 마지막 <code>grasp</code> frame에서 즉시 object를 attach했다. 따라서 선택된 <code>grasp_command</code>는 digest와 정적 평가에는 존재했지만 동적 closure의 어느 target에도 정확히 사용되지 않았다. AutoDex의 <code>q_pre → q_grasp → q_sqz</code> 의미를 보존한다고 문서화한 상태와 실제 trajectory가 달랐다.</p>
+
+<h3>문제, 원인, 수정</h3>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>수정</th><th>결과</th></tr>
+<tr><td>Moving closure가 first-contact command를 건너뜀</td><td>Legacy playback request에는 attach만 있고 contact timestamp가 없었음</td><td><code>PickPlaybackRequest</code>를 schema <code>3.0</code>으로 올리고 frame-aligned <code>contact_time_s &lt; attach_time_s</code>를 필수화</td><td>Contact와 attach를 같은 frame 또는 phase label로 합칠 수 없음</td></tr>
+<tr><td>Contact 전부터 hand-object collision을 허용</td><td><code>close_above_object</code> 직후 모든 target에 <code>allow_hand_contact</code>를 설정</td><td><code>pregrasp → grasp_command</code>와 <code>grasp_command → retention_command</code>를 두 구간으로 보간하고 contact 전에는 금지, contact부터 attach까지는 contact를 매 sample 요구</td><td>선택된 exact first-contact command가 실제 timed target이며 접촉 연속성도 검사됨</td></tr>
+<tr><td>Object가 conveyor에서 attached로 즉시 전이</td><td>Playback, validation report와 runtime stream이 <code>contacting</code>을 공유하지 않음</td><td>Playback generator, validation contract, simulation feedback와 runtime stream을 <code>conveyor → contacting → attached</code>로 통일</td><td>Viser/trace consumer가 contact interval을 잃지 않으며 direct attach는 fail closed</td></tr>
+<tr><td>Path-family phase map이 새 contact label을 거부</td><td>Canonical phase map은 과거 planner phase만 인식</td><td>Planner의 <code>contact</code> label을 기존 motion phase <code>close</code>에 매핑하고 권위 있는 전이는 object state와 event timestamp에 유지</td><td>불필요한 controller phase 분기를 늘리지 않고 semantic event를 보존</td></tr>
+<tr><td>Boolean·문자열 event time의 암묵 변환</td><td><code>float(value)</code>가 원래 입력 type을 지움</td><td>Contact, attach, release timestamp를 변환 전에 non-boolean finite real로 검사</td><td>잘못된 event source가 frame-alignment 검사까지 도달하기 전에 거부됨</td></tr>
+</table>
+
+<h3>검증과 남은 경계</h3>
+<ul>
+<li>Source <a href="https://github.com/gohyunsu/beltbench/commit/c228f44"><code>c228f44</code></a>를 <code>main</code>에 push했다. Planning <code>472/472</code>, calibration/OpenCV <code>14/14</code>, 총 <code>486/486</code>가 통과했다. Contact 중심 regression은 <code>39/39</code>다.</li>
+<li><code>junjinyong</code> checkout을 exact source <code>c228f442dbf499daa7b47df460a66f5db40b7613</code>까지 fast-forward하고 pinned planning environment에서 같은 <code>39/39</code>를 통과했다. 기존 BODex build directory와 native <code>.so</code>는 untracked 상태 그대로 보존했다.</li>
+<li>기존 <code>local/planning/xarm6-inspire-left-pepsi-light-intercept-selected.json</code>은 schema 2 시기의 direct-attach/old retention artifact다. 새 loader나 path-family authority에 맞춰 추론 변환하지 않고 exact grasp·contact·retention 경로로 재계획해야 한다.</li>
+<li>이번 수정은 diagnostic sampled intercept의 사건 의미를 바로잡은 것이다. CPU reference search의 latency, continuous swept collision, normalized geometric-path compiler, global scalar timing의 controller conversion과 hardware commit authority는 새로 증명하지 않았다.</li>
+<li>Production online 방향은 여전히 verified resident path family의 retain/latch/bounded correction이다. 매 camera frame마다 이 reference intercept search를 실행하는 방식으로 되돌리지 않는다.</li>
 </ul>
 
 <h2>남은 구현 순서</h2>
