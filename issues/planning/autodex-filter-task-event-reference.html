@@ -16,7 +16,7 @@
 <h1>AutoDex의 정적 grasp filter를 moving conveyor의 실행 기준으로 과장하지 않고, task 사건과 actual-time reference까지 닫는다.</h1>
 <p class="lede">AutoDex가 실제로 거르는 조건과 BeltBench가 채택한 조건을 최신 public branch에서 다시 대조했다. 정적 후보 생성·collision·hold·coverage는 유용하지만 moving grasp의 상대 속도, arm-hand 동기 closure, release와 controller authority를 증명하지 않는다. 후속 구현은 첫 접촉 <code>q_grasp</code>와 운반 유지 <code>q_sqz</code>를 분리하고, intrinsic·deployment·shortlist·event·Viser·hardware evidence가 같은 retention 명령을 사용하도록 결속한다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/0d8c127"><code>0d8c127</code></a>까지 first-contact/retention 분리와 runtime path-family 선택을 startup-verified resident event request에 결속한다. 다만 기록된 request는 nominal reference와 명시적 correction 요청이며 correction 적용 결과가 아니다. Current Pepsi artifact는 새 retention/contact gate 이전 결과이고 protocol·stable pose·hardware evidence도 없으므로 실행 권한은 계속 차단한다.</div>
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/ec84020"><code>ec84020</code></a>까지 first-contact/retention 분리와 runtime path-family 선택을 startup-verified resident event request에 결속한다. 기록된 request는 nominal reference이며, nonzero correction은 적용·재검증된 결과가 없으면 candidate admission에서 fail-closed한다. Current Pepsi artifact는 새 retention/contact gate 이전 결과이고 protocol·stable pose·hardware evidence도 없으므로 실행 권한은 계속 차단한다.</div>
 
 <h2>감사 source와 branch</h2>
 <p>2026-08-10에도 <code>willi19/autodex-code</code> remote를 다시 fetch했다. 공개 remote branch는 <code>main</code> 하나이며 감사 commit은 <code>5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. 로컬에는 이름이 같은 과거 checkout과 개인 fork가 함께 있으므로 working tree HEAD를 신뢰하지 않고 <code>autodex/autodex-code:origin/main</code>의 blob을 직접 읽었다. Site repository인 <code>autodex</code>, GoTrack perception, BODex proposal generator와 grasp acceptance를 같은 모듈로 취급하지 않았다.</p>
@@ -170,6 +170,25 @@
 <li>Verifier는 wrapper 자체 선언을 신뢰하지 않고 deployment query의 selected projection ID, correction, path start/contact, request identity, canonical digest, source digest와 session event ancestry를 다시 비교한다.</li>
 <li>현재 runtime session의 legacy <code>PickPlayback</code>은 actual asset을 표시하는 별도 planned layer일 뿐 resident request에서 도출되지 않았다. Runtime Viser가 verified request와 typed correction output을 직접 소비하기 전에는 exact runtime replay라고 부르지 않는다.</li>
 <li>이번 변경은 AutoDex grasp filtering threshold를 복사한 것이 아니다. Expensive intrinsic·deployment·yaw/path validation은 offline, source verification은 startup, live support/correction/deadline/maximin query만 bounded online에 두는 기존 latency 구조를 유지한다.</li>
+</ul>
+
+<h2>2026-08-10 추가: 미적용 correction의 nominal trajectory 누출 차단</h2>
+<p>Resident request 결속 뒤에도 <code>candidate_ready</code>는 trajectory 존재와 빈 failure tuple만 확인했다. 그런데 projection의 longitudinal·timing·lateral·yaw·belt-speed correction은 기록만 되고 joint waypoint에는 적용되지 않는다. 특히 cutoff 전 action은 correction이 0이 아니어도 <code>retain_active</code>일 수 있어 action 이름만으로 nominal 여부를 판별할 수도 없었다. 이 상태에서는 nominal request가 corrected candidate처럼 recorder와 legacy playback 선택으로 넘어갈 수 있었다.</p>
+
+<table>
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>Nonzero correction cycle이 nominal request를 ready candidate로 노출</td><td>Activation은 correction을 보존했지만 admission failure를 만들지 않음</td><td><code>RuntimePathCorrection.is_nominal</code>을 공동 기준으로 만들고 nonzero이면 <code>runtime_trajectory_correction_not_materialized</code>로 fail-closed</td><td>Nominal request는 evidence로 남지만 recorder selection과 controller candidate가 되지 않음</td></tr>
+<tr><td><code>retain_active</code>를 zero correction으로 오해할 위험</td><td>Coordinator action은 cutoff·latch topology를 표현하며 correction materialization 여부를 표현하지 않음</td><td>Action 문자열이 아니라 selected activation의 실제 5차원 correction vector를 검사</td><td>Cutoff 전 <code>retain_active</code>와 cutoff 후 <code>correct_active</code> 모두 같은 안전성 경계를 적용</td></tr>
+<tr><td>첫 focused run에서 임시 파일 test 11개 error</td><td>Read-only sandbox에서 <code>TemporaryDirectory</code> 생성 불가</td><td>코드는 바꾸지 않고 쓰기가 허용된 검증 실행으로 재시도</td><td>환경 실패와 구현 실패를 분리</td></tr>
+<tr><td>첫 2 mm correction fixture가 예상 action과 불일치</td><td>Action 이름이 correction 존재를 직접 나타낸다는 잘못된 test 가정</td><td>실제 projection payload에서 2 mm longitudinal·-10 ms timing correction을 확인하고 <code>retain_active</code>이면서 admission은 거부되는 의미를 검증</td><td>Forged empty failure tuple도 contract validation에서 거부</td></tr>
+</table>
+
+<h3>검증 결과</h3>
+<ul>
+<li>Source <a href="https://github.com/gohyunsu/beltbench/commit/ec84020"><code>ec84020</code></a>을 <code>main</code>에 push했다.</li>
+<li>로컬 planning 75개 모듈 <code>478/478</code>와 calibration/OpenCV <code>14/14</code>, 합계 <code>492/492</code>가 통과했다. Acceptance 분기 정리와 forged-failure negative case 추가 뒤 focused regression <code>45/45</code>도 다시 통과했다.</li>
+<li><code>junjinyong</code> checkout을 검증한 증분 bundle로 exact <code>ec84020</code>까지 fast-forward했고 pinned planning environment에서 같은 <code>45/45</code>를 통과했다. 기존 BODex/CuRobo native 산출물은 보존했다.</li>
+<li>이번 변경은 correction backend가 아니다. 다음 단계는 correction 좌표를 Cartesian target과 event timing에 적용해 IK·동역학·moving-contact·continuous collision을 재검증한 새 request를 산출하는 typed materializer다.</li>
 </ul>
 
 <h2>남은 구현 순서</h2>
