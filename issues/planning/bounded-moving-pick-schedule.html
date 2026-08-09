@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bounded moving-pick schedule과 grasp 권한 재감사 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-032 · 2026-08-10 · bounded moving-pick schedule</div>
+<h1>AutoDex grasp filter와 moving 실행 gate를 다시 분리하고, 접촉 사건의 시간창을 exact trajectory에 재현 가능하게 결속한다.</h1>
+<p class="lede">정적 grasp가 유효하다는 것, 특정 robot/workcell에서 complete path가 가능하다는 것, 최신 conveyor 상태에서 그 path를 deadline 안에 실행할 수 있다는 것은 서로 다른 판단이다. AutoDex의 squeeze·MuJoCo·coverage·first-success 규칙을 하나의 moving-grasp 점수로 가져오지 않고 세 권한으로 분리했다. 이번 vertical slice는 그중 deployment의 사건 순서를 손으로 맞추는 데서 멈추지 않고, 유한 event window와 인접 duration 제약을 선형 시간에 풀어 exact synchronized trajectory에 결속한다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/29f64ea"><code>29f64ea</code></a>가 실시간 target architecture ADR, immutable schedule problem/allocation/binding, <code>O(N)</code> allocator, CLI와 Viser fail-closed loading을 구현한다. Transition bound는 아직 caller가 제공하며 continuous collision, measured latency, controller tracking과 hardware reliability가 없으므로 <code>execution_blocked</code>다.</div>
+
+<h2>먼저 확정한 방향</h2>
+<p>Production target은 매 camera frame마다 global planner를 다시 돌리는 구조가 아니다. Object identity와 stable tabletop pose는 사전에 주어지고, 초기 planar position과 yaw를 측정한다. Nominal object motion은 calibrated belt 방향의 translation뿐이며 yaw와 lateral offset은 유지된다. Offline compiler가 grasp, path family, event schedule, stop과 terminal path를 만들고 startup verifier가 exact source를 확인한다. Online runtime은 encoder와 camera track으로 저차원 상태를 갱신하고 resident path를 bounded query·retain·latch한다. Replan cutoff 이후에는 certificate가 허용한 longitudinal phase correction만 사용하며 controller와 safety monitor가 command authority를 소유한다.</p>
+<p>xArm, Inspire와 Pepsi는 이 구조의 실제 예시 asset일 뿐 기본 가정이 아니다. Arm, hand, connector, object, calibration, workcell과 controller는 manifest와 digest로 선택한다. FoundPose는 acquisition, GoTrack 또는 FoundationPose는 tracking backend가 될 수 있지만 planning state나 command authority를 소유하지 않는다.</p>
+
+<h2>AutoDex public source 재감사</h2>
+<p>감사 기준은 <a href="https://github.com/willi19/autodex-code/commit/5ada1c077f60bae9af6f27b07619218f58422e50"><code>willi19/autodex-code:main@5ada1c</code></a>이다. Public remote branch는 <code>main</code> 하나였다. 로컬 checkout은 remote보다 5 commit 뒤였고 <code>autodex/utils/path.py</code>, <code>world_cfg_generator.py</code>, <code>adaptive_orchestrator.py</code>, <code>generate_scene.py</code>에 기존 수정이 있어 <code>git pull --ff-only</code>이 안전하게 중단됐다. 이를 stash·overwrite하지 않고 remote blob을 직접 감사했다.</p>
+<table class="table">
+<tr><th>AutoDex 단계</th><th>Effective rule</th><th>BeltBench 채택 여부</th></tr>
+<tr><td>입력</td><td>Non-finite pose·joint input을 거부한다.</td><td>채택한다. 모든 계약의 최소 형식 gate다.</td></tr>
+<tr><td>Pregrasp collision</td><td>한 endpoint에서 activation distance 0인 hand/world와 hand/self sphere overlap을 거부한다.</td><td>Cheap screen 개념만 채택한다. 양의 clearance와 approach 전체 경로가 별도로 필요하다.</td></tr>
+<tr><td>Squeeze contact</td><td><code>squeeze = 2 × grasp - pregrasp</code> 자세에서 object world overlap이 있으면 통과한다. Self collision은 이 query에서 제외된다.</td><td>Proposal diagnostic으로만 둔다. Named contact, contact 수, penetration과 non-contact clearance를 증명하지 못한다.</td></tr>
+<tr><td>MuJoCo hold</td><td>고정 0.1 kg object에 tabletop gravity 방향 힘을 적용하고 5 cm 또는 15도 이상 이탈하면 실패한다.</td><td>정적 diagnostic으로만 둔다. 선언된 6축 force array와 <code>MAX_PENE</code>는 effective path에 사용되지 않는다.</td></tr>
+<tr><td>Cache·sim_only</td><td>기존 <code>sim_eval.json</code>에서 collision pass를 추론하거나 squeeze filter를 생략할 수 있다.</td><td>Evidence authority로 가져오지 않는다. Exact source를 재검증하지 않는 cache shortcut은 승인 근거가 아니다.</td></tr>
+<tr><td>Greedy coverage</td><td>Pregrasp collision survivor의 scene coverage 증가량으로 순서를 정한다.</td><td>모든 hard gate 뒤 diversity·coverage 구성에만 사용한다. Robustness나 safety margin이 아니다.</td></tr>
+<tr><td>Execution</td><td>Endpoint collision, hand별 wrist heuristic, IK·short lift 뒤 joint-space refinement의 첫 성공을 사용한다.</td><td>First-success는 거부한다. Complete path hard gate 뒤 normalized maximin과 hysteresis를 사용한다.</td></tr>
+</table>
+
+<h2>BeltBench가 채택한 grasp 기준</h2>
+<h3>1. Intrinsic qualification</h3>
+<p>Object·stable pose·hand·task capability identity, approved protocol, measured stable pose, named allowed contact와 최소 contact 수, allowed penetration, non-contact object·self·support clearance, task wrench, object-relative approach·closure·release 전체 경로와 hardware reliability를 서로 독립 hard gate로 둔다. Generator success와 AutoDex/BODex metadata는 provenance일 뿐 승인 점수가 아니다. Endpoint screen 통과는 expensive full evaluation worklist에 들어간다는 뜻만 갖는다.</p>
+<h3>2. Robot/workcell deployment qualification</h3>
+<p>Exact arm·hand·connector·calibration·workcell, yaw/lateral/speed/horizon uncertainty support, event별 IK와 pose tolerance, joint·workspace·singularity margin, synchronized velocity·acceleration·jerk, 사건 시간창, complete robot/workcell/object collision, first-contact-to-attach chase, transport·release·retreat·stop을 검사한다. Sampled collision과 sampled chase는 현재 diagnostic이며 continuous 또는 보수적으로 bounded된 certificate가 없으면 실행 승인을 내리지 않는다.</p>
+<h3>3. Runtime complete-path selection</h3>
+<p>Fresh state, supported speed/state cell, intrinsic·deployment evidence, measured latency, path start와 cutoff, deadline/collision/uncertainty/workspace/joint/singularity slack, controller와 stop·latch availability를 먼저 hard gate한다. 남은 complete source-to-terminal path만 각 단위별 normalized slack의 최솟값을 최대화하도록 정렬하고 deadline으로 tie-break한다. Active path는 선언된 개선 threshold를 넘는 대안이 있을 때만 바꾼다.</p>
+
+<h2>이번에 닫은 시간 계약</h2>
+<p>기존 event trajectory는 <code>replan_cutoff ≤ hand_close_start &lt; contact &lt; hand_close_complete ≤ attach</code> 순서를 검사했지만, 각 사건의 유한 가능 시간과 인접 transition의 최소·최대 duration을 독립 problem으로 풀고 그 결과를 exact trajectory에 재현하지 않았다. 시각적으로 순서가 맞는 waypoint를 직접 고르면 hand closure, chase와 cutoff가 서로 양립하지 않는 schedule도 늦게 발견할 수 있다.</p>
+<ul>
+<li><code>MovingPickScheduleProblem</code>은 geometric path, motion-limit profile, moving-contact policy SHA-256과 5개 유한 event window, 4개 인접 min/max duration requirement를 묶는다.</li>
+<li>Forward interval propagation이 각 event의 reachable interval을 구하고 backward pruning이 뒤 event에 도달할 수 없는 시간을 제거한다.</li>
+<li>Canonical witness는 남은 interval에서 가장 이른 feasible time을 선택한다. 연산은 event 수에 선형이고 optimizer retry나 permissive fallback이 없다.</li>
+<li><code>MovingPickScheduleAllocation</code>은 feasible interval, 선택 시간, allocated duration과 원 problem digest를 저장하며 loader가 파생 schedule 변조를 거부한다.</li>
+<li><code>MovingPickTrajectoryScheduleBinding</code>은 allocation과 exact event trajectory SHA-256을 묶는다. Verifier는 원 problem에서 allocation을 다시 계산하고 path·motion digest, event window와 waypoint time을 모두 대조한다.</li>
+<li>Viser는 problem·allocation·binding 세 파일을 모두 받았을 때만 full verifier를 통과시켜 선택 event time을 표시한다. 하나라도 빠지면 시작 전에 실패한다.</li>
+</ul>
+<p>이 allocator는 후보 path의 robust 순위를 정하지 않으며 collision·dynamics를 계산하지도 않는다. Caller가 제공한 transition bound가 검증됐다는 사실을 스스로 증명하지 않으므로 현재 allocation은 reference evidence다. 다음 compiler가 motion/contact evidence에서 bound를 유도해야 한다.</p>
+
+<h2>발생한 문제, 원인, 해결과 결과</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>AutoDex local checkout을 최신으로 당길 수 없음</td><td>Remote보다 5 commit 뒤이고 4개 source에 기존 수정이 있어 fast-forward가 overwrite를 요구</td><td>기존 변경을 보존하고 <code>origin/main@5ada1c</code> blob을 직접 감사</td><td>최신 effective rule과 사용자 작업 보존을 동시에 만족</td></tr>
+<tr><td>초기 Viser patch가 기존 markdown 함수 중간에 새 함수를 삽입</td><td>함수 경계를 포함하지 않은 patch context</td><td>원 chase 검증·return body를 복구하고 schedule renderer를 함수 뒤로 이동, AST와 회귀 재실행</td><td>도달 불가능 코드와 상태 panel regression 제거</td></tr>
+<tr><td>CLI 출력용 다중행 f-string이 잘못 구성됨</td><td>조건식을 중첩 brace에 직접 배치</td><td><code>schedule_id</code>를 먼저 계산한 뒤 단순 f-string 사용</td><td>Visualization 환경에서 <code>--help</code> import 통과</td></tr>
+<tr><td><code>conda run</code>이 local sandbox에서 시작 전 실패</td><td>Conda가 쓸 수 있는 temporary directory가 없음</td><td>고정 env Python을 직접 사용하고 test의 임시 파일 쓰기만 승인된 실행으로 분리</td><td>환경 자체를 수정하지 않고 실제 test 수행</td></tr>
+<tr><td>Full discovery가 요약 전에 긴 실행 제한에 걸림</td><td>WSL/NFS startup과 큰 단일 test process</td><td>모듈을 중복 없는 작은 묶음으로 재실행하고 각 <code>Ran N ... OK</code>만 집계</td><td>부분 dot 출력을 성공으로 오인하지 않고 전체 수를 확정</td></tr>
+<tr><td>Planning discovery의 OpenCV import 3개 실패</td><td>Core planning env에는 의도적으로 <code>cv2</code>가 없음</td><td>Calibration·pickplace·pose artifact 14개를 calibration env에서 실행</td><td>Core dependency를 오염시키지 않고 460개 전체 test를 검증</td></tr>
+<tr><td><code>gh auth status</code> token 만료와 browser open 실패</td><td>GitHub CLI token은 만료됐고 WSL에 <code>xdg-open</code>/<code>wslview</code>가 없음</td><td>Windows device-login URL을 열고 별도 인증을 대기, Git push credential을 독립 확인</td><td><code>gohyunsu/beltbench</code> push는 성공했으나 CLI token 재승인은 별도 상태로 남음</td></tr>
+<tr><td>첫 server bundle 전송 reset</td><td>SSH key exchange 단계의 일시적 connection reset</td><td>같은 checksummed bundle을 한 번 재전송</td><td>서버 main을 fast-forward하고 native build output 보존</td></tr>
+<tr><td>Non-interactive SSH에서 <code>qsub</code>가 PATH에 없음</td><td>Scheduler path는 login profile에서만 추가됨</td><td>Profile에서 위치만 확인하고 <code>/opt/pbs/bin/qsub</code>를 직접 호출</td><td>Compute script가 위험한 profile source를 하지 않은 채 표준 PBS 제출</td></tr>
+<tr><td>PBS wall-clock 수치를 latency로 사용할 수 없음</td><td>Compute clock이 run filesystem clock보다 367초 느림</td><td>Status writer가 coarse clock bound를 검사해 timing authority를 차단</td><td>47/47 기능 통과만 채택하고 1.862초를 real-time 근거로 사용하지 않음</td></tr>
+</table>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Local planning 환경에서 중복 없는 module 묶음 <code>446/446</code> 통과.</li>
+<li>분리된 calibration 환경에서 OpenCV 의존 test <code>14/14</code> 통과. 총 <code>460/460</code>.</li>
+<li>Schedule·event trajectory·contact·chase·path-family focused regression <code>47/47</code> 통과.</li>
+<li>Allocation 파생 schedule 변조, infeasible window, zero-duration closure/contact, exact trajectory retiming과 binding trajectory SHA 변조 반례 통과.</li>
+<li>Visualization 환경에서 schedule 3종 optional argument와 CLI import 통과.</li>
+<li><code>git diff --check</code>, Python AST parse와 변경 파일 88자 기준 통과.</li>
+<li><code>junjinyong</code> standard CPU-only PBS <code>115269</code>가 exact source <code>29f64ea10a86134610ec7b8912d0e3fa890a100f</code>에서 <code>47/47</code>, scheduler·artifact exit 0.</li>
+<li>PBS status는 <code>timing_evidence_authorized=false</code>다. Server test time은 기능 smoke이며 production latency가 아니다.</li>
+</ul>
+
+<h2>확인하지 못한 것</h2>
+<p>현재 local에는 actual xArm·Inspire·connector·Pepsi asset과 legacy playback이 있지만, 새 schema의 <code>EventScheduledTrajectoryRequest</code>, <code>PlannedMovingContact</code>, schedule problem/allocation/binding이 모두 일치하는 실제 artifact set은 없다. Legacy position-only playback을 변환하면 derivative, contact twist와 event-window 근거를 발명하게 되므로 변환하지 않았다. 따라서 이번 검증은 Viser의 fail-closed loading과 status renderer까지이며, schedule이 결속된 장면을 실제 시간으로 띄웠다는 증거는 아니다.</p>
+
+<h2>다음 vertical slice</h2>
+<ol>
+<li>Path dynamics와 moving-contact policy에서 adjacent transition bound를 유도하는 compiler를 구현한다. Hand closure duration, chase tolerance, fixed-path time parameterization과 cutoff latency budget이 source evidence가 돼야 한다.</li>
+<li>같은 compiler가 synchronized event trajectory, moving-contact와 chase assessment를 만들고 schedule binding을 소비하게 한다. 사람이 별도 JSON 시간을 맞추지 않는다.</li>
+<li>Complete robot/self/workcell/object swept collision, uncertainty tube, stop·drop·retreat terminal path를 하나의 certificate에 결속한다.</li>
+<li>그 certificate만 path-family compiler와 resident runtime에 넣고 unsupported yaw/lateral/speed/phase/robot-start cell을 fail-closed한다.</li>
+<li>Actual xArm·Inspire·connector·Pepsi·belt·table·bin asset으로 exact event artifact를 1x 자동 반복 재생하고 desired, simulated-measured, authority layer를 분리한다.</li>
+<li>Monotonic per-stage timestamp를 기록하는 controller simulator에서 delay, tracking error, stale pose, object slip, missed update와 stop fault를 주입해 deadline과 recovery를 검증한다.</li>
+</ol>
+<p>관련 맥락은 <a href="moving-chase-event-semantics.html">complete moving chase</a>, <a href="autodex-filter-task-event-reference.html">AutoDex filter와 task events</a>, <a href="synchronized-event-trajectory.html">synchronized event trajectory</a>, <a href="realtime-conveyor-architecture.html">real-time architecture</a>에서 이어진다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
