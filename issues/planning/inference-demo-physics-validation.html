@@ -104,6 +104,17 @@ replay : the same evidence → Viser</pre>
 </tbody></table>
 <p>따라서 다음 physics 구현은 actuator와 moving belt를 먼저 덧붙이는 일이 아니다. Collision-free initial arm/hand command와 backend pair mapping을 확정하고, saved trajectory를 다시 생성·검증한 뒤 그 exact trajectory에 actuator tracking, moving object support, contact → retention → release → bin containment 관측을 단계적으로 추가한다.</p>
 
+<h2>HPP-FCL mesh와 cuRobo sphere를 같은 corpus에서 비교하는 gate</h2>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/954b03e"><code>beltbench@954b03e</code></a>에서 backend-neutral collision corpus, raw observation report, acceptance policy와 comparison report를 구현했다. Corpus/observation과 acceptance/comparison 계약을 별도 모듈로 분리하고, vendor import는 edge adapter에만 남겼다. Stored pass flag는 신뢰하지 않으며 각 state의 minimum pair-specific margin에서 safe/unsafe를 다시 계산한다.</p>
+<p>Draft acceptance는 exact sphere·ignore·world configuration SHA-256, 1,000개 이상 unique state, trajectory·joint-limit·workspace·near-boundary·known-collision sample, mesh-clear 250개, mesh-unsafe 250개, ±2 mm boundary 100개를 요구한다. HPP-FCL unsafe를 cuRobo가 safe로 판단하는 false negative는 0개만 허용하고, false positive는 mesh-clear state의 5% 이하로 제한한다. 이 geometry parity와 별개로 target GPU의 warm-up·fixed batch·CUDA graph·host-device transfer·p99/deadline benchmark를 통과해야 한다.</p>
+<table><thead><tr><th>관찰</th><th>의미</th><th>현재 결론</th></tr></thead><tbody>
+<tr><td>기존 playback 301 frame → 151 unique robot state</td><td>동일 관절 state 반복을 그대로 세면 coverage가 부풀려진다.</td><td>Corpus compiler가 exact arm/hand state hash로 중복을 제거한다. 강화된 source binding으로 재생성한 두 corpus의 SHA-256도 동일했다.</td></tr>
+<tr><td>HPP-FCL: clear 136, unsafe 15, error 0</td><td>현재 rejected trajectory 안에도 workcell collision state가 실제로 포함된다.</td><td>현재 trajectory를 sphere fitting의 safe-only 자료로 사용하지 않는다.</td></tr>
+<tr><td>151개 중 142개가 oracle margin ±2 mm</td><td>Hand base/thumb-2가 134개 state의 limiting pair이며 작은 표현 차이가 분류를 바꿀 수 있다.</td><td>Near-boundary regression에는 유용하지만 sample 종류와 unsafe 수가 부족하다.</td></tr>
+<tr><td>Local sequential oracle 약 6.5분</td><td>Named mesh self/cross/workcell pair 전체를 순차 평가하는 reference 비용이다.</td><td>Camera cadence에 HPP-FCL을 넣지 않는다. Offline oracle과 resident GPU/path-family fast path를 분리한다.</td></tr>
+</tbody></table>
+<p>현재 corpus는 trajectory sample만 151개이므로 draft policy를 의도적으로 통과하지 못한다. 또한 target server의 V2 driver와 V1 usage review가 해결되지 않아 cuRobo candidate observation 자체를 아직 생성하지 않았다. 따라서 “cuRobo를 사용해 collision을 해결했다”는 주장은 하지 않는다. 다음 단계는 deterministic joint-limit/workspace/known-collision perturbation으로 corpus를 확장하고, 승인된 exact sphere/ignore configuration을 고정한 뒤 같은 state 순서로 batched candidate report를 생성하는 것이다.</p>
+
 <h2>발생한 문제: retention gain 1.0</h2>
 <p>Bounded policy의 첫 후보는 first-contact command 자체인 <code>gain=1.0</code>이다. 그러나 compute-node full evaluation은 시작 후 다음 오류로 종료됐다.</p>
 <pre>ValueError: retention gain must be finite and greater than one</pre>
@@ -132,6 +143,9 @@ replay : the same evidence → Viser</pre>
 <li>Actual workcell 계약·composer 회귀 7개를 포함한 focused 18개 테스트가 local과 target server에서 모두 통과</li>
 <li>Actual workcell report를 분리된 contract loader로 재검증: 20/19/25/24/31 dimensions, execution authority false</li>
 <li>Source와 server checkout을 <code>f78c175</code>로 fast-forward했고 server의 기존 untracked BODex native build는 보존</li>
+<li>Collision parity 계약, duplicate-state·false-negative·forged-summary 회귀를 포함한 focused 27개 테스트가 local과 target server에서 모두 통과</li>
+<li>실제 trajectory corpus와 HPP-FCL oracle report를 분리된 loader로 재검증: 151 unique, clear 136, unsafe 15, backend error 0</li>
+<li>Source와 server checkout을 <code>954b03e</code>로 fast-forward했고 server의 기존 untracked BODex native build는 보존</li>
 </ul>
 <p>다음 구현 순서는 driver upgrade 가능성 또는 V1 usage approval 확인, exact xArm/Inspire sphere model과 ignore pair 생성, HPP-FCL cross-check corpus, fixed-shape batched IK/collision/trajopt adapter다. 승인 전 legacy install은 진행하지 않는다. Full evaluation의 117개는 grasp/path atlas의 입력 후보일 뿐이며 measured stable pose와 approved protocol이 생길 때까지 context-blocked다. Physics 쪽은 initial hand self-collision과 backend pair semantics를 먼저 해결하고 collision-free saved event trajectory를 재생성한 후 MuJoCo actuator·moving support·contact lifecycle을 붙인다. 같은 immutable scenario는 이후 Isaac USD scene에 올린다. Physics backend가 통과해도 connector bolt-hole alignment, measured calibration/latency, continuous swept collision, controller stop과 moving hardware reliability는 별도 hard gate로 남긴다.</p>
 <div class="callout"><strong>성공 기준:</strong> 화면에서 캔을 붙여 움직이는 것이 아니라, exact runtime decision이 deadline 안에 dispatch되고 simulator의 state/contact로 contact → attachment → release → bin containment가 관측되며 비의도 충돌이 0인 run을 재현하는 것이다.</div>
