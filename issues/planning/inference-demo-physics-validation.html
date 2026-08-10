@@ -12,7 +12,7 @@
 <main class="wrap article">
 <div class="eyebrow">ISSUE-038 · 2026-08-10 · inference demo / physics validation</div>
 <h1>Grasp 학습보다 실제 inference demo를 먼저 완성하고, 충돌과 접촉을 독립 physics backend로 재검증한다.</h1>
-<p class="lede">연구 우선순위를 AutoDex training과 추가 data collection에서 벗어나, 이미 제공되거나 어떤 generator에서 생성된 grasp를 사용해 움직이는 물체를 실시간으로 잡고 큰 bin에 떨어뜨리는 end-to-end demo로 옮겼다. Online IK·collision·trajectory optimization은 cuRoboV2 GPU backend를 목표로 하고, HPP-FCL은 독립 mesh oracle, MuJoCo와 Isaac Sim은 같은 immutable trajectory의 physics validation backend로 역할을 분리한다.</p>
+<p class="lede">연구 우선순위를 AutoDex training과 추가 data collection에서 벗어나, 이미 제공되거나 어떤 generator에서 생성된 grasp를 사용해 움직이는 물체를 실시간으로 잡고 큰 bin에 떨어뜨리는 end-to-end demo로 옮겼다. Online IK·collision·trajectory optimization은 policy로 승인된 pinned cuRobo GPU backend를 목표로 하고, HPP-FCL은 독립 mesh oracle, MuJoCo와 Isaac Sim은 같은 immutable trajectory의 physics validation backend로 역할을 분리한다. Current V2는 target server driver 때문에 아직 실행할 수 없다.</p>
 
 <h2>방향 전환의 근거</h2>
 <p>지도 의견의 핵심은 grasp data source를 연구 병목으로 두지 말고, 현재 흩어진 perception·planning·controller 구성요소가 실제로 한 번의 grasp demo를 완주하게 만드는 것이다. 따라서 AutoDex/BODex는 검증 grasp가 없을 때 사용하는 offline provider 중 하나로 축소한다. Runtime은 provider 종류를 알 필요가 없고 정규화된 object-relative grasp, scope와 checksum만 소비한다.</p>
@@ -35,7 +35,15 @@ replay : the same evidence → Viser</pre>
 <p>기존 Pinocchio/HPP-FCL 구현은 full named mesh와 pair별 signed distance를 제공해 기준 자료로 적합하지만, 현재 production batch의 CPU coarse pass가 순차 실행될 때 수백 초가 필요했다. 이 경로를 그대로 camera cadence의 online planner로 사용하는 것은 현실적이지 않다. cuRoboV2는 batched FK/IK, robot self/world collision과 trajectory optimization을 GPU에서 실행하고, CUDA graph·stream, resident scene, runtime obstacle pose update를 지원하므로 grasp × yaw × intercept time × seed 후보를 fixed-shape batch로 평가하는 본 문제와 맞는다.</p>
 <p>그러나 모든 모듈을 CUDA로 옮기는 것은 목표가 아니다. Timestamp join, freshness, 작은 Kalman state, atlas lookup, controller serialization은 branch와 I/O가 지배적이며 별도 kernel launch와 host-device synchronization이 더 비쌀 수 있다. GPU는 image inference와 batched planning hot path에 사용하고, 한 compact result만 CPU controller boundary로 돌려보낸다. 실제 배치는 1,000회 post-warmup raw trial, deadline miss, host-device 왕복 수와 output validation으로 결정한다.</p>
 <p>cuRobo의 robot collision은 sphere approximation과 self-collision ignore를 사용한다. 따라서 sphere fit, padding과 ignore pair를 자동 생성 후 그대로 신뢰하지 않는다. 동일한 checksummed robot/workcell state corpus를 HPP-FCL full mesh와 비교해 false negative는 release blocker로, false positive는 workspace 손실로 계량한다. Physics simulator contact와 hardware stop은 다시 별도 계층이다.</p>
-<p><code>third_party/bodex</code> 안의 수정 cuRobo는 BODex offline grasp generator 의존성이다. Current cuRoboV2는 2026년 v0.8.0에서 API가 크게 바뀌었고 Apache-2.0으로 공개됐다. 두 구현을 한 environment에서 섞지 않고, cuRoboV2를 별도 pinned runtime adapter로 격리한다.</p>
+<p><code>third_party/bodex</code> 안의 수정 cuRobo는 BODex offline grasp generator 의존성이다. Current cuRoboV2는 2026년 v0.8.0에서 API가 크게 바뀌었고 Apache-2.0으로 공개됐다. 기존 fork의 local patch와 provenance를 online authority로 상속하지 않고, 모든 runtime backend를 별도 pinned environment와 BeltBench adapter 뒤에 격리한다.</p>
+
+<h2>문제: target server에서 cuRoboV2를 바로 쓸 수 없다</h2>
+<p>기존 target-server GPU evidence는 RTX A6000과 NVIDIA driver <code>535.161.07</code>을 기록한다. 현재 공식 cuRoboV2 설치 조건은 driver <code>580.65.06</code> 이상이므로, A6000의 연산 성능과 별개로 현 driver에서는 V2 설치를 production 방향으로 강행할 수 없다. Driver upgrade 또는 호환 host가 가장 유지보수 가능한 해결이다.</p>
+<p>공식 repository가 V1 API 필요 시 제시하는 <code>v0.7.8</code>은 현 서버의 임시 호환 후보지만, 해당 tag의 package metadata와 source header는 current Apache-2.0이 아니라 NVIDIA license를 사용한다. 이를 “예전 버전이니 설치 가능”으로 해석하지 않는다. 연구실 사용 승인 근거를 확인하기 전에는 설치·benchmark를 진행하지 않고, 승인 후에도 clean upstream tag를 별도 adapter로 평가한다. BODex 내부 수정 fork는 진단 비교 대상일 뿐 runtime planner가 아니다.</p>
+
+<h2>cuRobo가 매 frame 반드시 필요한가</h2>
+<p>고정 workcell에서 exact robot·connector·stop path·correction tube와 continuous path collision을 offline 검증한 resident path family가 있고, 측정 robot state와 object correction이 그 tube 안에 있다면 매 camera frame마다 같은 global collision을 반복할 필요는 없다. Runtime은 checksummed family를 bounded lookup하고 tube 밖이면 reject한다. 이 경로가 첫 실기 demo의 최저 latency fast path다.</p>
+<p>cuRobo는 path family 생성과 batched screening, atlas가 지지하지만 certified family가 없는 context의 단 한 번 bounded warm start, 또는 static scene 가정 밖의 pose update에 사용한다. 첫 demo에서는 online warm start를 비활성화하고 atlas coverage를 충분히 확보하는 편이 타당하다. 새 trajectory를 즉석 생성해 독립 검증 없이 실행하는 것보다 명확하게 거부하는 편이 안전하고 재현 가능하다.</p>
 
 <h2>Simulator 선택</h2>
 <p>현재 하드웨어와 완성 workcell이 없으므로 MuJoCo를 첫 headless backend로 앞당겼다. 실제 URDF/connector가 하나의 articulation으로 compile되는지, full hand joint가 보존되는지, contact/dynamics loop가 real-time factor를 만족하는지를 Isaac 설치보다 가볍게 검증할 수 있다. 다만 MuJoCo는 oracle이 아니며 inertia, mimic, actuator, friction, contact solver를 모두 명시해야 한다.</p>
@@ -53,7 +61,7 @@ replay : the same evidence → Viser</pre>
 </ul>
 <p>Backend의 <code>passed</code>와 contact label도 신뢰하지 않는다. Geometry는 <code>arm/</code>, <code>end_effector/</code>, <code>object/</code>, <code>workcell/</code> namespace로 정규화한다. BeltBench가 checksummed object-interaction semantics로 fingertip/object, belt support와 bin support만 다시 허용하고 나머지는 unintended collision으로 분류한다. 모든 simulation report는 <code>execution_authorized=false</code>다.</p>
 
-<h2>cuRoboV2 acceptance 계약과 실제 MuJoCo assembly</h2>
+<h2>Pinned cuRobo acceptance 계약과 실제 MuJoCo assembly</h2>
 <p><a href="https://github.com/gohyunsu/beltbench/commit/53a3a1a"><code>beltbench@53a3a1a</code></a>에서 accelerated runtime과 actual-asset preflight를 추가했다.</p>
 <ul>
 <li><code>RealtimePlanningPolicy</code>: <code>required_backend_family=curobo_v2</code>, fixed batch, resident world, preallocated buffer, CUDA graph, 최대 host-device 왕복과 reject-only fallback을 선언</li>
@@ -63,6 +71,14 @@ replay : the same evidence → Viser</pre>
 <li><code>preflight_mujoco_assembly</code>: actual xArm6 URDF, Inspire Left 12 joints, xArm-side/Inspire-side connector OBJ를 compile하고 semantic geometry identity와 XML/MJB 재로드를 검사</li>
 </ul>
 <p>실제 local preflight는 MuJoCo 3.10.0에서 19 bodies, 18 joints, 18 qpos와 22 named collision geometries를 만들었다. Arm 7, hand 13, connector 2 geometry가 <code>arm/</code>, <code>end_effector/</code>, <code>connector/</code> namespace로 보존됐다. 결과는 import evidence일 뿐이며 <code>execution_authorized=false</code>다.</p>
+
+<p><a href="https://github.com/gohyunsu/beltbench/commit/220d5a7"><code>beltbench@220d5a7</code></a>에서 발견된 server incompatibility를 fail-closed 계약으로 반영했다.</p>
+<ul>
+<li>Policy가 exact backend version과 minimum driver를 고정하므로 driver 535에서 V2 policy는 <code>driver_version_unsupported</code>로 실패한다.</li>
+<li>별도 <code>curobo_v1_pinned</code> compatibility policy는 <code>v0.7.8</code>만 받지만, usage approval reference가 없으면 <code>backend_usage_not_approved</code>로 실패한다.</li>
+<li>Capability digest에 source revision, software license, approval 상태를 포함하며 저장된 pass flag는 여전히 raw trial에서 재계산한다.</li>
+<li>V1/V2 타입은 core contract로 유출하지 않는다. 동일 warm-start/backend protocol 뒤에서 교체하며 implicit CPU 또는 BODex-fork fallback은 없다.</li>
+</ul>
 
 <h2>MuJoCo import 중 발생한 문제와 해결</h2>
 <table><thead><tr><th>문제</th><th>원인</th><th>해결과 남은 의미</th></tr></thead><tbody>
@@ -96,8 +112,10 @@ replay : the same evidence → Viser</pre>
 <li>Actual MuJoCo XML과 MJB가 모두 19/18/18/22 dimensions로 재로드되고 append-only preflight report 생성</li>
 <li>GPU server checkout을 untracked BODex build를 보존한 채 <code>53a3a1a</code>로 fast-forward하고, cuRoboV2 driver/Python capability probe <code>115463</code> 제출</li>
 <li>수정 source endpoint screening <code>115458</code> 성공: 2,000 evaluated, 140 full-path candidates. Exact downstream full evaluation <code>115462</code> 실행 중</li>
+<li>Compatibility gate 회귀는 local 관련 suite 33개와 target-server 계약 suite 6개 통과</li>
+<li>Source와 server checkout을 <code>220d5a7</code>로 fast-forward했고 server의 기존 untracked BODex native build는 보존</li>
 </ul>
-<p>다음 구현 순서는 cuRoboV2 target-server compatibility 확인, exact xArm/Inspire sphere model과 ignore pair 생성, HPP-FCL cross-check corpus, fixed-shape batched IK/collision/trajopt adapter다. Physics 쪽은 MuJoCo에 workcell/object dynamics와 full-joint actuator를 추가해 saved event trajectory를 먼저 실행한 후, 같은 immutable scenario를 Isaac USD scene에 올린다. Physics backend가 통과해도 connector bolt-hole alignment, measured calibration/latency, continuous swept collision, controller stop과 moving hardware reliability는 별도 hard gate로 남긴다.</p>
+<p>다음 구현 순서는 server probe 결과 보존, driver upgrade 가능성 또는 V1 usage approval 확인, exact xArm/Inspire sphere model과 ignore pair 생성, HPP-FCL cross-check corpus, fixed-shape batched IK/collision/trajopt adapter다. 승인 전 legacy install은 진행하지 않는다. Physics 쪽은 MuJoCo에 workcell/object dynamics와 full-joint actuator를 추가해 saved event trajectory를 먼저 실행한 후, 같은 immutable scenario를 Isaac USD scene에 올린다. Physics backend가 통과해도 connector bolt-hole alignment, measured calibration/latency, continuous swept collision, controller stop과 moving hardware reliability는 별도 hard gate로 남긴다.</p>
 <div class="callout"><strong>성공 기준:</strong> 화면에서 캔을 붙여 움직이는 것이 아니라, exact runtime decision이 deadline 안에 dispatch되고 simulator의 state/contact로 contact → attachment → release → bin containment가 관측되며 비의도 충돌이 0인 run을 재현하는 것이다.</div>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
