@@ -110,12 +110,15 @@ replay : the same evidence → Viser</pre>
 <li>서버 checkout은 untracked BODex build를 유지한 채 checksummed incremental bundle로 <code>c670857</code>까지 fast-forward</li>
 <li>새 accelerated runtime과 MuJoCo 단위 테스트 7개 통과, inference/grasp 관련 회귀를 합친 27개 통과</li>
 <li>Actual MuJoCo XML과 MJB가 모두 19/18/18/22 dimensions로 재로드되고 append-only preflight report 생성</li>
-<li>GPU server checkout을 untracked BODex build를 보존한 채 <code>53a3a1a</code>로 fast-forward하고, cuRoboV2 driver/Python capability probe <code>115463</code> 제출</li>
-<li>수정 source endpoint screening <code>115458</code> 성공: 2,000 evaluated, 140 full-path candidates. Exact downstream full evaluation <code>115462</code> 실행 중</li>
+<li>GPU server checkout을 untracked BODex build를 보존한 채 <code>53a3a1a</code>로 fast-forward하고, cuRoboV2 driver/Python capability probe <code>115463</code> 실행</li>
+<li>수정 source endpoint screening <code>115458</code> 성공: 2,000 evaluated, 140 full-path candidates. Exact downstream full evaluation <code>115462</code>도 exit 0으로 완료</li>
+<li>Full evaluation 결과: 140 records, failure-free 0, diagnostic geometry-clear 117. Protocol과 stable pose가 provisional이므로 context failure를 제거하거나 실행 가능으로 승격하지 않음</li>
+<li>Full evaluation PBS walltime 22분 53초. Compute/filesystem clock skew -367초로 timing evidence는 unauthorized지만 checksummed geometry artifact는 검증 완료</li>
+<li>GPU probe 결과: RTX A6000, driver <code>535.161.07</code>, 49,140 MiB, compute capability 8.6, Python 3.10.12. Probe timing evidence는 정상이며 V2 minimum driver 580.65.06 불충족을 확정</li>
 <li>Compatibility gate 회귀는 local 관련 suite 33개와 target-server 계약 suite 6개 통과</li>
 <li>Source와 server checkout을 <code>220d5a7</code>로 fast-forward했고 server의 기존 untracked BODex native build는 보존</li>
 </ul>
-<p>다음 구현 순서는 server probe 결과 보존, driver upgrade 가능성 또는 V1 usage approval 확인, exact xArm/Inspire sphere model과 ignore pair 생성, HPP-FCL cross-check corpus, fixed-shape batched IK/collision/trajopt adapter다. 승인 전 legacy install은 진행하지 않는다. Physics 쪽은 MuJoCo에 workcell/object dynamics와 full-joint actuator를 추가해 saved event trajectory를 먼저 실행한 후, 같은 immutable scenario를 Isaac USD scene에 올린다. Physics backend가 통과해도 connector bolt-hole alignment, measured calibration/latency, continuous swept collision, controller stop과 moving hardware reliability는 별도 hard gate로 남긴다.</p>
+<p>다음 구현 순서는 driver upgrade 가능성 또는 V1 usage approval 확인, exact xArm/Inspire sphere model과 ignore pair 생성, HPP-FCL cross-check corpus, fixed-shape batched IK/collision/trajopt adapter다. 승인 전 legacy install은 진행하지 않는다. Full evaluation의 117개는 grasp/path atlas의 입력 후보일 뿐이며 measured stable pose와 approved protocol이 생길 때까지 context-blocked다. Physics 쪽은 MuJoCo에 workcell/object dynamics와 full-joint actuator를 추가해 saved event trajectory를 먼저 실행한 후, 같은 immutable scenario를 Isaac USD scene에 올린다. Physics backend가 통과해도 connector bolt-hole alignment, measured calibration/latency, continuous swept collision, controller stop과 moving hardware reliability는 별도 hard gate로 남긴다.</p>
 <div class="callout"><strong>성공 기준:</strong> 화면에서 캔을 붙여 움직이는 것이 아니라, exact runtime decision이 deadline 안에 dispatch되고 simulator의 state/contact로 contact → attachment → release → bin containment가 관측되며 비의도 충돌이 0인 run을 재현하는 것이다.</div>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
