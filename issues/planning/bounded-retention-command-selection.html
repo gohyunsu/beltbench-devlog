@@ -75,6 +75,7 @@ if no command passed:
 
 <h2>현재 상태와 다음 단계</h2>
 <p><code>junjinyong</code> checkout은 checksum을 확인한 incremental Git bundle로 <code>fd6c8cc</code>까지 fast-forward했고 기존 BODex build output은 유지했다. Schema 3.0 config에 결속된 CPU-only screening, full evaluation, deployment, shortlist와 portfolio를 새 append-only ID로 제출했다. 각 downstream job은 <code>afterok</code> dependency로만 시작한다.</p>
+<p>첫 schema 3.0 full evaluation은 geometry 판정 전에 <code>gain=1.0</code>을 거부하는 이전 hand joint helper 때문에 실패했다. Config는 first-contact command를 첫 후보로 요구하지만 helper는 extrapolation만 가정해 <code>gain&gt;1</code>을 강제한 계약 불일치였다. <a href="https://github.com/gohyunsu/beltbench/commit/c670857"><code>c670857</code></a>에서 1.0을 허용하고 산술 없이 exact contact command를 보존하도록 수정했다. Compute-node 회귀 16개를 통과한 뒤 full evaluation을 새 append-only ID로 재제출했다. 실패한 run과 실행되지 않은 dependency는 삭제하거나 success로 재해석하지 않았다.</p>
 <p>새 chain이 geometry-clear 후보를 만들더라도 즉시 실행 가능 grasp로 승격하지 않는다. Exact xArm6/Inspire/connector deployment, full-yaw/horizon support, complete moving pick/drop path와 독립 playback 검증을 모두 다시 생성해야 한다. 현재 stable pose와 validation protocol도 provisional이므로 physical execution은 계속 차단한다.</p>
 <div class="callout"><strong>다음 판정:</strong> 새 intrinsic run에서 selected gain 분포와 per-gain failure ledger를 집계한다. 통과 후보가 없으면 grid나 관통 threshold를 임의 조정하지 않고 contact geometry, collision semantics, object mesh와 release capability 가정을 다시 진단한다. 통과 후보가 있으면 exact command를 유지한 채 xArm6 deployment와 complete-path search로 좁힌다.</div>
 </main>
