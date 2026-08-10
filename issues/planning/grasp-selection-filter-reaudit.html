@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AutoDex grasp filter 재감사와 static maximin resolution · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+<style>pre{overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;line-height:1.55}code{font-size:.92em}table{width:100%;border-collapse:collapse}th,td{padding:.65rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}</style>
+</head>
+<body>
+<header class="top"><div class="wrap"><a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a><nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav></div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-034 · 2026-08-10 · grasp selection authority re-audit</div>
+<h1>정적 simulation 통과와 moving conveyor grasp 권한은 같은 판단이 아니다.</h1>
+<p class="lede">AutoDex의 grasp 선택 코드를 pinned public source에서 다시 읽고, 실제로 적용되는 filter와 shortcut을 BeltBench gate에 하나씩 대조했다. 유용한 개념은 독립 evidence로 재계산하고, 특정 simulator·hand·workcell에 묶인 기준은 실행 권한으로 상속하지 않는다.</p>
+
+<h2>검토한 source</h2>
+<p>기준 revision은 <code>willi19/autodex-code:main@5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. 로컬에서는 <code>autodex-code:upstream/main</code>으로 읽었고, 사이트 이력인 <code>gohyunsu/autodex-code:main</code> checkout은 변경하지 않았다.</p>
+<table><thead><tr><th>경로</th><th>확인한 실제 동작</th></tr></thead><tbody>
+<tr><td><code>src/grasp_generation/sim_filter/run_sim_filter.py</code></td><td>finite pregrasp, zero-margin sphere scene/self collision, squeeze overlap, fixed hold, mutable path cache를 적용한다.</td></tr>
+<tr><td><code>autodex/simulator/hand_object.py</code></td><td>gravity를 끄고 0.1 kg object에 0.1 N 외력을 적용한다. Inspire URDF 경로는 base·palm·sensor·tip collision geometry 일부를 비활성화한다.</td></tr>
+<tr><td><code>src/grasp_generation/order/compute_order_cross_pose.py</code></td><td>scene collision과 tabletop gravity hold의 binary 교집합에 greedy set cover를 적용한다. cache는 pose key로 재사용된다.</td></tr>
+<tr><td><code>autodex/planner/planner.py</code></td><td>coverage order 뒤 fixed-start IK, arm coordinate <code>[-pi, pi]</code>, 3 cm lift IK, first successful joint plan을 사용한다. target-free world 생성 시 target 하나가 아니라 전체 mesh map을 비우며, optimized open pose가 없으면 pregrasp로 대체한다.</td></tr>
+<tr><td><code>autodex/utils/coverage.py</code></td><td>성공 trial이 덮은 scene을 제외해 다음 coverage gain을 계산하고, table-only 경로는 Laplace-smoothed point estimate를 exploration order로 쓴다.</td></tr>
+</tbody></table>
+
+<h2>문제와 원인</h2>
+<p>AutoDex 기준은 자동 data collection에는 실용적이지만 conveyor moving pick의 safety margin은 아니다. Any-overlap contact는 접촉 identity·개수·penetration·wrench를 말하지 않고, disabled gravity의 0.1 N hold는 실제 중량 하중이나 torque disturbance를 대표하지 않는다. Reduced collision geometry, empty mesh world, missing-command fallback은 정확한 배포 model을 보존하지 않는다. Coverage와 first-success는 실험 throughput 기준이지 robustness 기준이 아니다.</p>
+<p>BeltBench 현대 경로는 이 기준을 이미 <code>intrinsic -> deployment -> yaw/horizon atlas -> complete path -> live state -> reliability</code>로 분리했다. 다만 일반 <code>compatible_grasps()</code>는 hard gate를 통과한 static library 후보를 raw support clearance 우선, raw static quality 차순으로 정렬했다. 두 값은 단위와 threshold가 다르므로 한 metric의 큰 절대값이 다른 metric의 작은 여유를 가릴 수 있었다. 이 경로는 moving authority가 아니지만 legacy diagnostic에서 한 grasp를 너무 일찍 고를 수 있는 불필요한 편향이었다.</p>
+
+<h2>해결</h2>
+<p>구현 revision은 <a href="https://github.com/gohyunsu/beltbench/commit/2a7cda6"><code>beltbench@2a7cda6</code></a>이다.</p>
+<p>Identity, capability, validation scope, support-clearance, quality hard gate는 그대로 유지하고, 다른 protocol과 일관되게 negative static-quality threshold를 거부했다. 통과 후보만 각 positive request threshold로 나눈 dimensionless slack을 오름차순으로 정렬한 뒤, 그 vector를 lexicographic maximin으로 비교한다. 따라서 먼저 worst margin이 큰 후보를 고르고, 그다음 두 번째 margin을 비교한다. Zero threshold는 pass/fail diagnostic일 수 있지만 robustness evidence에는 포함하지 않는다. 마지막 tie-break만 grasp ID를 사용하므로 library 배열 순서와 provider order는 판단에 관여하지 않는다.</p>
+<pre>hard gate: every required metric passes
+static resolver: max lexicographic(sort(support/required_support,
+                                        quality/required_quality))
+deployment/runtime: re-evaluate full context and complete path
+physical commit: exact-context moving-pick reliability + controller authority</pre>
+<p>이 static order는 robot IK, moving contact, trajectory, timing, live tracking, controller 또는 hardware reliability를 대체하지 않는다. Authoritative conveyor 경로는 full intrinsic worklist에서 yaw cell을 만들고, startup-verified resident path family 전체를 complete-path와 live-correction slack까지 비교한 뒤 bounded selection을 수행한다.</p>
+
+<h2>검증 결과</h2>
+<p>새 회귀는 raw clearance가 10배지만 quality가 threshold에 거의 붙은 후보보다 두 margin이 모두 2배인 후보를 선택하는지 검사한다. 입력 tuple 순서를 뒤집어도 결과가 같음을 함께 확인했다.</p>
+<ul>
+<li><code>tests.test_grasp_library + tests.test_grasp_resolution</code>: 18 tests 통과</li>
+<li>Intrinsic, deployment, shortlist, atlas, path family, moving contact, runtime, reliability를 포함한 selection 경계: 253 tests 통과</li>
+<li>OpenCV 전용 3개 모듈을 제외한 planning-compatible 전체: 522 tests 통과</li>
+<li>분리된 OpenCV·calibration: 14 tests 통과</li>
+<li>Python 3.10에서 3.11 전용 variadic tuple annotation을 처음 사용해 syntax error가 발생했다. 저장소 지원 버전에 맞춰 <code>tuple[Any, ...]</code>로 수정했고 같은 suite를 재실행해 해결했다.</li>
+</ul>
+
+<h2>남은 한계</h2>
+<p>현재 evidence는 offline geometry와 planning plumbing을 검증한다. Intrinsic path와 일부 moving-contact 검사는 sampled evidence이며, 실제 connector metrology, continuous collision backend, controller conversion, measured latency, moving-pick trial confidence lower bound가 아직 physical commit에 결합되지 않았다. 따라서 AutoDex의 실제 성공 label이 있더라도 exact BeltBench arm·hand·connector·workcell·belt-speed context가 다르면 moving execution 권한으로 재사용하지 않는다.</p>
+<div class="callout"><strong>다음 구현:</strong> production API를 사용해 한 fresh multi-rate input generation에서 future-start path-family handoff와 causal session을 materialize하고, handoff-bound feedback과 checksummed Viser scenario로 연결한다. Synthetic replay는 명시적으로 진단용이며 실제 controller authority로 승격하지 않는다.</div>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
