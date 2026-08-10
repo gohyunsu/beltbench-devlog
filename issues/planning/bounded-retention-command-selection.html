@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bounded retention command 선택과 AutoDex filter 재검증 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+<style>pre{overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;line-height:1.55}code{font-size:.92em}table{width:100%;border-collapse:collapse}th,td{padding:.65rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}</style>
+</head>
+<body>
+<header class="top"><div class="wrap"><a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a><nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav></div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-037 · 2026-08-10 · bounded retention selection</div>
+<h1>AutoDex squeeze 상수를 그대로 쓰지 않고, 통과 가능한 최소 폐쇄 상태를 증거로 선택한다.</h1>
+<p class="lede">AutoDex와 BeltBench의 grasp 탈락 기준을 production batch에서 다시 대조했다. Provider flag와 정적 simulation은 제안 provenance로 제한하고, 실제 배포 hand의 named mesh에서 접촉·관통·clearance·task wrench·retention/release path를 모두 통과하는 최소 command만 checksummed intrinsic evidence로 남긴다.</p>
+
+<h2>검토 범위</h2>
+<p>AutoDex 기준 source는 <code>willi19/autodex-code:main@5ada1c077f60bae9af6f27b07619218f58422e50</code>이다. BODex 생성, <code>run_sim_filter.py</code>, cross-pose order와 runtime planner를 다시 읽었다. BeltBench는 <a href="https://github.com/gohyunsu/beltbench/commit/fd6c8cc"><code>beltbench@fd6c8cc</code></a>의 intrinsic, deployment, shortlist, atlas, complete-path와 runtime selection 경계를 대조했다.</p>
+<table><thead><tr><th>AutoDex 단계</th><th>실제 기준</th><th>BeltBench 판단</th></tr></thead><tbody>
+<tr><td>BODex generation</td><td>Optimizer seed와 residual, provider success를 저장하지만 생성 파일에는 실패 seed도 남긴다.</td><td>Provider flag와 residual은 provenance다. 독립 acceptance gate나 rank로 사용하지 않는다.</td></tr>
+<tr><td>Static collision</td><td>Pregrasp sphere와 world/self의 zero-margin collision을 검사한다.</td><td>개념만 채택한다. 실제 배포 mesh와 positive margin으로 endpoint와 complete path를 재평가한다.</td></tr>
+<tr><td>Squeeze contact</td><td><code>2*grasp-pregrasp</code>에서 world-only overlap 하나라도 있으면 contact로 인정한다.</td><td>거부한다. Named contact identity/count, allowed penetration과 non-contact geometry를 모두 hard gate로 둔다.</td></tr>
+<tr><td>MuJoCo hold</td><td>Gravity를 끈 고정 0.1 kg model에 한 방향 0.1 N을 적용하고 5 cm/15° 이내인지 본다.</td><td>보조 diagnostic으로만 허용한다. Signed full-rank task-wrench set과 이후 hardware reliability를 별도로 요구한다.</td></tr>
+<tr><td>Cross-pose order</td><td>Binary scene survival에 greedy set cover를 적용한다.</td><td>모든 hard gate를 통과한 뒤 context coverage에만 사용한다. Robustness는 dimensionless full maximin vector로 비교한다.</td></tr>
+<tr><td>Runtime planner</td><td>Coverage order, fixed-start IK, 짧은 lift endpoint, first successful plan과 일부 fallback을 사용한다.</td><td>빈 obstacle map과 missing-command fallback을 거부한다. Complete path, moving contact, timing, live state와 controller authority를 별도 gate로 유지한다.</td></tr>
+</tbody></table>
+
+<h2>Production batch에서 관찰한 문제</h2>
+<p>Pepsi Light upside-down stable pose와 Inspire Left 조합의 proposal 2,000개는 모두 <code>provider_success=false</code>였다. 이는 AutoDex가 독립 filter 전 seed를 모두 저장하는 구현과 일치하므로 provider flag만으로 폐기하지 않았다. 반대로 success로 재해석하지도 않았다. Endpoint screening은 exact identity, named contact, penetration, non-contact/self/support clearance와 signed task-wrench 기준으로 140개만 full evaluation worklist에 남겼다.</p>
+<p>첫 full run은 변경된 intrinsic config와 이전 screening artifact의 <code>evaluation_config</code> checksum이 달라 compute 전에 중단됐다. 기존 artifact를 수정하거나 checksum 검사를 우회하지 않고 run을 실패 상태로 보존한 뒤, CPU-only screening부터 새 immutable chain을 만들었다.</p>
+<p>고정 <code>retention_gain=2.0</code>을 사용한 full evaluation 결과는 명확했다.</p>
+<ul>
+<li>140개 중 failure-free 0개, diagnostic geometry-clear 0개</li>
+<li><code>retention_contact_penetration</code>: 140/140</li>
+<li><code>retention_task_wrench_margin</code>: 135/140</li>
+<li><code>retention_noncontact_object_clearance</code>와 <code>retention_object_clearance</code>: 각각 30/140</li>
+<li><code>release_contact_penetration</code>: 140/140</li>
+<li>한 예에서는 허용 0.5 mm에 대해 retention 관통이 약 38.7 mm였다.</li>
+</ul>
+<p>따라서 원인은 관통 threshold가 지나치게 엄격한 것이 아니라, AutoDex의 hand별 squeeze 상수를 rigid CAD acceptance command로 전역 재사용한 데 있었다. Threshold를 완화하거나 임의의 더 작은 상수로 교체하면 같은 구조적 문제가 남는다.</p>
+
+<h2>해결한 선택 정책</h2>
+<p>Intrinsic config schema를 3.0으로 올리고 단일 <code>retention_gain</code>을 제거했다. 현재 protocol은 <code>[1.0, 1.05, 1.1, 1.15, 1.2, 1.3, 1.4, 1.6, 1.8, 2.0]</code>의 명시적 bounded grid를 오름차순으로 평가한다. 첫 항목은 provider의 first-contact command와 같고, 각 항목은 effective URDF command/mimic limit로 clip된다.</p>
+<pre>for gain in configured_grid_ascending:
+    command = clip(pregrasp + gain * (grasp - pregrasp))
+    evidence = evaluate_named_contacts_and_complete_local_paths(command)
+    if every_hard_gate_passes(evidence):
+        select(command)        # least-closed complete pass
+        stop
+if no command passed:
+    reject("retention_command_not_found")
+</pre>
+<p>각 시도는 command, gain, contacts, selected named contacts, signed task-wrench margins, support/self clearance, grasp-to-retention samples, release samples와 command-local failure ledger를 보존한다. 통과 command가 없으면 가장 덜 닫힌 상태를 진단 표시용으로만 남기고 <code>retention_command_not_found</code>로 promotion을 차단한다. 이는 fallback이 아니다.</p>
+<p>Full-batch verifier는 시도 gain이 config grid의 정확한 prefix인지 확인한다. Safe command 뒤에 후보를 덧붙이거나, 모두 실패한 grid를 중간에서 잘라낸 artifact는 거부한다. Deployment는 proposal과 config에서 squeeze를 다시 계산하지 않고, checksum 검증을 끝낸 intrinsic evaluation의 exact <code>retention_command</code>만 소비한다.</p>
+
+<h2>선택 기준의 권한 순서</h2>
+<ol>
+<li>Provider output은 identity와 provenance만 제공한다.</li>
+<li>Intrinsic 단계가 arm-independent contact, wrench, support와 hand-local complete path를 hard-gate한다.</li>
+<li>Deployment가 exact arm·hand·connector·object·workcell에서 IK, joint/singularity, assembly/workcell/object clearance를 검사한다.</li>
+<li>Shortlist와 atlas는 통과 후보만 context coverage와 normalized lexicographic maximin으로 정리한다.</li>
+<li>Complete path와 runtime은 moving contact, collision, dynamics, deadline, fresh track/encoder/robot state, correction, latch와 stop을 다시 검사한다.</li>
+<li>Physical commit에는 force-limited controller profile, connector metrology와 exact-context moving-pick hardware reliability가 추가로 필요하다.</li>
+</ol>
+<p>즉 최소 폐쇄 command는 rigid geometry에서 불필요한 overclosure를 피하는 선택일 뿐, 실제 grasp force를 입증하지 않는다. 손의 compliance, actuator current/force limit, 마찰 불확실성과 물체 질량·가속도는 hardware protocol에서 검증해야 한다.</p>
+
+<h2>검증과 실패 보존</h2>
+<ul>
+<li>Intrinsic, full batch, deployment, shortlist를 포함한 focused verifier 회귀 52개 통과</li>
+<li>Grasp screening, reliability, atlas와 shortlist 계층 137개 통과</li>
+<li>Planning 환경의 전체 discovery에서 기존 OpenCV 의존 모듈 3개만 import 실패했고, calibration 환경에서 해당 14개 회귀를 모두 통과</li>
+<li>CPU-only PBS fixed-gain full run은 기능적으로 완료됐지만 compute/filesystem clock 차이가 약 -366초여서 timing evidence로는 채택하지 않음</li>
+<li>Fixed-gain downstream deployment는 geometry-clear worklist가 비어 실패했고, shortlist와 portfolio dependency도 실행 없이 종료됨. 빈 후보를 fallback으로 채우지 않은 정상적인 fail-closed 결과다.</li>
+</ul>
+
+<h2>현재 상태와 다음 단계</h2>
+<p><code>junjinyong</code> checkout은 checksum을 확인한 incremental Git bundle로 <code>fd6c8cc</code>까지 fast-forward했고 기존 BODex build output은 유지했다. Schema 3.0 config에 결속된 CPU-only screening, full evaluation, deployment, shortlist와 portfolio를 새 append-only ID로 제출했다. 각 downstream job은 <code>afterok</code> dependency로만 시작한다.</p>
+<p>새 chain이 geometry-clear 후보를 만들더라도 즉시 실행 가능 grasp로 승격하지 않는다. Exact xArm6/Inspire/connector deployment, full-yaw/horizon support, complete moving pick/drop path와 독립 playback 검증을 모두 다시 생성해야 한다. 현재 stable pose와 validation protocol도 provisional이므로 physical execution은 계속 차단한다.</p>
+<div class="callout"><strong>다음 판정:</strong> 새 intrinsic run에서 selected gain 분포와 per-gain failure ledger를 집계한다. 통과 후보가 없으면 grid나 관통 threshold를 임의 조정하지 않고 contact geometry, collision semantics, object mesh와 release capability 가정을 다시 진단한다. 통과 후보가 있으면 exact command를 유지한 채 xArm6 deployment와 complete-path search로 좁힌다.</div>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
