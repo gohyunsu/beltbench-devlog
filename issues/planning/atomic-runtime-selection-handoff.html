@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Atomic runtime selection handoff · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a><nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-035 · 2026-08-10 · runtime evidence</div>
+<h1>선택 결과와 controller handoff를 한 causal evidence로 종결한다.</h1>
+<p class="lede">정적 grasp resolver의 순위가 아니라, 최신 track·encoder·robot state에서 complete path와 live correction을 통과한 한 세대의 미래 궤적만 diagnostic handoff로 전달하고 그 결과를 원자적으로 저장한다.</p>
+
+<h2>문제</h2>
+<p><code>RuntimePlanningRunner</code>는 causal session을 만들고 controller mailbox는 bounded take·ack lifecycle을 기록했지만, 두 결과를 하나의 생산 경계에서 함께 종결하는 API가 없었다. 각 파일이 개별적으로 유효해도 수동으로 loose path를 조합하면 다른 generation이나 다른 activation의 session과 snapshot을 섞을 위험이 있었다.</p>
+<p>또한 planning이 후보를 선택했다는 사실, adapter가 형식을 수락했다는 사실, 실제 로봇 실행이 안전하다는 사실은 서로 다른 권한이다. 이를 한 상태처럼 취급하면 AutoDex의 정적 collision·hold 결과나 BeltBench의 static maximin 순위가 moving execution 승인으로 잘못 승격될 수 있다.</p>
+
+<h2>원인</h2>
+<ul>
+<li>Selection coordinator는 <code>latch_precompiled</code>, <code>retain_active</code>, warm-start, switch를 구분했지만 terminal evidence writer가 없었다.</li>
+<li>Planning session과 handoff snapshot writer가 각각 atomic이어도 두 writer를 감싸는 디렉터리 단위 transaction이 없었다.</li>
+<li>Pending, rejected, expired handoff를 시각화 입력으로 넘기기 전에 차단하는 공통 API가 없었다.</li>
+</ul>
+
+<h2>해결</h2>
+<p>구현 revision은 <a href="https://github.com/gohyunsu/beltbench/commit/fe8f1c4"><code>beltbench@fe8f1c4</code></a>이다. <code>materialize_accepted_runtime_selection_handoff</code>는 다음 조건을 모두 재현한다.</p>
+<ol>
+<li>Coordinator 결과가 정확히 <code>future_trajectory_published</code>이고 선택 action이 검증된 <code>latch_precompiled</code>여야 한다.</li>
+<li>같은 handoff envelope를 diagnostic worker가 take하고 deadline 안에 accepted acknowledgement를 남겨야 한다.</li>
+<li>Runtime session의 selected activation과 terminal handoff snapshot의 request, correction, 초기 robot state가 정확히 일치해야 한다.</li>
+<li>Staging 디렉터리에서 session·causality·snapshot의 hash와 semantic join을 검증한 뒤 같은 파일시스템에서 최종 디렉터리로 한 번만 rename한다.</li>
+<li>Pending·rejected 상태, 기존 출력 경로 또는 source mismatch는 fail closed되며 최종 evidence 디렉터리를 남기지 않는다.</li>
+</ol>
+<p>Static grasp query는 intrinsic compatibility hard gate 뒤의 generic 정렬일 뿐이다. 최종 runtime 선택은 startup-verified atlas subset, complete path의 collision·joint·singularity·timing·stop margin, live correction tube, fresh robot state와 future-start controller capability를 모두 통과해야 한다.</p>
+
+<h2>검증</h2>
+<ul>
+<li>새 atomic materialization, pending 무출력, explicit rejection 무출력 회귀 3개를 추가했다.</li>
+<li>Controller handoff와 planning runner를 포함한 focused 28 tests가 3.333초에 통과했다.</li>
+<li><code>test_runtime*.py</code> 62 tests가 5.518초에 통과했다.</li>
+<li>Python 3.10 <code>py_compile</code>, line length, <code>git diff --check</code>를 통과했다.</li>
+<li>첫 회귀에서는 frozen dataclass 전체 동등성 비교가 내부 NumPy 배열의 ambiguous truth value를 발생시켰다. 배열 표현에 의존하는 <code>==</code>를 제거하고 snapshot SHA-256, session ID와 activation ID를 명시적으로 비교해 해결했다.</li>
+</ul>
+
+<h2>남은 한계</h2>
+<p>Accepted receipt는 여전히 <code>diagnostic_adapter</code> evidence이며 <code>execution_authorized=false</code>이다. 실제 controller conversion, atomic arm-hand commit, stop/cancel 응답, measured tracking latency, continuous collision 재현, connector metrology와 exact-context moving-pick reliability가 아직 없다.</p>
+<p>현재 저장 계층은 생산 API를 사용하는 causal boundary를 완성했지만, 실제 asset의 startup-verified continuous path-family bundle은 아직 materialize되지 않았다. 다음 단계는 테스트 fixture를 복사하지 않고 xArm·Inspire left·Pepsi light source에 결속된 명시적 offline diagnostic bundle을 준비해 handoff-bound feedback과 1x loop Viser scenario까지 한 chain으로 재현하는 것이다.</p>
+<div class="callout"><strong>권한 경계:</strong> planning 선택, diagnostic adapter acceptance와 예쁜 Viser animation은 각각 plumbing 검증이다. 어느 것도 실제 moving grasp 실행 승인이 아니다.</div>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
