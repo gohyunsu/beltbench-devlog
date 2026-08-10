@@ -47,6 +47,7 @@ physical commit: exact-context moving-pick reliability + controller authority</p
 <li>분리된 OpenCV·calibration: 14 tests 통과</li>
 <li>Python 3.10에서 3.11 전용 variadic tuple annotation을 처음 사용해 syntax error가 발생했다. 저장소 지원 버전에 맞춰 <code>tuple[Any, ...]</code>로 수정했고 같은 suite를 재실행해 해결했다.</li>
 </ul>
+<p><code>junjinyong</code>에는 SHA-256을 확인한 incremental Git bundle로 source revision <code>2a7cda6</code>을 fast-forward했고 기존 untracked BODex build output은 유지했다. 그러나 utility node에서 253-test suite를 실행하자 관리 정책이 CPU-intensive Python child를 SIGTERM해 독립 import test 하나가 error가 되었고, focused 19-test 재시도도 같은 정책으로 종료됐다. 이는 assertion failure가 아니므로 server regression 통과/실패 증거로 채택하지 않았다. 계정에 held allocation이 있는 상태에서 CPU-only 회귀를 위해 GPU job을 추가 소비하지 않았으며, 다음 server 전체 회귀는 명시적인 PBS compute allocation에서만 수행한다.</p>
 
 <h2>남은 한계</h2>
 <p>현재 evidence는 offline geometry와 planning plumbing을 검증한다. Intrinsic path와 일부 moving-contact 검사는 sampled evidence이며, 실제 connector metrology, continuous collision backend, controller conversion, measured latency, moving-pick trial confidence lower bound가 아직 physical commit에 결합되지 않았다. 따라서 AutoDex의 실제 성공 label이 있더라도 exact BeltBench arm·hand·connector·workcell·belt-speed context가 다르면 moving execution 권한으로 재사용하지 않는다.</p>
