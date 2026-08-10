@@ -12,7 +12,7 @@
 <main class="wrap article">
 <div class="eyebrow">ISSUE-038 · 2026-08-10 · inference demo / physics validation</div>
 <h1>Grasp 학습보다 실제 inference demo를 먼저 완성하고, 충돌과 접촉을 독립 physics backend로 재검증한다.</h1>
-<p class="lede">연구 우선순위를 AutoDex training과 추가 data collection에서 벗어나, 이미 제공되거나 어떤 generator에서 생성된 grasp를 사용해 움직이는 물체를 실시간으로 잡고 큰 bin에 떨어뜨리는 end-to-end demo로 옮겼다. 현재 기하 planning을 버리는 것이 아니라, 같은 immutable trajectory를 Isaac Sim/Isaac Lab과 MuJoCo가 소비하도록 physics validation 경계를 추가한다.</p>
+<p class="lede">연구 우선순위를 AutoDex training과 추가 data collection에서 벗어나, 이미 제공되거나 어떤 generator에서 생성된 grasp를 사용해 움직이는 물체를 실시간으로 잡고 큰 bin에 떨어뜨리는 end-to-end demo로 옮겼다. Online IK·collision·trajectory optimization은 cuRoboV2 GPU backend를 목표로 하고, HPP-FCL은 독립 mesh oracle, MuJoCo와 Isaac Sim은 같은 immutable trajectory의 physics validation backend로 역할을 분리한다.</p>
 
 <h2>방향 전환의 근거</h2>
 <p>지도 의견의 핵심은 grasp data source를 연구 병목으로 두지 말고, 현재 흩어진 perception·planning·controller 구성요소가 실제로 한 번의 grasp demo를 완주하게 만드는 것이다. 따라서 AutoDex/BODex는 검증 grasp가 없을 때 사용하는 offline provider 중 하나로 축소한다. Runtime은 provider 종류를 알 필요가 없고 정규화된 object-relative grasp, scope와 checksum만 소비한다.</p>
@@ -31,9 +31,16 @@ replay : the same evidence → Viser</pre>
 </tbody></table>
 <p>따라서 “collision filtering이 있다”와 “실행 중 collision-free다”는 같은 주장이 아니다. 현행 actual-asset playback도 301 frame 중 163 frame이 hard gate를 실패하므로 practical demo가 아직 완성됐다고 말할 수 없다. Object attach animation으로 mesh 교차를 숨기거나 충돌 threshold를 임의 완화하지 않는다.</p>
 
+<h2>왜 cuRobo를 online collision backend로 택하는가</h2>
+<p>기존 Pinocchio/HPP-FCL 구현은 full named mesh와 pair별 signed distance를 제공해 기준 자료로 적합하지만, 현재 production batch의 CPU coarse pass가 순차 실행될 때 수백 초가 필요했다. 이 경로를 그대로 camera cadence의 online planner로 사용하는 것은 현실적이지 않다. cuRoboV2는 batched FK/IK, robot self/world collision과 trajectory optimization을 GPU에서 실행하고, CUDA graph·stream, resident scene, runtime obstacle pose update를 지원하므로 grasp × yaw × intercept time × seed 후보를 fixed-shape batch로 평가하는 본 문제와 맞는다.</p>
+<p>그러나 모든 모듈을 CUDA로 옮기는 것은 목표가 아니다. Timestamp join, freshness, 작은 Kalman state, atlas lookup, controller serialization은 branch와 I/O가 지배적이며 별도 kernel launch와 host-device synchronization이 더 비쌀 수 있다. GPU는 image inference와 batched planning hot path에 사용하고, 한 compact result만 CPU controller boundary로 돌려보낸다. 실제 배치는 1,000회 post-warmup raw trial, deadline miss, host-device 왕복 수와 output validation으로 결정한다.</p>
+<p>cuRobo의 robot collision은 sphere approximation과 self-collision ignore를 사용한다. 따라서 sphere fit, padding과 ignore pair를 자동 생성 후 그대로 신뢰하지 않는다. 동일한 checksummed robot/workcell state corpus를 HPP-FCL full mesh와 비교해 false negative는 release blocker로, false positive는 workspace 손실로 계량한다. Physics simulator contact와 hardware stop은 다시 별도 계층이다.</p>
+<p><code>third_party/bodex</code> 안의 수정 cuRobo는 BODex offline grasp generator 의존성이다. Current cuRoboV2는 2026년 v0.8.0에서 API가 크게 바뀌었고 Apache-2.0으로 공개됐다. 두 구현을 한 environment에서 섞지 않고, cuRoboV2를 별도 pinned runtime adapter로 격리한다.</p>
+
 <h2>Simulator 선택</h2>
-<p>Primary integrated backend는 Isaac Sim/Isaac Lab으로 정했다. 공식 <a href="https://docs.isaacsim.omniverse.nvidia.com/latest/importer_exporter/import_urdf.html">URDF importer 문서</a>는 URDF를 USD articulation으로 가져오고 collision mesh, self-collision, fixed base와 joint drive를 구성하는 경로를 제공한다. <a href="https://docs.isaacsim.omniverse.nvidia.com/latest/omniverse_usd/sensor_schema.html">sensor schema</a>에는 contact force를 관측하는 contact sensor가 있다. 추후 ROS 2 bridge와 scene rendering을 연결하기에도 적합하다.</p>
-<p>새 구현을 Isaac Gym Preview에 두지는 않는다. 공식 <a href="https://isaac-sim.github.io/IsaacLab/main/source/migration/migrating_from_isaacgymenvs.html">Isaac Lab migration 문서</a>가 Isaac Gym Preview와 IsaacGymEnvs를 deprecated로 명시한다. MuJoCo는 빠른 headless contact/dynamics regression과 parameter sweep에 사용한다. <a href="https://mujoco.readthedocs.io/en/stable/overview.html">MuJoCo 문서</a>의 contact pair와 sensor를 활용할 수 있지만, 두 simulator의 force 수치를 같게 만드는 것이 목표는 아니다. 동일한 failure taxonomy와 lifecycle을 재현하는 것이 목표다.</p>
+<p>현재 하드웨어와 완성 workcell이 없으므로 MuJoCo를 첫 headless backend로 앞당겼다. 실제 URDF/connector가 하나의 articulation으로 compile되는지, full hand joint가 보존되는지, contact/dynamics loop가 real-time factor를 만족하는지를 Isaac 설치보다 가볍게 검증할 수 있다. 다만 MuJoCo는 oracle이 아니며 inertia, mimic, actuator, friction, contact solver를 모두 명시해야 한다.</p>
+<p>Primary integrated workcell backend는 이후 Isaac Sim/Isaac Lab으로 유지한다. 공식 <a href="https://docs.isaacsim.omniverse.nvidia.com/latest/importer_exporter/import_urdf.html">URDF importer 문서</a>는 URDF를 USD articulation으로 가져오고 collision mesh, self-collision, fixed base와 joint drive를 구성하는 경로를 제공한다. <a href="https://docs.isaacsim.omniverse.nvidia.com/latest/omniverse_usd/sensor_schema.html">sensor schema</a>에는 contact force를 관측하는 contact sensor가 있다. 추후 ROS 2 bridge와 scene rendering을 연결하기에도 적합하다.</p>
+<p>새 구현을 Isaac Gym Preview에 두지는 않는다. 공식 <a href="https://isaac-sim.github.io/IsaacLab/main/source/migration/migrating_from_isaacgymenvs.html">Isaac Lab migration 문서</a>가 Isaac Gym Preview와 IsaacGymEnvs를 deprecated로 명시한다. 두 simulator의 force 수치를 같게 만드는 대신 동일한 failure taxonomy와 lifecycle을 재현한다.</p>
 
 <h2>새로 구현한 경계</h2>
 <p><a href="https://github.com/gohyunsu/beltbench/commit/c670857"><code>beltbench@c670857</code></a>에 simulator-neutral 계약을 추가했다.</p>
@@ -46,10 +53,38 @@ replay : the same evidence → Viser</pre>
 </ul>
 <p>Backend의 <code>passed</code>와 contact label도 신뢰하지 않는다. Geometry는 <code>arm/</code>, <code>end_effector/</code>, <code>object/</code>, <code>workcell/</code> namespace로 정규화한다. BeltBench가 checksummed object-interaction semantics로 fingertip/object, belt support와 bin support만 다시 허용하고 나머지는 unintended collision으로 분류한다. 모든 simulation report는 <code>execution_authorized=false</code>다.</p>
 
+<h2>cuRoboV2 acceptance 계약과 실제 MuJoCo assembly</h2>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/53a3a1a"><code>beltbench@53a3a1a</code></a>에서 accelerated runtime과 actual-asset preflight를 추가했다.</p>
+<ul>
+<li><code>RealtimePlanningPolicy</code>: <code>required_backend_family=curobo_v2</code>, fixed batch, resident world, preallocated buffer, CUDA graph, 최대 host-device 왕복과 reject-only fallback을 선언</li>
+<li><code>RealtimePlanningBackendCapability</code>: exact backend revision, device, batched IK/collision/trajopt, dynamic world update와 collision representation을 고정</li>
+<li><code>RealtimePlanningBenchmarkReport</code>: target GPU/driver와 robot/world digest에 대해 1,000개 이상 raw post-warmup trial, p50/p95/p99/max, deadline miss와 output validation을 보존</li>
+<li>Stored pass/failure flag는 신뢰하지 않고 capability·policy·raw trial에서 failure를 다시 계산한다. CPU fallback, family 위조, warm-up 누락과 전송 budget 초과는 hard failure다.</li>
+<li><code>preflight_mujoco_assembly</code>: actual xArm6 URDF, Inspire Left 12 joints, xArm-side/Inspire-side connector OBJ를 compile하고 semantic geometry identity와 XML/MJB 재로드를 검사</li>
+</ul>
+<p>실제 local preflight는 MuJoCo 3.10.0에서 19 bodies, 18 joints, 18 qpos와 22 named collision geometries를 만들었다. Arm 7, hand 13, connector 2 geometry가 <code>arm/</code>, <code>end_effector/</code>, <code>connector/</code> namespace로 보존됐다. 결과는 import evidence일 뿐이며 <code>execution_authorized=false</code>다.</p>
+
+<h2>MuJoCo import 중 발생한 문제와 해결</h2>
+<table><thead><tr><th>문제</th><th>원인</th><th>해결과 남은 의미</th></tr></thead><tbody>
+<tr><td>격리 environment에서 <code>scipy</code> import 실패</td><td>BeltBench geometry module이 SciPy optimizer를 사용하지만 첫 MuJoCo lock에는 NumPy만 있었다.</td><td><code>environment/mujoco.yml</code>에 SciPy 1.13을 명시했다. Source import를 우회하는 path hack은 사용하지 않았다.</td></tr>
+<tr><td>Hand collision geometry identity 불일치</td><td>HPP-FCL semantics와 MuJoCo URDF traversal의 geometry 순서가 달랐지만 이름 집합은 동일했다.</td><td>Backend-local index 순서를 portable identity로 오인하지 않고 unique name set을 검사하며 report는 canonical semantic 순서를 기록한다.</td></tr>
+<tr><td>Native exit 139 segfault</td><td><code>MjSpec.attach</code>의 기본 reference attachment가 함수 종료 시 parent/child element ownership과 충돌했다.</td><td>공식 MjSpec deep-copy option인 <code>copy_during_attach=true</code>를 사용한다. 이 설정 후 동일 preflight가 exit 0으로 끝났다.</td></tr>
+<tr><td>Export XML의 <code>empty class name</code></td><td>Joint 이름 보존을 위해 빈 attach prefix를 사용하자 copied child default class가 빈 이름으로 직렬화됐다.</td><td>Joint/body에는 prefix를 붙이지 않고 child default만 <code>end_effector_default</code>로 명명한다.</td></tr>
+<tr><td>Export XML 재로드 시 hand mesh 없음</td><td>URDF parser가 이해한 상대 mesh path가 다른 output directory의 standalone MJCF에는 유효하지 않았다.</td><td>Debug export에는 resolved absolute mesh path를 기록하고 즉시 XML을 재로드한다. Portable 실행 artifact는 MJB도 별도로 저장·재로드한다.</td></tr>
+<tr><td>xArm <code>link2</code> inertia triangle inequality 실패</td><td>Source inertia가 MuJoCo compiler의 물리 일관성 조건을 만족하지 않는다.</td><td><code>balanceinertia=true</code>를 명시하고 limitation으로 기록한다. 이는 측정 dynamics가 아니며 숨겨진 fallback이 아니다.</td></tr>
+<tr><td>URDF mimic equality 0개</td><td>MuJoCo URDF importer가 Inspire mimic 관계를 native equality로 보존하지 않는다.</td><td>Runtime adapter는 6 command joint를 BeltBench model로 12 full joint target에 명시적으로 expand해야 한다.</td></tr>
+</tbody></table>
+<p>또한 assembly preflight는 <code>world_from_arm_base=identity</code>만 받는다. Calibrated base placement를 조용히 무시하지 않고, 이후 workcell scene builder 한 곳만 이 transform을 적용하게 한다. Connector transform, bolt-hole fit, mass, friction과 contact geometry는 여전히 provisional이다.</p>
+
 <h2>발생한 문제: retention gain 1.0</h2>
 <p>Bounded policy의 첫 후보는 first-contact command 자체인 <code>gain=1.0</code>이다. 그러나 compute-node full evaluation은 시작 후 다음 오류로 종료됐다.</p>
 <pre>ValueError: retention gain must be finite and greater than one</pre>
 <p>원인은 schema 3.0은 <code>gain=1.0</code>을 요구하지만, 이전 hand joint helper는 squeeze extrapolation만 가정해 <code>gain&gt;1</code>을 강제한 계약 불일치였다. Grasp geometry 실패나 scheduler 문제는 아니었다. Helper를 <code>gain&gt;=1</code>로 수정했고, 1.0에서는 부동소수점 extrapolation을 하지 않고 검증된 contact command를 그대로 보존한다. 처음에는 산술 결과가 <code>0.9</code> 대신 <code>0.899999...</code>가 되어 checksum 안정성 문제를 단위 테스트가 잡았다. Tolerance로 숨기지 않고 identity path를 분기해 해결했다.</p>
+
+<h2>발생한 문제: 수정 전 screening provenance 재사용</h2>
+<p>Gain 수정 후 full evaluation job <code>115454</code>는 geometry를 시작하기 전에 다음 오류로 실패했다.</p>
+<pre>ValueError: artifact source checksum changed: end_effector_joint_model</pre>
+<p>이는 수정한 <code>end_effector.py</code>와 수정 전 endpoint screening artifact의 source digest가 달라졌기 때문이다. 이전 screening을 “결과가 비슷할 것”이라 가정해 재사용하면 검증 체인이 깨진다. Fail-closed 검사가 의도대로 차단한 것이므로 screening부터 새 append-only run <code>115458</code>로 다시 계산했다. 2,000 proposal 전체가 처리됐고 140개가 full path 대상에 남았다. 이 exact screening을 사용하는 full evaluation job <code>115462</code>를 제출했다.</p>
 
 <h2>검증 상태와 다음 구현</h2>
 <ul>
@@ -57,9 +92,12 @@ replay : the same evidence → Viser</pre>
 <li>기존 runtime, event trajectory, collision, playback와 합친 focused 회귀 47개 통과</li>
 <li>Retention hand model, intrinsic/full/screening과 simulation 회귀 36개 통과</li>
 <li>서버 checkout은 untracked BODex build를 유지한 채 checksummed incremental bundle로 <code>c670857</code>까지 fast-forward</li>
-<li>Compute-node regression 16개가 <code>c670857</code>에서 통과했고, bounded-retention full evaluation을 새 append-only run으로 재제출</li>
+<li>새 accelerated runtime과 MuJoCo 단위 테스트 7개 통과, inference/grasp 관련 회귀를 합친 27개 통과</li>
+<li>Actual MuJoCo XML과 MJB가 모두 19/18/18/22 dimensions로 재로드되고 append-only preflight report 생성</li>
+<li>GPU server checkout을 untracked BODex build를 보존한 채 <code>53a3a1a</code>로 fast-forward하고, cuRoboV2 driver/Python capability probe <code>115463</code> 제출</li>
+<li>수정 source endpoint screening <code>115458</code> 성공: 2,000 evaluated, 140 full-path candidates. Exact downstream full evaluation <code>115462</code> 실행 중</li>
 </ul>
-<p>다음 코드는 Isaac asset preflight와 USD scene import, saved event trajectory 실행, raw contact/state 수집 순서로 작성한다. 그 다음에 live runtime planner를 trajectory producer로 연결하고, 같은 scenario를 MuJoCo headless regression으로 재현한다. Physics backend가 통과해도 connector bolt-hole alignment, measured calibration/latency, continuous swept collision, controller stop과 moving hardware reliability는 별도 hard gate로 남긴다.</p>
+<p>다음 구현 순서는 cuRoboV2 target-server compatibility 확인, exact xArm/Inspire sphere model과 ignore pair 생성, HPP-FCL cross-check corpus, fixed-shape batched IK/collision/trajopt adapter다. Physics 쪽은 MuJoCo에 workcell/object dynamics와 full-joint actuator를 추가해 saved event trajectory를 먼저 실행한 후, 같은 immutable scenario를 Isaac USD scene에 올린다. Physics backend가 통과해도 connector bolt-hole alignment, measured calibration/latency, continuous swept collision, controller stop과 moving hardware reliability는 별도 hard gate로 남긴다.</p>
 <div class="callout"><strong>성공 기준:</strong> 화면에서 캔을 붙여 움직이는 것이 아니라, exact runtime decision이 deadline 안에 dispatch되고 simulator의 state/contact로 contact → attachment → release → bin containment가 관측되며 비의도 충돌이 0인 run을 재현하는 것이다.</div>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
