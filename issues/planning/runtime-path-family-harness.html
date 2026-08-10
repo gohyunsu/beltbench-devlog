@@ -265,6 +265,39 @@
 <li>Source commit은 <a href="https://github.com/gohyunsu/beltbench/commit/c469dd1"><code>c469dd1</code></a>이며 local, GitHub <code>main</code>, server HEAD가 일치한다. Server의 기존 BODex native build 3개는 수정하거나 삭제하지 않았다.</li>
 </ul>
 
+<h2>2026-08-10: runtime 선택·handoff·feedback·Viser를 한 scenario로 결속</h2>
+<p>기존 event viewer는 각 파일의 내부 의미를 상당 부분 다시 검사했지만 runtime session, causality assessment, controller handoff, feedback session, motion/contact, robot/object/workcell과 release를 10개가 넘는 CLI 인자로 받았다. 개별 파일이 모두 valid해도 다른 run의 scene이나 feedback을 운영자가 실수로 조합할 여지가 있었다. 또한 실제 semantic join이 viewer 함수 안에 있어 Viser를 열기 전 별도 manifest를 만들 때 같은 검증을 재사용할 수 없었다.</p>
+
+<h3>구현한 closed scenario와 검증 순서</h3>
+<ol>
+<li><code>RuntimeVisualizationScenario</code>는 runtime session·causality assessment·controller handoff snapshot·feedback session·motion limits·moving contact·robot manifest·object manifest·workcell을 필수 source label로 고정한다. Chase assessment, release motion과 schedule 3종만 선택적이며 schedule은 all-or-none이다.</li>
+<li>모든 source는 scenario 위치 기준 상대 경로와 SHA-256으로 결속되고 manifest body 자체도 canonical SHA-256을 가진다. Source 순서, 중복·unknown label, 변경 파일, 잘못된 JSON type, partial schedule을 fail-closed한다.</li>
+<li>Viewer 안에 누적됐던 입력 조립을 <code>load_verified_event_trajectory_visualization_inputs()</code>로 이동했다. Builder와 viewer가 이 한 함수를 사용하므로 검증 규칙을 두 군데 복제하지 않는다.</li>
+<li>Semantic join은 causal runtime selection, workcell, exact arm·hand·object·connector, motion profile, moving contact와 optional chase/schedule을 request에 대조한다. Feedback은 같은 start clock·generation·scene context여야 하고 accepted diagnostic handoff를 checksummed ancestry로 포함하며 모든 command sample이 exact trajectory와 일치해야 한다.</li>
+<li><code>serve_event_trajectory.py --scenario</code>는 어떤 loose evidence 인자도 함께 받지 않는다. Viser는 1.0배속·Loop·Play로 시작하고 scenario ID와 execution-blocked 상태를 표시한다. 사용자가 UI에서 inspection 속도를 바꿀 수는 있지만 manifest의 initial replay semantics는 바뀌지 않는다.</li>
+<li>현재 local 저장소의 runtime session은 이전 planned-only fixture이며 accepted current handoff/feedback chain이 없다. 이를 다른 loose artifact와 조합해 current 통합 실행처럼 보이는 scenario를 만들지 않았다. 새 manifest는 실제로 같은 run에서 생성된 chain이 준비될 때만 materialize한다.</li>
+</ol>
+
+<h3>문제, 원인, 해결과 결과</h3>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>Valid한 loose file을 다른 run끼리 조합할 수 있음</td><td>Viewer가 각 경로를 독립 CLI argument로 수신</td><td>Closed source label, relative path, source digest와 manifest digest를 가진 단일 scenario 추가</td><td>Scene·handoff·feedback·policy substitution을 file load 전에 차단</td></tr>
+<tr><td>Builder와 viewer가 서로 다른 검증 규칙을 가질 위험</td><td>Semantic join이 viewer <code>main()</code>에 내장</td><td>Robot-neutral typed input composer로 완전히 이동하고 두 consumer가 동일 함수 호출</td><td>Manifest 작성 전에 accepted handoff와 complete feedback sample까지 검증</td></tr>
+<tr><td>Scenario에 loose override를 추가할 여지</td><td>기존 CLI compatibility 인자를 그대로 유지</td><td><code>--scenario</code>와 모든 loose evidence 입력을 명시적 상호 배제로 검사</td><td>Manifest를 읽은 뒤 command line에서 일부 source를 바꾸는 우회 제거</td></tr>
+<tr><td>실제 integrated artifact 없이 통합 완료처럼 보일 위험</td><td>기존 local session은 planned-only이고 current handoff가 없음</td><td>Contract·semantic integration test만 synthetic으로 표시하고 production local scenario 생성은 보류</td><td>재현 가능한 plumbing과 실제 run evidence를 분리</td></tr>
+<tr><td>Server full run 두 번이 무출력 exit 255</td><td>긴 quiet SSH run 중 transport가 종료됐고 remote process도 남지 않음</td><td>해당 run을 폐기하고 verbose output과 keepalive 사용</td><td>Test 결과가 없는 실행을 성공으로 오인하지 않음</td></tr>
+<tr><td>첫 verbose full run의 기존 sampled-path subprocess가 <code>SIGTERM</code></td><td>정확한 외부 종료 원인은 로그로 확정할 수 없음</td><td>실패 test를 같은 환경에서 단독 재실행하고 persistent SSH PTY에서 전체 suite 재실행</td><td>단독 1개와 최종 full 520개가 통과해 결정적 code failure가 재현되지 않음을 확인</td></tr>
+</table>
+
+<h3>검증 결과와 해석</h3>
+<ul>
+<li>새 manifest·semantic integration과 관련 기존 경계 59개가 local에서 3.923초에 통과했다. OpenCV 전용 3 module 14개는 calibration 환경에서 2.805초에 통과했다.</li>
+<li>Local planning-compatible 520개가 79.320초에 <code>testsRun=520 successful=True</code>로 통과했다. Python compile, line length, staged diff와 두 CLI help/fail-closed smoke도 통과했다.</li>
+<li><code>junjinyong</code> pinned planning 환경에서 focused 59개는 3.606초, persistent SSH final full 520개는 44.194초에 통과했다.</li>
+<li>Source commit은 <a href="https://github.com/gohyunsu/beltbench/commit/fa716d8"><code>fa716d8</code></a>이며 local, GitHub <code>main</code>, server HEAD가 일치한다. Server의 기존 BODex native build 3개는 수정하거나 삭제하지 않았다.</li>
+<li>이 scenario는 causal selection·diagnostic adapter acceptance·pure-delay kinematic feedback·1x replay를 재현한다. 실제 controller loop, dynamics/contact, continuous collision, measured latency·tracking, calibrated hardware와 grasp reliability authority는 제공하지 않는다.</li>
+</ul>
+
 <h2>남은 신뢰 경계와 다음 순서</h2>
 <p><code>ResidentPathFamilyProjector</code> 생성자는 bundle과 atlas의 구조적 상속을 검사하고 engine은 exact bundle 결합을 검사한다. 그러나 이것만으로 source file을 다시 hash하지 않는다. Production bootstrap은 timing 시작 전에 <code>verify_path_family_deployment_bundle_sources()</code>로 atlas, compiler/policy, reusable/tracking/stop path, latch certificate와 validation report를 모두 재검증해야 한다. 이번 synthetic fixture는 그 production source evidence가 아니다.</p>
 <ol>
