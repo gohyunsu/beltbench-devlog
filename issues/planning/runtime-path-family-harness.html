@@ -16,7 +16,7 @@
 <h1>검증된 grasp와 path-family를 최신 관측에서 실제 시간 순서로 선택한다.</h1>
 <p class="lede">문서와 개별 계약만 연결해 놓고 real-time pipeline이라고 부르지 않는다. 실제 projector, coordinator, bounded warm-start 경계, capacity-one scheduler와 causal recorder를 한 실행 경로로 묶고, 선택되거나 거부된 결과를 발생 시간 그대로 Viser가 재생할 수 있는 첫 production-shaped vertical slice를 구현했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/3e3de99"><code>3e3de99</code></a>이 runtime engine과 causal session, <a href="https://github.com/gohyunsu/beltbench/commit/697250e"><code>697250e</code></a>가 bounded multi-rate input-to-selection, <a href="https://github.com/gohyunsu/beltbench/commit/66f1061"><code>66f1061</code></a>이 exact future-start whole-trajectory handoff, <a href="https://github.com/gohyunsu/beltbench/commit/3ea93dd"><code>3ea93dd</code></a>가 accepted handoff와 기존 kinematic feedback의 in-memory causal binding, <a href="https://github.com/gohyunsu/beltbench/commit/37683bb"><code>37683bb</code></a>가 atomic handoff ancestry와 Viser cross-verification을 구현한다. Receipt와 generated feedback은 diagnostic evidence일 뿐이며 모든 trajectory는 계속 <code>execution_blocked</code>, <code>execution_authorized=false</code>다.</div>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/3e3de99"><code>3e3de99</code></a>이 runtime engine과 causal session, <a href="https://github.com/gohyunsu/beltbench/commit/697250e"><code>697250e</code></a>가 bounded multi-rate input-to-selection, <a href="https://github.com/gohyunsu/beltbench/commit/66f1061"><code>66f1061</code></a>이 exact future-start whole-trajectory handoff, <a href="https://github.com/gohyunsu/beltbench/commit/3ea93dd"><code>3ea93dd</code></a>가 accepted handoff와 기존 kinematic feedback의 in-memory causal binding, <a href="https://github.com/gohyunsu/beltbench/commit/37683bb"><code>37683bb</code></a>가 atomic handoff ancestry와 Viser cross-verification, <a href="https://github.com/gohyunsu/beltbench/commit/c469dd1"><code>c469dd1</code></a>이 atlas-only top-K보다 complete-path maximin을 먼저 적용하는 선택 경계를 구현한다. Receipt와 generated feedback은 diagnostic evidence일 뿐이며 모든 trajectory는 계속 <code>execution_blocked</code>, <code>execution_authorized=false</code>다.</div>
 
 <h2>Grasp 선택 기준을 다시 연결한 결론</h2>
 <p>AutoDex source 감사 결과는 바뀌지 않았다. BODex residual과 provider 순서, zero-margin sampled sphere collision, squeeze overlap, 한 방향 gravity hold, scene set cover, coverage 순서의 첫 planning 성공은 proposal 생성과 static diagnostic에는 유용하지만 moving conveyor command의 승인 기준은 아니다.</p>
@@ -213,6 +213,54 @@
 <li><code>junjinyong</code> pinned planning 환경에서 집중 33개는 3.729초, planning-compatible 509개는 77.939초에 통과했다.</li>
 <li>Local, GitHub <code>main</code>과 server HEAD는 <a href="https://github.com/gohyunsu/beltbench/commit/37683bb"><code>37683bb</code></a>로 일치한다. Server의 기존 BODex native output 3개는 보존했다.</li>
 <li>이 결과는 causal plumbing과 deterministic kinematic reference의 기능 회귀다. ROS transport, controller interpolation implementation, arm-hand atomic commit, measured tracking, dynamics/contact, watchdog/stop latency와 p95/p99 real-time evidence는 여전히 없다.</li>
+</ul>
+
+<h2>2026-08-10: AutoDex 필터와 complete-path 선택 순서 재감사</h2>
+<p>알고리즘 감사 대상은 checkout 이름이 아니라 public <code>willi19/autodex-code:main</code>의 exact commit <a href="https://github.com/willi19/autodex-code/commit/5ada1c077f60bae9af6f27b07619218f58422e50"><code>5ada1c0</code></a>이다. 현재 workspace의 <code>gohyunsu/autodex-code:main@350b1b1</code>은 site/document history이며 알고리즘 source는 같은 fork checkout의 <code>upstream/main@5ada1c0</code> commit object에서 읽었다. Working tree를 checkout하거나 덮어쓰지 않았다.</p>
+
+<h3>실제 필터와 채택 범위</h3>
+<table class="table">
+<tr><th>단계</th><th>AutoDex effective rule</th><th>BeltBench 결정</th></tr>
+<tr><td>Generator</td><td>BODex convergence와 provider-native 순서</td><td>Checksummed provenance로만 보존하고 filter·prior·rank로 사용하지 않음</td></tr>
+<tr><td>Static scene</td><td>Finite input, zero-activation-distance pregrasp world/self sphere collision</td><td>저비용 worklist 개념만 채택하고 named mesh와 positive margin으로 독립 재계산</td></tr>
+<tr><td>Squeeze</td><td><code>2 * grasp - pregrasp</code>에서 object sphere overlap</td><td>Contact identity·수·penetration·non-contact clearance가 없어 acceptance evidence로 거부</td></tr>
+<tr><td>MuJoCo hold</td><td>0.1 kg object, tabletop gravity 한 방향, 5 cm 또는 15 deg 이탈 실패</td><td>선택적 static diagnostic일 뿐 moving contact·payload·torque authority로 사용하지 않음</td></tr>
+<tr><td>Cache</td><td><code>coll_valid.npy</code>/<code>sim_eval.json</code> 재사용, <code>sim_only</code>은 squeeze contact 생략</td><td>완전한 input/evaluator checksum이 없어 authority로 거부</td></tr>
+<tr><td>Coverage</td><td>Pregrasp collision pass의 binary scene matrix를 greedy set cover</td><td>모든 hard gate 뒤 bounded offline portfolio coverage/diversity에만 사용</td></tr>
+<tr><td>Runtime</td><td>Endpoint collision, hand-dependent wrist heuristic, fixed-start IK, short lift, supplied/random order의 first successful plan</td><td>Order와 heuristic은 버리고 exact state complete-path gate와 maximin으로 대체</td></tr>
+</table>
+
+<p>BeltBench의 권한 경로는 identity/provenance, intrinsic named contact·penetration·non-contact/self/support clearance·task wrench·approach/closure/retention/release path, exact robot/hand/connector/workcell deployment IK·collision·joint·singularity, yaw×horizon uncertainty support, moving-contact pose/twist, complete task/stop path collision·dynamics·timing·freshness·deadline·correction을 각각 hard gate한다. Hardware moving-pick reliability lower bound가 없으면 이 수치가 모두 좋아도 실행은 차단된다. 통과 후보만 단위별 threshold로 정규화한 complete slack vector를 worst-to-best로 정렬해 lexicographic maximin으로 비교한다.</p>
+
+<h3>발견한 선택 순서 결함</h3>
+<p>Generic atlas query는 uncertainty support의 모든 cell에 공통인 grasp를 정적 grasp-context slack으로 정렬하고 <code>maximum_query_candidate_count</code>만 반환한다. 이 제한은 online exact planner의 계산예산에는 타당하지만, 이미 <code>maximum_resident_path_family_count</code>로 bounded된 reusable path-family projector도 같은 결과를 소비하고 있었다. 따라서 atlas 점수가 조금 낮지만 complete collision·dynamics·stop·deadline margin이 더 큰 path가 최종 비교 전에 사라질 수 있었다. 더구나 기존 query는 전체 공통 후보의 score를 계산한 뒤 output만 잘랐으므로 이 조기 제거는 내부 atlas 계산량도 줄이지 못했다.</p>
+
+<h3>수정한 경계</h3>
+<ol>
+<li>Generic rolling exact-search query는 기존 atlas top-K를 유지한다. 이를 안전성이나 최종 품질 기준으로 재해석하지 않는다.</li>
+<li><code>query_grasp_context_atlas_subset</code>은 startup에서 검증되고 수가 제한된 resident family grasp ID만으로 uncertainty-cell 교집합을 시작한다. Unknown, empty, duplicate ID는 hard error다.</li>
+<li><code>ResidentPathFamilyProjector</code>는 모든 resident family grasp의 worst-case context vector를 보존하고, complete-path validation과 live-correction vector를 합친 뒤 lexicographic maximin으로 정렬한다.</li>
+<li><code>maximum_query_path_family_count</code>는 이 combined order에 한 번만 적용한다. Active family 우선, latch, cutoff, hysteresis와 execution-blocked 의미는 바꾸지 않았다.</li>
+<li>과거 <code>assess_grasp_proposals.py</code>의 clearance/joint-travel weighted static order는 legacy diagnostic이며 screened shortlist, atlas, path-family runtime의 input이 아님을 README와 방법론에 명시했다.</li>
+</ol>
+
+<h3>문제, 원인, 해결, 결과</h3>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>Fork <code>main</code>을 AutoDex 알고리즘 branch로 오인 가능</td><td>Site/document history와 upstream source가 같은 checkout에 공존</td><td>Remote URL·commit graph를 대조하고 <code>upstream/main@5ada1c0</code>으로 문서·AGENTS 고정</td><td>현재 checkout branch와 무관한 재현 가능한 감사 기준 확보</td></tr>
+<tr><td>Atlas 정적 top-K가 complete-path 선택을 선점</td><td>Rolling planner용 output budget을 bounded path-family 경로에도 재사용</td><td>Resident grasp subset query 뒤 combined path maximin, 그 뒤 family bound 적용</td><td>정적 1위 <code>b</code>보다 complete-path bottleneck이 큰 <code>a</code>가 선택되는 회귀 시나리오 통과</td></tr>
+<tr><td>Legacy weighted static order와 현재 authority가 문서상 혼동 가능</td><td>두 CLI가 repository에 함께 유지됨</td><td>Legacy diagnostic은 현재 shortlist/atlas/runtime에 소비되지 않음을 명시</td><td>Weighted sum이 final ranking이라는 잘못된 해석 차단</td></tr>
+<tr><td>첫 전체 planning discovery에서 OpenCV import error 1개 표시</td><td><code>test_pose_artifacts</code>도 기존 calibration 환경 전용인데 처음 exclusion에서 누락</td><td>Planning-compatible 511개와 OpenCV 의존 3 module 14개를 환경별로 분리</td><td>Code failure가 아닌 환경 경계를 traceback으로 확인하고 두 suite 모두 통과</td></tr>
+<tr><td>회귀 fixture가 한 test 안에서 100줄 넘게 path family를 조립</td><td>Atlas support·anchor·latch·validation 변경을 inline 중복</td><td><code>_family_for_grasp</code> helper로 exact fixture 계약 추출</td><td>테스트 본문이 선택 순서 자체를 직접 표현</td></tr>
+</table>
+
+<h3>검증 결과</h3>
+<ul>
+<li>Atlas, projector, coordinator, engine와 runner 집중 회귀 67개가 최종 refactor 뒤 5.921초에 통과했다.</li>
+<li>OpenCV 전용 3 module을 제외한 planning-compatible 511개가 60.641초에 모두 통과했다.</li>
+<li>Calibration 환경의 OpenCV 의존 14개가 3.167초에 통과했다.</li>
+<li>Python source/scripts/tests compile, line-length와 <code>git diff --check</code>가 통과했다.</li>
+<li>Source commit은 <a href="https://github.com/gohyunsu/beltbench/commit/c469dd1"><code>c469dd1</code></a>이며 GitHub <code>main</code>에 push했다. 이 시점에는 아직 <code>junjinyong</code> 검증 전이므로 server 통과를 주장하지 않는다.</li>
 </ul>
 
 <h2>남은 신뢰 경계와 다음 순서</h2>
