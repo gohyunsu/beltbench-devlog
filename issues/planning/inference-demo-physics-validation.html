@@ -92,6 +92,18 @@ replay : the same evidence → Viser</pre>
 </tbody></table>
 <p>또한 assembly preflight는 <code>world_from_arm_base=identity</code>만 받는다. Calibrated base placement를 조용히 무시하지 않고, 이후 workcell scene builder 한 곳만 이 transform을 적용하게 한다. Connector transform, bolt-hole fit, mass, friction과 contact geometry는 여전히 provisional이다.</p>
 
+<h2>Actual workcell 조합과 contact audit</h2>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/f78c175"><code>beltbench@f78c175</code></a>에서 assembly importer를 재사용하는 MuJoCo workcell composer를 추가했다. Backend-neutral physics/report 계약은 <code>beltbench/contracts</code>, MuJoCo scene 생성은 <code>beltbench/simulation</code>에 분리했다. Composer는 checksummed xArm6·Inspire Left·양쪽 connector assembly에 calibrated perpendicular conveyor, robot mounting table, floor와 네 벽으로 구성된 큰 drop bin, upside-down stable pose와 provisional planar observation이 적용된 실제 Pepsi Light visual/collision mesh를 추가한다.</p>
+<p>실제 append-only preflight 결과는 MuJoCo 3.10.0에서 20 bodies, 19 joints, 25 qpos, 24 qvel, 31 geometries로 XML과 MJB 재로드를 통과했다. Conveyor deck top과 calibration frame도 수치적으로 일치했다. 이 결과는 scene composition만 검증하며 conveyor dynamics, actuator, contact lifecycle과 trajectory는 검증하지 않으므로 report는 항상 <code>execution_authorized=false</code>다.</p>
+<table><thead><tr><th>문제 또는 관찰</th><th>원인 분석</th><th>조치와 결과</th></tr></thead><tbody>
+<tr><td>Workcell composition에서 <code>trimesh</code> import 실패</td><td><code>environment/mujoco.yml</code>에는 의존성이 선언됐지만 이미 만들어진 실제 environment에는 설치되지 않아 선언과 실행 상태가 달랐다.</td><td>새 environment로 교체하지 않고 기존 environment에 exact <code>trimesh 4.8.3</code>을 설치했다. 이후 실제 GLB visual/collision instance를 OBJ로 변환하고 compile·reload했다.</td></tr>
+<tr><td>두 append-only run의 XML/MJB hash 불일치</td><td>출력 XML에 run별 absolute converted-mesh path가 들어가므로 서로 다른 output directory는 byte-identical하지 않다.</td><td>Converted visual/collision OBJ hash와 compiled dimensions가 동일함을 확인했다. 현재 주장은 semantic mesh와 scene 재현성이지 output directory와 무관한 XML/MJB byte identity가 아니다.</td></tr>
+<tr><td>기본 <code>q=0</code>에서 17 contacts와 최대 약 62 mm table/hand penetration</td><td>Assembly compile default를 유효한 robot start state로 잘못 해석했다.</td><td>저장된 playback의 첫 arm state와 open-hand state를 적용해 재검사했다. Table/hand contact는 사라졌으므로 q=0 결과를 trajectory blocker 근거로 사용하지 않는다.</td></tr>
+<tr><td>Playback 첫 state에서 세 contact 잔존</td><td>두 contact는 adjacent arm base/link1 약 1.285 mm, 하나는 허용되지 않은 hand base/thumb-2 약 6.95 mm penetration이다.</td><td>Base/link1은 backend pair semantics를 정밀 매핑해야 한다. 반면 hand base/thumb-2는 현 collision semantics에서 허용되지 않으므로 실제 blocker다. 기존 playback을 physics trajectory로 승격하지 않는다.</td></tr>
+<tr><td>MuJoCo body-level broad exclude로 contact를 없앨 유혹</td><td>현재 arm base geometry가 world에 fuse되어 world/link1 exclude는 link1과 모든 static workcell geometry의 contact까지 숨길 수 있다.</td><td>Broad exclude를 추가하지 않았다. Named geom-pair semantics 또는 assembly body 구조를 명시적으로 고친 뒤 HPP-FCL과 같은 state corpus에서 교차 검증한다.</td></tr>
+</tbody></table>
+<p>따라서 다음 physics 구현은 actuator와 moving belt를 먼저 덧붙이는 일이 아니다. Collision-free initial arm/hand command와 backend pair mapping을 확정하고, saved trajectory를 다시 생성·검증한 뒤 그 exact trajectory에 actuator tracking, moving object support, contact → retention → release → bin containment 관측을 단계적으로 추가한다.</p>
+
 <h2>발생한 문제: retention gain 1.0</h2>
 <p>Bounded policy의 첫 후보는 first-contact command 자체인 <code>gain=1.0</code>이다. 그러나 compute-node full evaluation은 시작 후 다음 오류로 종료됐다.</p>
 <pre>ValueError: retention gain must be finite and greater than one</pre>
@@ -117,8 +129,11 @@ replay : the same evidence → Viser</pre>
 <li>GPU probe 결과: RTX A6000, driver <code>535.161.07</code>, 49,140 MiB, compute capability 8.6, Python 3.10.12. Probe timing evidence는 정상이며 V2 minimum driver 580.65.06 불충족을 확정</li>
 <li>Compatibility gate 회귀는 local 관련 suite 33개와 target-server 계약 suite 6개 통과</li>
 <li>Source와 server checkout을 <code>220d5a7</code>로 fast-forward했고 server의 기존 untracked BODex native build는 보존</li>
+<li>Actual workcell 계약·composer 회귀 7개를 포함한 focused 18개 테스트가 local과 target server에서 모두 통과</li>
+<li>Actual workcell report를 분리된 contract loader로 재검증: 20/19/25/24/31 dimensions, execution authority false</li>
+<li>Source와 server checkout을 <code>f78c175</code>로 fast-forward했고 server의 기존 untracked BODex native build는 보존</li>
 </ul>
-<p>다음 구현 순서는 driver upgrade 가능성 또는 V1 usage approval 확인, exact xArm/Inspire sphere model과 ignore pair 생성, HPP-FCL cross-check corpus, fixed-shape batched IK/collision/trajopt adapter다. 승인 전 legacy install은 진행하지 않는다. Full evaluation의 117개는 grasp/path atlas의 입력 후보일 뿐이며 measured stable pose와 approved protocol이 생길 때까지 context-blocked다. Physics 쪽은 MuJoCo에 workcell/object dynamics와 full-joint actuator를 추가해 saved event trajectory를 먼저 실행한 후, 같은 immutable scenario를 Isaac USD scene에 올린다. Physics backend가 통과해도 connector bolt-hole alignment, measured calibration/latency, continuous swept collision, controller stop과 moving hardware reliability는 별도 hard gate로 남긴다.</p>
+<p>다음 구현 순서는 driver upgrade 가능성 또는 V1 usage approval 확인, exact xArm/Inspire sphere model과 ignore pair 생성, HPP-FCL cross-check corpus, fixed-shape batched IK/collision/trajopt adapter다. 승인 전 legacy install은 진행하지 않는다. Full evaluation의 117개는 grasp/path atlas의 입력 후보일 뿐이며 measured stable pose와 approved protocol이 생길 때까지 context-blocked다. Physics 쪽은 initial hand self-collision과 backend pair semantics를 먼저 해결하고 collision-free saved event trajectory를 재생성한 후 MuJoCo actuator·moving support·contact lifecycle을 붙인다. 같은 immutable scenario는 이후 Isaac USD scene에 올린다. Physics backend가 통과해도 connector bolt-hole alignment, measured calibration/latency, continuous swept collision, controller stop과 moving hardware reliability는 별도 hard gate로 남긴다.</p>
 <div class="callout"><strong>성공 기준:</strong> 화면에서 캔을 붙여 움직이는 것이 아니라, exact runtime decision이 deadline 안에 dispatch되고 simulator의 state/contact로 contact → attachment → release → bin containment가 관측되며 비의도 충돌이 0인 run을 재현하는 것이다.</div>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
