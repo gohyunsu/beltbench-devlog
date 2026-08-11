@@ -14,30 +14,32 @@
 <main class="wrap article">
 <div class="eyebrow">ISSUE-059 · 2026-08-12 · cuRobo V2 GPU qualification</div>
 <h1>RTX 3090에서 cuRobo V2 CUDA 12 kernel 경로를 재현하되 실행 권한과 분리한다.</h1>
-<p class="lede">새 Tailscale GPU host가 cuRobo V2를 구동할 수 있는지 추측으로 판단하지 않고, private project root 아래 exact source와 별도 venv를 만들고 실패를 포함한 immutable run을 남겼다. Source commit <a href="https://github.com/gohyunsu/beltbench/commit/0968d4c"><code>0968d4c</code></a>에서 Franka/table 기준 FK·world collision·self collision·joint-bound CUDA smoke가 통과했다. 그러나 xArm6/Inspire Left/connector, moving object, continuous collision, parity와 deadline은 검사하지 않았으므로 controller 실행은 계속 차단한다.</p>
+<p class="lede">새 Tailscale GPU host가 cuRobo V2를 구동할 수 있는지 추측으로 판단하지 않고, private project root 아래 exact source와 별도 venv를 만들고 실패를 포함한 immutable run을 남겼다. v0.8.0 tag의 API 결함을 공식 <code>main@8e734f3</code>과 비교한 뒤 후자를 adapter 후보로 선택했고, BeltBench <a href="https://github.com/gohyunsu/beltbench/commit/fa1591d"><code>fa1591d</code></a>가 그 full revision을 fail-closed policy에 고정한다. Franka/table 기준 CUDA smoke는 통과했지만 xArm6/Inspire Left/connector, moving object, continuous collision, parity와 deadline은 검사하지 않았으므로 controller 실행은 계속 차단한다.</p>
 
-<div class="callout"><strong>판정:</strong> 이 host는 cuRobo V2 CUDA 12 adapter 개발과 후속 qualification에 사용할 수 있다. 약 0.96 ms smoke 수치를 resident collision gate의 10 ms 달성 증거로 쓰면 안 된다. 실제 assembly와 동일 workload의 1,000회 p99, false-negative parity와 CUDA graph evidence가 별도로 필요하다.</div>
+<div class="callout"><strong>판정:</strong> 이 host와 exact official commit은 cuRobo V2 CUDA 12 adapter 개발과 후속 qualification에 사용할 수 있다. 약 1.00 ms smoke 수치를 resident collision gate의 10 ms 달성 증거로 쓰면 안 된다. 실제 assembly와 동일 workload의 1,000회 p99, false-negative parity와 CUDA graph evidence가 별도로 필요하다.</div>
 
 <h2>관찰한 환경</h2>
 <table class="table">
 <tr><th>항목</th><th>관찰값</th><th>판정</th></tr>
-<tr><td>OS / Python</td><td>Ubuntu 22.04.1 / Python 3.10.12</td><td>v0.8.0의 Python 3.10 경로 사용 가능</td></tr>
+<tr><td>OS / Python</td><td>Ubuntu 22.04.1 / Python 3.10.12</td><td>선택한 official commit의 Python 3.10 경로 사용 가능</td></tr>
 <tr><td>GPU</td><td>NVIDIA GeForce RTX 3090, compute capability 8.6, 약 24 GB</td><td>Volta 이상 kernel 조건 충족</td></tr>
 <tr><td>Driver</td><td>535.309.01, CUDA capability 12.2 표시</td><td>CUDA 12.x Linux minor compatibility 하한 525.60.13 이상</td></tr>
 <tr><td>CPU / RAM</td><td>32 logical CPU, 약 125 GiB RAM</td><td>offline corpus와 simulator 병행 여지 있음</td></tr>
-<tr><td>Storage</td><td>시작 시 약 137 GB, 두 venv 생성 후 약 127 GB 여유</td><td>추가 대형 환경은 정리 정책 필요</td></tr>
+<tr><td>Storage</td><td>시작 시 약 137 GB, 세 venv 생성 후 약 115 GB 여유</td><td>각 venv가 5.8~5.9 GB이므로 실패 환경도 보존 기간을 정해야 함</td></tr>
 <tr><td>System tooling</td><td>host nvcc·conda 없음, Docker daemon 권한 없음</td><td>user-space Python venv와 runtime compilation 선택</td></tr>
 </table>
-<p>작업 checkout, venv와 run은 모두 사용자 전용 <code>~/.agile/projects</code> 아래에 두었다. 공용 Python과 system package는 수정하지 않았고, private repository 인증 정보를 host에 새로 저장하지 않았다.</p>
+<p>작업 checkout, venv와 run은 모두 사용자 전용 private project root 아래에 두었다. 공용 Python과 system package는 수정하지 않았고, private repository 인증 정보를 host에 새로 저장하지 않았다.</p>
 
 <h2>고정한 source와 package</h2>
 <ul>
-<li>BeltBench final probe source: <code>0968d4c1ec08abc7766811c4464691342ff04a8e</code></li>
-<li>cuRobo V2 tag <code>v0.8.0</code>: <code>4ea77366ca48ee453e7df139e39fa6532af49f3b</code></li>
+<li>BeltBench policy commit: <code>fa1591dbd4c451110dde406307731ae97849fd0c</code></li>
+<li>BeltBench corrected-provenance final probe: <code>76db51aa65cbef85d8741713db656e55427d92aa</code></li>
+<li>거부한 cuRobo V2 tag <code>v0.8.0</code>: <code>4ea77366ca48ee453e7df139e39fa6532af49f3b</code></li>
+<li>선택한 official main source: <code>8e734f3ced1df898990bcd92de40abce475907db</code></li>
 <li>PyTorch: <code>2.5.1+cu121</code>, reported CUDA <code>12.1</code></li>
-<li><code>cuda-core==1.1.1</code>, <code>warp-lang==1.12.1</code></li>
+<li><code>cuda-core==1.1.1</code>, selected <code>warp-lang==1.16.0</code></li>
 </ul>
-<p>Editable shallow tag 설치는 distribution version을 <code>nvidia-curobo==0.0.0</code>으로 기록했다. 이 값은 release identity로 신뢰하지 않고 checkout commit을 권위 source로 사용한다. 향후 lock 생성에서는 이 packaging 이상도 제거해야 한다.</p>
+<p>Editable shallow checkout 설치는 두 source 모두 distribution version을 <code>nvidia-curobo==0.0.0</code>으로 기록했다. 이 값은 release identity로 신뢰하지 않는다. Runtime contract의 <code>required_backend_version=0.8.0</code>은 API baseline이고, schema 1.7의 full <code>required_source_revision</code>이 실제 code identity를 별도로 강제한다.</p>
 
 <h2>재현 절차를 분리한 이유</h2>
 <p>첫 구현은 venv 설치와 kernel probe를 한 shell script에 묶었다. Probe source를 고칠 때마다 약 5.9 GB venv를 다시 만들게 되어 유지보수와 실패 비교에 불리했다. 이를 다음 두 단계로 분리했다.</p>
@@ -54,30 +56,36 @@
 <li><strong>Warp 최신 버전 비호환:</strong> v0.8.0의 <code>warp-lang&gt;=0.10.0</code>가 1.16.0을 선택했고 <code>module 'warp' has no attribute 'torch'</code>로 scene 초기화가 실패했다. cuRobo 공식 changelog는 Warp 1.13의 API 변경을 기록하므로 1.13 직전 최신 patch인 <code>1.12.1</code>을 pin하고 probe가 exact version을 강제하게 했다.</li>
 <li><strong>World distance wrapper type 불일치:</strong> 공개 문서는 sphere tensor 입력을 설명하지만 내부 cost는 <code>KinematicsState</code>를 요구해 <code>'Tensor' object has no attribute 'robot_spheres'</code>가 발생했다. Environment smoke는 공개 FK가 만든 state를 cost primitive에 직접 전달하고 wrapper 실패를 별도 진단으로 보존했다.</li>
 <li><strong>World sphere cache가 0개로 초기화:</strong> Robot state에는 65 sphere가 있었지만 world cost buffer는 <code>num_spheres=0</code>이었다. Probe가 실제 kinematics sphere 수로 cost와 constraint buffer를 명시 초기화하고 초기값 0과 적용값 65를 JSON에 남겼다.</li>
+<li><strong>Trajectory helper의 2D/3D shape 불일치:</strong> v0.8.0의 <code>get_scene_self_collision_distance_from_joint_trajectory</code>와 <code>validate_trajectory</code>는 batched 3D joint tensor를 내부 2D 경로처럼 unpack해 실패했다. Probe는 이 실패를 숨기지 않고 helper별 오류로 기록했고, official <code>8e734f3</code>에서 같은 입력이 성공하는지 재검증했다.</li>
 <li><strong>Cost tensor 형상 불일치:</strong> World는 <code>[8,8,65]</code>, self collision은 <code>[8,8,1]</code>, joint bound는 <code>[8,8,7]</code>을 반환해 wrapper식 직접 덧셈이 실패했다. Smoke는 각 trailing cost 축을 state별로 합산해 <code>zero_cost</code> 진단만 계산하며 이를 collision validation이나 signed clearance로 표기하지 않는다.</li>
+<li><strong>Tag를 local patch할 유혹:</strong> v0.8.0 결함을 BeltBench probe에서 우회할 수는 있지만 실제 adapter까지 private patch에 의존하면 provenance와 재현성을 잃는다. Upstream 파일은 수정하지 않고 official <code>8e734f3</code> checkout을 별도 venv로 설치해 같은 probe를 재실행했다. Sphere cache가 처음부터 65개였고 세 공개 helper가 모두 성공해 이 exact commit을 선택했다.</li>
 </ol>
 
-<h2>최종 kernel smoke</h2>
+<h2>Source 비교와 선택</h2>
+<table class="table">
+<tr><th>Source / Warp</th><th>관찰</th><th>판정</th></tr>
+<tr><td><code>v0.8.0@4ea7736</code> / 1.12.1</td><td>초기 sphere cache 0, 공개 helper 3개 실패, median 0.946 ms</td><td>환경 진단은 가능하지만 runtime adapter 기준으로 거부</td></tr>
+<tr><td><code>main@8e734f3</code> / 1.16.0</td><td>초기 sphere cache 65, 공개 helper 3개 성공, 비교 probe median 1.049 ms</td><td>Exact adapter 후보로 선택</td></tr>
+</table>
+<p>두 수치는 동일한 Franka/table diagnostic workload이지만 20회 표본에 불과하다. 약 0.1 ms 차이는 source 선택 근거가 아니다. API 경로의 정상성, upstream provenance와 exact revision 재현성이 선택 기준이다.</p>
+
+<h2>Policy-bound 최종 kernel smoke</h2>
 <table class="table">
 <tr><th>항목</th><th>결과</th></tr>
+<tr><td>BeltBench / cuRobo source</td><td><code>76db51a</code> / <code>8e734f3</code></td></tr>
 <tr><td>Batch / horizon / DOF</td><td>8 / 8 / 7</td></tr>
-<tr><td>Robot collision spheres</td><td>65</td></tr>
+<tr><td>Robot / initial world sphere cache</td><td>65 / 65, probe 재설정 없음</td></tr>
 <tr><td>Warmup / measured calls</td><td>5 / 20</td></tr>
-<tr><td>Latency minimum</td><td>0.933 ms</td></tr>
-<tr><td>Latency median</td><td>0.957 ms</td></tr>
-<tr><td>Latency maximum</td><td>1.004 ms</td></tr>
+<tr><td>Latency minimum</td><td>0.962 ms</td></tr>
+<tr><td>Latency median</td><td>0.999 ms</td></tr>
+<tr><td>Latency maximum</td><td>1.078 ms</td></tr>
+<tr><td>Upstream helper diagnostics</td><td>trajectory distance, tensor world distance, trajectory validation 모두 성공</td></tr>
 <tr><td>Reduced zero-cost states</td><td>64 / 64, 진단값이며 parity evidence 아님</td></tr>
 </table>
-<p>각 measured call은 FK, world collision cost, self collision cost와 world constraint를 수행한 뒤 <code>torch.cuda.synchronize()</code>까지 포함한다. Joint-bound와 깨진 API 진단은 timing loop 밖이다. Trial 수가 20개뿐이고 Franka 정지 pose와 static table만 사용했으므로 real-time benchmark로 승격하지 않는다.</p>
+<p>각 measured call은 FK, world collision cost, self collision cost와 world constraint를 수행한 뒤 <code>torch.cuda.synchronize()</code>까지 포함한다. Joint-bound, cost reduction과 API helper diagnostics는 timing loop 밖이다. 이 경계를 JSON의 <code>measured_path</code>와 <code>untimed_checks</code>에도 명시한다. Trial 수가 20개뿐이고 Franka 정지 pose와 static table만 사용했으므로 real-time benchmark로 승격하지 않는다.</p>
 
-<h2>확인된 upstream API 위험</h2>
-<p>고정한 v0.8.0에서 다음 세 공개 helper가 모두 실패했다.</p>
-<ul>
-<li><code>get_scene_self_collision_distance_from_joint_trajectory</code>: 2D/3D joint tensor unpack 불일치</li>
-<li><code>get_collision_distance</code>의 문서화된 tensor 입력: 내부 <code>KinematicsState</code> 요구와 불일치</li>
-<li><code>validate_trajectory</code>: 같은 2D/3D unpack 불일치</li>
-</ul>
-<p>따라서 actual BeltBench adapter는 이 helper를 그대로 감싸면 안 된다. v0.8.0 primitive를 얇게 고정할지, 해당 결함이 수정된 공식 후속 commit을 새로 pin할지 먼저 비교하고 동일 smoke·parity corpus로 결정한다. Upstream source를 무기록 local patch로 고치는 방식은 채택하지 않는다.</p>
+<h2>Runtime policy에 반영한 경계</h2>
+<p>BeltBench realtime planning policy schema를 1.7로 올리고 full <code>required_source_revision</code>을 필수화했다. Backend family와 API version이 같더라도 capability가 다른 commit을 보고하면 <code>backend_source_revision_disagrees</code>로 거부한다. 이 변경은 전체 745 tests를 통과했으며 source commit <code>fa1591d</code>로 push했다. Official main이 향후 갱신돼도 자동 추종하지 않고, 새 revision은 별도 setup, probe, parity와 latency qualification을 다시 거쳐야 한다.</p>
 
 <h2>아직 주장할 수 없는 것</h2>
 <ol>
@@ -90,11 +98,11 @@
 
 <h2>다음 실행 순서</h2>
 <ol>
-<li>v0.8.0과 공식 후속 source의 API 결함 수정 여부를 exact commit으로 비교해 adapter 기준 revision을 선택한다.</li>
-<li>xArm6/Inspire Left/connector sphere model과 static workcell scene을 실제 manifest digest에서 생성한다.</li>
-<li>Dynamic-world, attached-sphere, release-envelope pass와 allowed-contact semantics를 fixed-shape GPU workload로 구현한다.</li>
-<li>동일 state/path corpus를 HPP-FCL과 비교해 false negative 0 gate를 통과시킨다.</li>
-<li>CUDA graph와 resident buffer를 켠 1,000회 benchmark가 policy p99와 zero miss를 통과한 뒤에만 runtime collision adapter를 activation한다.</li>
+<li>xArm6/Inspire Left/두 CAD connector를 하나의 validated kinematic/collision model로 만들고 실제 manifest digest에서 sphere model을 생성한다.</li>
+<li>Static workcell, time-indexed object, phase-specific allowed contact, attached object와 release envelope를 fixed-shape GPU workload로 분리한다.</li>
+<li>동일 state/path corpus를 HPP-FCL exact mesh와 비교해 false negative 0 gate를 통과시킨다.</li>
+<li>Resident buffers와 CUDA graph를 켠 actual workload의 1,000회 p50/p95/p99, miss count와 host-device transfer를 측정한다.</li>
+<li>Runtime policy와 mailbox가 같은 evidence digest를 승인한 뒤에만 cuRobo adapter를 controller publish 경로에 activation한다.</li>
 </ol>
 
 <p><a href="runtime-gpu-collision-admission.html">Runtime admission contract</a>, <a href="curobo-resident-collision-gate-direction.html">Resident cuRobo 방향</a>, <a href="inference-demo-physics-validation.html">Assembly와 physics 경계</a>를 함께 참고한다.</p>
