@@ -85,15 +85,15 @@
 <li><strong><code>pytest</code> 미설치:</strong> <code>beltbench-mujoco</code> 환경에는 pytest가 없었다. 새 의존성을 즉시 추가하지 않고 repository의 <code>unittest</code>로 실행했다.</li>
 <li><strong>기본 Python의 NumPy 부재:</strong> Base Python으로 새 timeline test를 실행해 import 전에 실패했다. Planning 환경에는 NumPy/SciPy, MuJoCo 환경에는 simulator dependency가 있으므로 suite를 역할별 interpreter로 분리했다.</li>
 <li><strong>Sandbox의 temp directory 실패:</strong> 비승인 <code>conda run</code>이 writable temp를 찾지 못해 Conda 자체가 실패했다. Python executable을 직접 사용하고 test write가 필요한 호출만 승인된 환경에서 실행했다.</li>
-<li><strong>30초 command yield:</strong> 합친 suite가 완료 전에 shell session으로 yield되어 summary를 잃었다. Resident/MuJoCo 18개와 lifecycle/Viser 10개로 분리해 각각 명시적 exit 0을 확인했다.</li>
+<li><strong>30초 command yield:</strong> 합친 suite가 완료 전에 shell session으로 yield되어 summary를 잃었다. Resident/MuJoCo와 lifecycle/Viser를 분리해 각각 명시적 exit 0을 확인했다.</li>
 <li><strong>대형 backend 책임:</strong> 첫 구현 후 backend가 753줄이었다. 기능은 통과했지만 유지보수 기준에 맞지 않아 verifier를 별도 모듈로 이동하고 같은 18개 회귀를 다시 통과시켰다.</li>
 </ol>
 
 <h2>검증 결과</h2>
 <ul>
-<li>Resident/MuJoCo 핵심 suite 18개: 모두 통과, exit 0</li>
+<li>Resident/MuJoCo 핵심 suite 20개: 모두 통과, exit 0</li>
 <li>Lifecycle/Viser suite 10개: 모두 통과, exit 0</li>
-<li>Admission/evidence round-trip과 CLI 경계 12개: 모두 통과</li>
+<li>Admission/evidence round-trip과 task gate 13개: 모두 통과</li>
 <li>Run CLI와 independent verify CLI <code>--help</code>: exit 0</li>
 <li>Actual v7 low-level headless probe: 7.859014x realtime</li>
 </ul>
