@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Resident full-command template · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-046 · 2026-08-11 · resident full-command template</div>
+<h1>전체 arm-hand event command를 먼저 고정하고, cuRobo는 arm prefix만 GPU에서 갱신한다.</h1>
+<p class="lede">Pre-contact capture의 범위를 바로잡은 뒤 splice 의미를 다시 검사했다. 단순히 first contact에서 기존 full-task reference suffix를 붙이는 방법도 안전하지 않았다. 현행 event schedule은 hand-close start가 first contact보다 앞서기 때문에, pre-contact request의 external hand hold와 source event trajectory의 hand closure가 이미 접촉 전에 충돌한다. 따라서 CPU에서 사후 suffix를 이어 붙이지 않고, close·contact·attach·lift·transfer·release·return 전체를 exact resident template으로 컴파일한 뒤 online cuRobo가 certified latch 전 arm prefix만 덮어쓰는 구조로 전환했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/5fb7c9a"><code>5fb7c9a</code></a>는 complete event request를 named arm/hand <code>time/q/qd/qdd</code>, exact waypoint/event/latch index와 source digest에 결속하는 offline template을 구현한다. 아직 GPU catalog overwrite, full output lease, controller adapter가 없으므로 <code>execution_authorized=false</code>이며 기존 pre-contact capture를 full pick으로 승격하지 않는다.</div>
+
+<h2>발생한 문제</h2>
+<table class="table">
+<tr><th>관찰</th><th>직접 원인</th><th>잘못된 해결의 위험</th></tr>
+<tr><td>현재 fixed-shape request는 <code>certified_preclose_external_hold</code>다.</td><td>온라인 입력은 arm prefix 최적화만 모델링하고 hand trajectory를 materialize하지 않는다.</td><td>Reference hand closure를 나중에 붙이면 실제 planner request에 없던 command가 추가된다.</td></tr>
+<tr><td><code>hand_close_start &lt; first_contact</code>다.</td><td>움직이는 물체를 잡으려면 접촉 전에 closure가 시작되는 complete event schedule이 필요하다.</td><td>Contact 시점 splice는 hand command 불연속을 이미 지나친다.</td></tr>
+<tr><td>Catalog entry는 digest, joint names, count만 보존했다.</td><td>Metadata가 complete suffix tensor와 event indices를 대신할 수 없었다.</td><td>Close·attach·drop이 어느 sample인지와 실제 <code>qd/qdd</code>를 검증할 수 없다.</td></tr>
+<tr><td>Pre-contact capture와 full reference의 provenance가 다르다.</td><td>하나는 planner/controller 경로, 다른 하나는 offline animation·simulation reference다.</td><td>CPU append는 실행되지 않은 suffix를 controller-consumed command처럼 보이게 한다.</td></tr>
+</table>
+
+<h2>원인 분석</h2>
+<p>문제는 suffix 파일 하나가 부족한 것이 아니라 command assembly의 권위가 정의되지 않은 것이다. Arm과 hand를 따로 생성한 뒤 contact에서 결합하면 event timing, interpolation, attachment collision semantics와 controller lineage가 분리된다. 실시간성을 이유로 이 결합을 online CPU 작업으로 남기면 매 trial의 allocation·serialization·검증 비용도 늘어난다. 올바른 경계는 complete synchronized command를 offline에 고정하고, online에서는 bounded prefix overwrite 한 번만 허용하는 것이다.</p>
+
+<h2>cuRobo 충돌 방향</h2>
+<p>사수님의 질문에 대한 최종 방향은 cuRobo를 online collision authority로 채택하는 것이다. 기존 HPP-FCL을 online loop에 그대로 두는 이유는 없다. 다만 sphere/cuboid 근사와 attached-object semantics가 exact mesh와 다를 수 있으므로 HPP-FCL을 제거하지 않고 offline 독립 oracle로 역할을 바꾼다.</p>
+<table class="table">
+<tr><th>모듈</th><th>배치</th><th>이유</th></tr>
+<tr><td>Neural multi-camera pose</td><td>GPU async</td><td>Image tensor와 model inference를 device에 유지하며 planning cadence와 분리한다.</td></tr>
+<tr><td>Batched FK/IK, self/static collision, arm-prefix trajopt</td><td>cuRobo V2 resident GPU</td><td>고정 batch·horizon·seed를 병렬 평가하고 world·path buffer를 재사용한다.</td></tr>
+<tr><td>Pre-attach moving target/contact collision</td><td>같은 cuRobo worker</td><td>각 sample의 예측 object pose와 named allowed-contact pair를 같은 time grid에서 평가한다.</td></tr>
+<tr><td>Post-attach collision</td><td>같은 cuRobo worker</td><td>물체를 attached geometry로 전환해 robot/workcell과 검사하고 release에서 분리한다.</td></tr>
+<tr><td>Hard-gate mask와 maximin reduction</td><td>GPU</td><td>실패 trajectory 전체를 host로 복사하지 않고 winner와 compact diagnostics만 반환한다.</td></tr>
+<tr><td>Timestamp/encoder join, freshness, deadline, cancel, controller I/O</td><td>CPU</td><td>작고 순서 의존적인 clock·I/O 상태는 GPU launch와 synchronization이 더 비싸다.</td></tr>
+<tr><td>Exact mesh false-negative 검사</td><td>HPP-FCL offline</td><td>동일 checksummed state corpus에서 cuRobo approximation의 누락을 독립 검출한다.</td></tr>
+<tr><td>MuJoCo·Isaac·Viser</td><td>Deadline 밖 async</td><td>Physics와 rendering은 검증·관찰 도구이지 control-loop authority가 아니다.</td></tr>
+</table>
+<p>즉 “가능한 모든 모듈의 GPU화”가 아니라 “critical-path의 병렬 계산과 데이터를 resident GPU에 유지”하는 것이 목표다. 작은 predictor나 freshness gate까지 옮기면 host-device synchronization과 오류 처리가 늘어 오히려 tail latency가 악화될 수 있다. cuRobo의 평균 속도도 hard deadline 증거가 아니므로 fixed shape, preallocation, CUDA graph replay, host round-trip 제한과 target-GPU p99/deadline-miss benchmark가 별도로 필요하다.</p>
+
+<h2>구현한 해결</h2>
+<ol>
+<li><code>ResidentEventCommandTemplate</code> schema 1.0을 추가했다. Template은 complete task duration, named arm/hand joints, source segment와 phase를 가진 exact <code>time/q/qd/qdd</code> samples를 보존한다.</li>
+<li>모든 source waypoint를 exact sample index로 넣고, replan cutoff·close start·contact·close complete·attach·release·detach event를 원래 waypoint와 window에 결속한다.</li>
+<li>모든 certified latch time을 subdivision boundary로 먼저 삽입한다. Reconstructed quintic의 arm/hand target이 latch certificate target과 exact 일치하지 않으면 compilation을 거부한다.</li>
+<li>Sampling은 source waypoint와 latch로 먼저 구간을 나눈 뒤 maximum interval 이하로 subdivision한다. Sample density를 바꿔도 physical event와 splice state가 이동하지 않는다.</li>
+<li>Bundle canonical digest, path-family plan digest, reusable event source SHA-256, event request canonical digest, motion-limit profile digest와 세 source file evidence를 모두 기록한다.</li>
+<li>Semantic verifier는 동일 bundle·request·motion profile에서 전체 sample과 binding을 재컴파일해 payload exact equality를 요구한다.</li>
+<li><code>compile_resident_event_command_template.py</code>는 bundle의 declared event/motion source를 재해시하고 write-once template을 생성한 뒤 source verification과 semantic reproduction을 즉시 수행한다.</li>
+<li>직접 dataclass 생성 경로도 boolean index, 비어 있는 ID, non-finite time을 거부하도록 fail-closed validation을 적용했다.</li>
+</ol>
+
+<h2>의도한 online assembly</h2>
+<ol>
+<li>Startup에서 accepted template 전체를 bounded GPU catalog에 한 번 upload한다.</li>
+<li>Runtime observation으로 path family와 certified latch를 고르고 template을 preallocated output slot에 device-to-device copy한다.</li>
+<li>cuRobo는 measured robot state부터 latch까지 arm sample만 overwrite한다. 첫 sample과 latch sample은 고정하고 내부 sample만 최적화한다.</li>
+<li>Splice에서 arm position·velocity·acceleration이 certificate tolerance 안인지 독립 validator가 확인한다. Hand schedule과 post-latch arm/hand suffix는 변경하지 않는다.</li>
+<li>Pre-attach object는 constant-yaw translating obstacle, contact phase는 named intentional pair, post-attach object는 attached geometry로 collision을 평가한다.</li>
+<li>하나의 full-task resident output lease만 controller에 전달한다. CPU post-hoc suffix append와 mixed provenance는 금지한다.</li>
+</ol>
+
+<h2>검증 결과</h2>
+<ul>
+<li>새 full-template 집중 테스트 5개가 통과했다.</li>
+<li>Event trajectory, path-family와 기존 arm-prefix를 포함한 인접 회귀 46개가 통과했다.</li>
+<li>Planning 환경의 전체 suite는 673개 중 668개 통과, 2개 기존 skip이었다. 3개 module import error는 선택적 <code>cv2</code>가 없는 기존 환경 분리 문제다.</li>
+<li>Calibration 환경에서 calibration·pickplace·pose module의 14개 테스트가 모두 통과했다.</li>
+<li>새 CLI <code>--help</code>, 전체 package/script byte-compile와 <code>git diff --check</code>가 통과했다.</li>
+</ul>
+
+<h2>현재 제한과 다음 단계</h2>
+<ul>
+<li>구현된 것은 offline full template이다. 기존 <code>ResidentPathCatalogEntry</code>, fixed-shape request, output lease, controller handoff와 capture는 계속 pre-contact scope다.</li>
+<li>GPU device-to-device template copy, arm-prefix overwrite mask, C2 splice validator와 full-task command binding은 아직 구현하지 않았다.</li>
+<li>Post-attach attached-object collision과 release transition을 실제 cuRobo kernel로 실행하지 않았다.</li>
+<li>Junjinyong server의 NVIDIA driver 535는 선택한 cuRobo V2 정책 최소 580.65.06보다 낮다. V2 parity·latency·deadline 결과를 주장할 수 없다.</li>
+<li>다음 구현은 full template을 resident catalog entry에 결속하고, target-collision batch와 full output lease를 같은 sample index 공간으로 바꾸는 것이다.</li>
+<li>그 다음 actual full command만 MuJoCo와 1x auto-loop Viser에 연결한다. Hardware 복구 후 controller interpolation, measured tracking과 grasp/drop 성공률을 검증한다.</li>
+</ul>
+
+<p><a href="precontact-command-replay-boundary.html">Pre-contact replay boundary</a>, <a href="curobo-realtime-collision-audit.html">cuRobo collision audit</a>, <a href="resident-command-lineage-and-capture.html">Resident command lineage</a>를 함께 참고한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
