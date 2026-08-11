@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Full-task resident validation · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-051 · 2026-08-11 · full-task resident validation</div>
+<h1>Nominal과 모든 abort route를 한 fixed-shape GPU validation lease로 닫는다.</h1>
+<p class="lede">교수님의 inference demo 우선 방향과 사수님의 “충돌에 cuRobo를 왜 사용하지 않는가”라는 질문을 실제 runtime 경계로 반영했다. Online에서는 cuRobo가 self/world/object continuous collision과 dynamics의 수치 authority를 맡고, CPU는 compact hard reduction, deadline, cancel과 controller I/O만 맡는 것이 타당하다. 하지만 단순히 cuRobo라는 backend 이름을 기록하는 것으로는 어떤 command, collision lifecycle과 abort route가 검증됐는지 증명할 수 없으므로 exact pass coverage와 CUDA event lineage를 typed lease로 강제했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/7a3debf"><code>7a3debf</code></a>는 full-task validation pass shape, source replay와 final lease를 구현한다. Current fixture는 19개 pass를 통과하지만 실제 cuRobo V2 kernel 결과가 아니며 target driver도 지원 조건을 만족하지 않는다. 따라서 planning-validated contract를 controller·hardware 실행 권한으로 사용하지 않는다.</div>
+
+<h2>왜 cuRobo와 GPU resident인가</h2>
+<table class="table">
+<tr><th>책임</th><th>선택</th><th>이유</th></tr>
+<tr><td>Arm prefix, FK/IK, self/world/object collision, dynamics</td><td>cuRobo V2 resident GPU</td><td>Candidate·horizon·joint 병렬성이 크고 동일 tensor를 planner와 validator가 복사 없이 소비할 수 있다.</td></tr>
+<tr><td>Nominal과 abort hard gate</td><td>GPU accept mask와 minimum margin reduction</td><td>전체 collision tensor 대신 작은 scalar/mask만 한 번 읽어 host-device round trip을 1회로 제한한다.</td></tr>
+<tr><td>Timestamp, deadline, cancel, controller ownership</td><td>CPU/controller</td><td>Host clock과 causal I/O 문제이며 GPU로 옮기면 launch·synchronization과 safety ownership만 복잡해진다.</td></tr>
+<tr><td>Exact mesh false-negative 감사</td><td>Offline HPP-FCL</td><td>Sphere/primitive online 모델의 배포 전 parity oracle이며 online fallback이 아니다.</td></tr>
+<tr><td>MuJoCo·Isaac·Viser</td><td>비동기 downstream</td><td>Physics와 시각화는 inference deadline이나 controller authority를 막지 않는다.</td></tr>
+</table>
+
+<h2>발견한 문제와 원인</h2>
+<ol>
+<li><strong>Full-task validation artifact 부재:</strong> Producer lease는 command tensor 쓰기 완료만 나타냈다. Nominal segmented collision, dynamics와 abort collision·dynamics·terminal coverage를 한 번에 확인할 방법이 없었다.</li>
+<li><strong>Host transfer 증가 위험:</strong> Pass마다 전체 result tensor를 host로 복사하거나 파일 evidence를 쓰면 GPU 가속 이득이 사라진다.</li>
+<li><strong>Validator 독립성 모호:</strong> Solver output을 같은 graph 결과로 승인하면 최적화 과정의 누락을 독립 검증이라고 부를 수 없다.</li>
+<li><strong>Producer backend lineage 누락:</strong> Producer lease가 output의 backend ID와 warmed runtime session backend를 비교하지 않았다. 임의 backend가 같은 allocation을 생산한 것처럼 기록될 수 있었다.</li>
+<li><strong>Draft motion limit 승격 위험:</strong> 형식상 정상인 draft limit으로 full-task validated lease를 만들면 hardware 의미가 과장된다.</li>
+</ol>
+
+<h2>구현한 해결</h2>
+<ul>
+<li>Pass 순서를 nominal collision lifecycle 전체, nominal dynamics, 각 abort window의 collision·dynamics·terminal-region으로 고정했다. Current pick-and-drop fixture는 3+1+5×3으로 19 slot이다.</li>
+<li>Dynamic-world pass는 world pose update와 time-indexed target contact를, attached pass는 attached-object collision을, drop pass는 release-envelope collision을 요구한다. 모든 collision pass는 robot self/world와 continuous collision operation을 포함한다.</li>
+<li>각 pass evidence는 exact command/tensor/lifecycle digest, sample range, resident source slot, source completion event와 operation set을 결속한다. Caller는 이 metadata를 지정하지 못하고 compact outcome만 제공한다.</li>
+<li>Validator backend와 CUDA graph는 producer와 달라야 한다. Final validation event는 nominal producer와 모든 abort upload event와 달라야 하며 source-aware verifier가 전체 lease를 재생성한다.</li>
+<li>GPU는 pass별 minimum normalized margin과 accept mask를 fixed result slot에 쓴다. Host readback은 1회, deadline 경로의 synchronous artifact write는 0으로 고정했다.</li>
+<li>Motion limits는 template digest와 정확히 같고 authority가 manufacturer 또는 measured여야 한다. Draft profile은 fail-closed한다.</li>
+<li>Producer lease도 output planner backend가 warmed runtime session backend와 같아야 생성되도록 강화했다.</li>
+</ul>
+
+<h2>구현 중 문제와 처리</h2>
+<ul>
+<li>첫 validation fixture에서 abort latch maximum을 0.5초로 임의 지정해 기존 abort catalog가 route continuation을 올바르게 거부했다. Production gate를 완화하지 않고 기존 exact fixture와 동일한 3.0초 bound로 수정했다.</li>
+<li>새 테스트가 통과한 뒤 source lineage를 다시 검토해 producer backend/session 불일치를 발견했다. Producer lease builder에 equality gate를 추가하고 foreign backend 회귀 테스트를 넣었다.</li>
+<li>Fixture motion profile은 원래 draft였다. Validated lease 성공 fixture만 manufacturer authority로 바꾸고 별도 draft rejection 테스트를 추가해 권한 차이를 숨기지 않았다.</li>
+<li>Contract payload 자체는 source 객체를 알 수 없으므로 generic <code>validate()</code>와 source-aware <code>verify()</code>를 분리했다. Verification은 producer output, request, template, nominal lifecycle, runtime session, abort catalog, route command/lifecycle와 motion profile에서 전체 pass를 재구성한다.</li>
+</ul>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Full-task validation, producer lease, full command와 abort 집중 테스트 21개가 통과했다.</li>
+<li>Planning 환경 전체 694개 중 689개가 통과하고 2개가 skip됐다. Error 3개는 기존 <code>cv2</code> import 환경 분리 문제뿐이다.</li>
+<li><code>beltbench-calibration</code> 환경에서 calibration·pickplace·pose artifact 14개가 모두 통과했다.</li>
+<li><code>compileall</code>, 공개 API import, line-length 검색, cached <code>git diff --check</code>가 통과했다.</li>
+<li>19-slot coverage, strategy별 GPU operation, missing·reordered·failed result, draft limits, producer/validator/graph/slot alias, foreign source evidence와 foreign producer backend를 회귀 테스트한다.</li>
+</ul>
+
+<h2>현재 제한과 다음 단계</h2>
+<p>현재 outcome은 contract test용 fixture이며 cuRobo가 계산한 signed distance나 dynamics margin이 아니다. Backend ID와 graph ID는 causal identity를 강제하지만 실제 CUDA stream wait와 event record는 runtime driver가 구현해야 한다. 또한 A6000 server의 driver 535는 선택한 cuRobo V2 0.8.0 정책의 최소 580.65.06을 만족하지 않아 V2 graph replay, p99와 parity를 측정하지 못했다.</p>
+<ol>
+<li>지원 driver 서버에서 fixed-shape 19-slot cuRobo V2 validator graph를 구현하고 exact source events를 stream wait로 연결한다.</li>
+<li>Target GPU 1,000 trial에서 deadline miss 0과 one-readback/zero-write를 계측하고 HPP-FCL corpus false negative 0을 확인한다.</li>
+<li>실제 accepted lease만 one-shot controller handoff로 넘기고 timeout은 release가 아니라 cancel·quarantine으로 처리한다.</li>
+<li>Controller 완료 뒤 allocator 재사용 전에 full-command capture를 생성해 MuJoCo와 actual-time Viser에 비동기로 연결한다.</li>
+</ol>
+
+<p><a href="exact-full-command-producer-lease.html">Exact full-command producer lease</a>, <a href="resident-abort-command-collision.html">Resident abort collision</a>, <a href="curobo-realtime-collision-audit.html">cuRobo real-time collision audit</a>를 함께 참고한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
