@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pre-contact command replay boundary · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-045 · 2026-08-11 · pre-contact command replay boundary</div>
+<h1>Resident capture의 실제 범위를 첫 접촉까지로 바로잡고, full-pick 검증과 분리한다.</h1>
+<p class="lede">직전 단계에서는 cuRobo planner request와 controller 이후 capture의 계보를 묶었지만, 다시 코드를 따라가 보니 capture가 담는 time grid는 path start부터 first contact까지만 존재했다. 반면 기존 Viser와 MuJoCo 경로는 close·attach·lift·transfer·drop·return을 포함한 별도 event reference를 소비한다. 두 자료를 하나의 exact command처럼 연결하면 실행하지 않은 suffix를 controller command로 오인하게 되므로, 먼저 계약과 시각화 범위를 명시적으로 축소했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/cd879f7"><code>cd879f7</code></a>은 resident binding·handoff·capture를 <code>path_start_through_first_contact</code>로 고정하고, exact sample과 진단 보간을 구분하는 checksummed Viser scenario를 추가한다. Attach 이후와 bin drop은 아직 controller-consumed command가 아니므로 MuJoCo command rollout에 연결하지 않는다.</div>
+
+<h2>발생한 문제</h2>
+<table class="table">
+<tr><th>관찰</th><th>원인</th><th>위험</th></tr>
+<tr><td>Fixed-shape request의 마지막 target sample이 <code>first_contact</code>였다.</td><td><code>fixed_shape_precontact_times</code>가 path start부터 contact까지만 time grid를 만든다.</td><td>Lease를 complete pick command로 해석하면 범위를 과장한다.</td></tr>
+<tr><td><code>ResidentPathCatalogEntry</code>에는 path digest와 waypoint count만 있고 suffix tensor가 없다.</td><td>현재 catalog 계약은 resident allocation identity이지 full event command materialization이 아니다.</td><td>Corrected prefix와 certified suffix가 실제로 이어졌는지 재현할 수 없다.</td></tr>
+<tr><td>기존 Viser/MuJoCo는 complete <code>EventScheduledTrajectoryRequest</code>를 소비한다.</td><td>이 경로는 offline reference animation과 physics diagnostic을 위해 먼저 구현됐다.</td><td>Pre-contact capture와 reference suffix를 섞으면 mixed provenance가 exact command처럼 보인다.</td></tr>
+<tr><td>Lease layout은 <code>time/q/qd/qdd</code>만 선언한다.</td><td>Controller의 sample-between interpolation mode는 아직 계약에 없다.</td><td>샘플 사이 quintic을 실제 controller 명령이라고 잘못 주장할 수 있다.</td></tr>
+</table>
+
+<h2>원인 분석</h2>
+<p>문서의 목표 상태와 현재 코드 상태가 한 단계 어긋나 있었다. 설계상 목표는 mutable arm prefix를 exact resident suffix에 splice하는 것이지만, 구현된 결과는 pre-contact prefix request와 그 출력 lease까지만 닫혀 있다. Catalog metadata를 실제 suffix tensor로 간주한 것이 모순의 직접 원인이다. 따라서 시각화 backend를 먼저 연결하는 대신, 현재 증거가 말할 수 있는 범위를 줄이는 것이 타당하다.</p>
+
+<h2>충돌 검사와 GPU 방향</h2>
+<p>사수님의 질문에 대한 결론은 명확하다. 최종 online collision을 순차 HPP-FCL Python 경로로 두지 않고 cuRobo GPU worker에 둔다. 다만 모든 모듈을 무조건 GPU화하는 것도 타당하지 않다. 큰 fixed-shape batch와 resident data reuse가 가능한 hot path만 CUDA에 두고, 작은 ordered state와 I/O를 CPU에 남긴다.</p>
+<table class="table">
+<tr><th>단계</th><th>최종 배치</th><th>판단</th></tr>
+<tr><td>Multi-camera pose network</td><td>GPU async</td><td>영상 tensor와 neural inference를 device에 유지한다.</td></tr>
+<tr><td>Batched FK/IK, self/static collision, moving-target collision, arm-prefix trajopt</td><td>cuRobo V2 resident GPU</td><td>Grasp·yaw·intercept time·seed batch를 한 번에 평가하고 intermediate D2H를 피한다.</td></tr>
+<tr><td>Feasibility mask와 robust-slack reduction</td><td>같은 GPU worker</td><td>모든 trajectory를 host로 복사하지 않고 compact winner만 반환한다.</td></tr>
+<tr><td>Timestamp/encoder join, freshness/deadline/cancel state, controller transport</td><td>CPU</td><td>작은 branch-heavy 상태는 kernel launch와 synchronization 비용이 더 클 수 있다.</td></tr>
+<tr><td>Exact mesh disagreement 검사</td><td>HPP-FCL offline oracle</td><td>cuRobo sphere/cuboid approximation의 false negative 0 activation gate로 유지한다.</td></tr>
+<tr><td>MuJoCo·Isaac·Viser</td><td>Control deadline 밖 async consumer</td><td>Physics와 rendering이 다음 planning decision을 지연시키지 않게 한다.</td></tr>
+</table>
+<p><a href="https://arxiv.org/abs/2310.17274">cuRobo</a>의 병렬 seed와 GPU motion generation 결과는 이 placement의 근거지만 hard deadline 자체를 증명하지는 않는다. Conveyor grasping의 bounded online 경로는 <a href="https://www.roboticsproceedings.org/rss16/p031.html">provably constant-time conveyor replanning</a>처럼 offline reusable path set과 bounded update를 결합하는 편이 현실적이다. <a href="https://arxiv.org/abs/2103.10562">dynamic grasping의 reachability/motion-aware ranking</a>도 online global search보다 reachability prefilter와 이전 plan reuse를 지지한다. BeltBench는 이를 compiled path-family, bounded cuRobo warm start와 maximin slack 선택으로 반영한다.</p>
+
+<h2>구현한 해결</h2>
+<ol>
+<li><code>ResidentTrajectoryCommandBinding</code> schema 1.1에 command scope와 <code>captured_sample_points_only</code> interpolation authority를 추가했다.</li>
+<li><code>ResidentWarmStartControllerHandoff</code> schema 1.1은 dispatch mode를 <code>diagnostic_precontact_resident_segment</code>로 제한하고 scheduled end와 first-contact timestamp의 exact 일치를 요구한다.</li>
+<li><code>ResidentTrajectoryCapture</code> schema 1.1은 post-controller pre-contact sample만 기록하며 binding의 scope와 interpolation authority를 교차 검증한다.</li>
+<li>새 Viser scenario는 capture, fixed planner request, robot manifest, object manifest, workcell의 다섯 source path와 SHA-256을 닫힌 집합으로 결속한다.</li>
+<li>Input loader는 request digest, named joint order, exact time grid, object ID와 conveyor support obstacle을 fail-closed로 결합한다.</li>
+<li>Viewer는 actual arm·hand·connector·object·workcell asset을 사용하고 1.0배 실제 시간으로 자동 반복한다. 모든 label은 하나의 toggle로 제어한다.</li>
+<li>Exact timestamp에서는 캡처된 <code>q/qd/qdd</code>만 표시한다. 그 사이의 quintic-Hermite 상태에는 별도 diagnostic reconstruction ID를 붙이고 controller authority를 부여하지 않는다.</li>
+<li>MuJoCo 연결은 의도적으로 보류했다. 현재 capture에는 attach, transport, release와 containment command가 없기 때문이다.</li>
+</ol>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Resident·controller·arm-prefix·actual-time playback 집중 회귀 33개가 통과했다.</li>
+<li>cuRobo collision backend, acceleration policy와 path-family 전체를 포함한 확장 회귀 133개가 통과했다.</li>
+<li>Planning 환경의 전체 <code>tests/</code> suite는 668개 중 665개 통과, 2개 기존 skip이었다. 나머지 3개는 해당 환경의 선택적 <code>cv2</code> 부재로 수집되지 않았다.</li>
+<li>수집 실패한 calibration·pickplace·pose 14개는 OpenCV가 있는 calibration 환경에서 모두 통과했다.</li>
+<li>Viser 환경에서 새 server CLI import와 <code>--help</code>를 확인했고, 전체 변경 package·script byte-compile과 <code>git diff --check</code>가 통과했다.</li>
+</ul>
+
+<h2>현재 제한</h2>
+<ul>
+<li>현재 capture fixture는 lifecycle contract 검증용이며 실제 cuRobo V2 kernel 출력이 아니다.</li>
+<li>Junjinyong server의 NVIDIA driver 535는 선택한 cuRobo V2 정책 최소 580.65.06보다 낮아 sphere fit, parity와 deadline benchmark를 실행할 수 없다.</li>
+<li>Pre-contact viewer는 grasp attach나 drop 성공을 보여주지 않는다. 기존 full animation은 계속 reference-only다.</li>
+<li>Controller interpolation과 measured encoder feedback이 없으므로 sample 사이 motion과 tracking accuracy를 증명하지 않는다.</li>
+</ul>
+
+<h2>다음 작업 순서</h2>
+<ol>
+<li>Corrected prefix와 exact resident suffix tensor를 실제로 materialize하고 complete event time grid·joint order·event state에 결속한다.</li>
+<li>Controller interpolation semantics와 full command digest를 lease/capture에 포함한다.</li>
+<li>그 complete command만 MuJoCo contact·attach·transport·release·containment rollout과 full-task Viser replay에 연결한다.</li>
+<li>Compatible driver가 확보되면 actual xArm6·Inspire Left·connector·belt·bin scene으로 cuRobo V2 parity와 p50/p95/p99·deadline miss를 측정한다.</li>
+<li>Hardware 복구 뒤 measured feedback, camera/encoder latency, calibration error와 physical grasp/drop 성공률을 같은 clock lineage에 추가한다.</li>
+</ol>
+
+<p><a href="resident-command-lineage-and-capture.html">Resident command lineage</a>, <a href="curobo-realtime-collision-audit.html">cuRobo online authority audit</a>, <a href="runtime-path-family-harness.html">Runtime path-family harness</a>를 함께 참고한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
