@@ -16,7 +16,7 @@
 <h1>Nominal full path가 안전해도 어느 상태에서나 취소 가능한 것은 아니다.</h1>
 <p class="lede">Full-task object collision lifecycle 다음에 바로 GPU output lease를 만들려 했으나 stop-path 의미를 재감사했다. 현행 compiler와 validator는 replan cutoff의 <code>conveyor</code> 상태에서 시작하는 단 하나의 braking path만 허용한다. 이는 contact, attachment, transport, release, return에서 controller cancel을 처리할 수 있다는 증거가 아니다. 이 누락을 닫기 전 full-command lease를 controller-ready로 선언하면 nominal path 검증과 runtime fault recovery를 혼동하게 된다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/dd9978f"><code>dd9978f</code></a>는 full-command request가 cuRobo output·독립 validation뿐 아니라 <code>phase_conditioned_abort_coverage</code>도 요구하도록 blocked reason을 강화했다. <code>docs/full-command-abort-strategy.md</code>에 hardware protective stop과 software cancel의 책임, object-state별 abort mode와 resident catalog 요구를 고정했다.</div>
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/236d879"><code>236d879</code></a>은 full-grid abort catalog schema 1.1과 compiler를 구현했다. Controller가 보고한 greatest-reached nominal sample마다 정확히 하나의 phase-conditioned route를 O(1)로 선택하고, non-terminal window는 반드시 미래 latch를 사용한다. 다만 catalog는 실제 abort tensor와 collision lifecycle의 digest만 참조하므로 실행 권한은 계속 차단된다.</div>
 
 <h2>확인된 사실</h2>
 <ul>
@@ -24,6 +24,16 @@
 <li>Sampled path validator도 replan cutoff source와 stop path의 모든 frame이 <code>conveyor</code>인지 검사한다.</li>
 <li><code>CompiledConveyorPathFamily</code>의 모든 certified latch는 replan cutoff 이전에 있어야 한다. 기존 latch를 post-contact abort latch로 재사용할 수 없다.</li>
 <li>따라서 기존 <code>stop_path</code> metric이 통과해도 contacting·attached·released 상태의 취소 coverage는 0이다.</li>
+</ul>
+
+<h2>구현 중 발견한 추가 원인</h2>
+<p>첫 구현은 nominal sample의 object state만으로 abort mode를 자동 선택했다. 집중 테스트는 통과했지만 controller cancel은 sample 시각에만 도착하지 않는다. 두 sample 사이에서 cancel이 오면 현재 window의 latch가 이미 과거가 될 수 있었다. 또한 object state가 <code>attached</code>인 동안에도 transport 구간과 <code>release_open_start</code> 이후 commit 구간은 취소 의미가 다르다. 따라서 object state-only routing은 실제 controller semantics를 표현하지 못한다.</p>
+<ul>
+<li>Runtime key를 exact event가 아니라 controller-reported <code>greatest_reached_nominal_sample</code>로 정의했다.</li>
+<li>마지막 command sample을 제외한 모든 window에서 <code>abort_latch_sample_index &gt; last_nominal_sample_index</code>를 강제했다.</li>
+<li>Contact와 release/placement commit guard를 물리 event보다 앞에서 시작하도록 route spec이 명시적으로 mode를 선언한다.</li>
+<li>Drop의 <code>released → contained</code>와 이미 containment가 끝난 <code>contained</code> robot-only stop을 분리했다.</li>
+<li><code>pick_and_place</code>도 지원하도록 <code>complete_placement_then_robot_stop</code>을 drop commit과 별도 terminal state로 정의했다.</li>
 </ul>
 
 <h2>배제한 접근</h2>
@@ -51,20 +61,33 @@
 <tr><td>Precontact conveyor</td><td>Jerk-limited arm stop</td><td>Pregrasp/open 유지, object는 belt translation 지속</td></tr>
 <tr><td>Contacting</td><td>짧은 certified interval을 attach까지 완료한 뒤 attached abort</td><td>Closure/chase를 중간 hold하지 않음</td></tr>
 <tr><td>Attached</td><td>Belt/table에서 떨어진 hold pose로 감속</td><td>Exact retention command와 attached geometry 유지</td></tr>
-<tr><td>Released/contained</td><td>Drop transition을 완료하고 release envelope 밖에서 retreat/stop</td><td>Ballistic object를 다시 attach하지 않음</td></tr>
+<tr><td>Release commit</td><td>Hand-open/drop transition을 완료하고 release envelope 밖에서 retreat/stop</td><td>Attached/released source, contained terminal</td></tr>
+<tr><td>Contained</td><td>완료된 drop을 반복하지 않고 robot-only stop</td><td>Contained object는 bin에 남김</td></tr>
+<tr><td>Placement commit</td><td>Hand-open/place를 완료하고 supported object와 분리</td><td>Attached source, placed terminal</td></tr>
 <tr><td>Placed</td><td>Supported object와 분리 후 stop</td><td>Object를 static world geometry로 검사</td></tr>
 <tr><td>Return</td><td>Robot-only jerk-limited stop</td><td>Attached object 없음</td></tr>
 </table>
 
 <h2>실시간성 판단</h2>
 <p>Abort 경로는 online search하지 않는다. Nominal catalog와 함께 fixed shape tensor, collision pass, result buffer를 preallocate하고 CUDA graph를 warm-up한다. Runtime critical path는 current sample/state lookup, device-resident route selection, validation event와 one-shot lease handoff뿐이다. GPU는 FK·dynamics·continuous collision·hard reduction을 수행하고 CPU는 cancellation state, deadline, controller transport와 lease ownership만 담당한다.</p>
+<p>모든 모듈을 무조건 GPU로 옮기지는 않는다. cuRobo V2는 batched FK/IK, self/world/object collision, trajectory optimization과 compact reduction처럼 병렬성이 크고 tensor를 계속 resident로 유지할 수 있는 연산의 online authority로 둔다. Timestamp/freshness, greatest-reached index, cancel escalation, hardware protective stop과 controller acknowledgement는 작은 ordered state와 I/O이므로 CPU에 둔다. HPP-FCL exact mesh는 online fallback이 아니라 cuRobo sphere representation의 false-negative를 찾는 offline deployment oracle이다.</p>
+
+<h2>구현된 계약</h2>
+<ul>
+<li><code>ResidentAbortRouteSpec</code>은 각 window의 coverage, 미래 latch, abort mode, fixed-shape command/tensor/collision digest와 CUDA catalog slot/event를 입력한다.</li>
+<li><code>ResidentFullCommandAbortCatalog</code>은 nominal time/phase/object-state grid, attach/detach에서 겹치는 collision pass, per-sample window index와 최대 continuation 시간을 source digest에 고정한다.</li>
+<li>Nominal과 abort slot/event alias, coverage 누락·중복, 잘못된 source state, 과거 latch, policy deadline 초과, runtime/template/lifecycle source mismatch를 fail closed한다.</li>
+<li>Contract 자체는 <code>execution_blocked</code>다. Fake fixture digest가 존재해도 cuRobo output, continuous validation 또는 controller lease로 승격되지 않는다.</li>
+</ul>
 
 <h2>검증 결과와 현재 제한</h2>
 <ul>
-<li>Blocked reason 변경 후 full-command 집중 테스트 6개가 통과했다.</li>
-<li>현재 phase-conditioned abort command, coverage manifest, resident abort lease와 controller adapter는 아직 구현하지 않았다.</li>
+<li>Abort/full-command 집중 테스트 10개가 통과했다.</li>
+<li>Planning 환경 전체 683개 중 678개가 통과하고 2개가 skip됐다. Error 3개는 기존 planning 환경의 <code>cv2</code> 미설치에 따른 import error뿐이다.</li>
+<li>OpenCV가 설치된 <code>beltbench-calibration</code> 환경에서 해당 3개 모듈의 14개 테스트가 모두 통과했다.</li>
+<li>Phase-conditioned coverage catalog는 구현했지만 실제 abort <code>time/q/qd/qdd</code>, abort object collision lifecycle, cuRobo upload/validation event, resident abort lease와 controller adapter는 아직 구현하지 않았다.</li>
 <li>Contact-to-attach commit interval의 허용 최대 시간은 hardware tracking과 protective-stop 측정 전에는 승인할 수 없다.</li>
-<li>다음 구현은 nominal sample 전체를 덮는 typed abort-window/catalog contract와 offline compiler다. 그 다음에만 full-task output lease와 independent validator를 조립한다.</li>
+<li>다음 구현은 각 route의 실제 fixed-shape abort command와 independently generated collision/dynamics evidence다. 그 다음에만 full-task output lease와 independent validator를 조립한다.</li>
 </ul>
 
 <p><a href="segmented-curobo-object-collision.html">Segmented object collision</a>, <a href="resident-full-command-template.html">Resident full-command template</a>, <a href="resident-controller-lease-ownership.html">Resident controller lease ownership</a>을 함께 참고한다.</p>
