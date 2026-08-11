@@ -16,7 +16,7 @@
 <h1>GPU에 옮길 수 있는 코드가 아니라, 제어 주기의 resident batch hot path만 cuRobo로 가속한다.</h1>
 <p class="lede">실시간성이 중요하다는 이유로 모든 모듈을 GPU로 옮기면 작은 상태기계와 장치 I/O까지 kernel launch와 host-device 동기화 비용을 부담한다. BeltBench는 deadline을 직접 줄이는 고정 크기 수치 연산만 GPU에 상주시킨다. cuRobo V2는 최종 온라인 충돌·arm-prefix 최적화 권위자 후보지만, 현재는 exact assembly parity와 서버 runtime 조건을 충족하지 못했으므로 HPP-FCL을 offline oracle로 유지한다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/474a9f3"><code>474a9f3</code></a>에서 cuRobo scene 변환을 보수적으로 수정했고, <a href="https://github.com/gohyunsu/beltbench/commit/4396cef"><code>4396cef</code></a>에서 in-memory result와 synchronous artifact write 0회 gate를 정책·capability·raw trial에 추가했다. 이는 collision-model compiler와 activation gate의 수정이지 cuRobo online authority 활성화가 아니다. <code>junjinyong</code> A6000의 driver <code>535.161.07</code>은 pinned V2 정책의 최소 <code>580.65.06</code>을 충족하지 않는다.</div>
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/474a9f3"><code>474a9f3</code></a>에서 cuRobo scene 변환을 보수적으로 수정했고, <a href="https://github.com/gohyunsu/beltbench/commit/4396cef"><code>4396cef</code></a>에서 in-memory result와 synchronous artifact write 0회 gate를 추가했다. <a href="https://github.com/gohyunsu/beltbench/commit/f868873"><code>f868873</code></a>은 concrete backend의 transport 선언까지 activation evidence에 결속한다. 이는 collision-model compiler와 activation gate의 수정이지 cuRobo online authority 활성화가 아니다. <code>junjinyong</code> A6000의 driver <code>535.161.07</code>은 pinned V2 정책의 최소 <code>580.65.06</code>을 충족하지 않는다.</div>
 
 <h2>최종 모듈 배치</h2>
 <table class="table">
@@ -56,7 +56,7 @@
 
 <h2>In-memory 결과 gate</h2>
 <p>이전 benchmark는 CUDA graph, resident buffer와 host-device 왕복 횟수를 검사했지만, solver가 반환 직전에 파일을 썼는지 또는 파일 reference만 반환했는지는 구분하지 못했다. 따라서 짧게 측정된 총 latency만으로 file-backed adapter가 통과할 수 있었다.</p>
-<p>Realtime acceleration schema를 policy/capability <code>1.6</code>, raw trial <code>1.3</code>으로 올렸다. Target policy는 <code>required_result_transport=in_memory</code>와 <code>maximum_synchronous_artifact_writes=0</code>을 요구한다. Capability가 filesystem transport를 선언하거나 한 trial이라도 다른 transport 또는 동기 write를 관찰하면 activation report가 실패한다. 기존 warm-start output type은 여전히 file evidence 중심이므로 실제 cuRobo adapter 구현 전에 typed in-memory trajectory와 bounded asynchronous materializer로 교체해야 한다.</p>
+<p>Realtime acceleration schema를 policy/capability <code>1.6</code>, raw trial <code>1.3</code>으로 올렸다. Target policy는 <code>required_result_transport=in_memory</code>와 <code>maximum_synchronous_artifact_writes=0</code>을 요구한다. Capability, raw trial, concrete backend instance 중 하나라도 filesystem transport를 선언하거나 한 trial이라도 동기 write를 관찰하면 activation이 실패한다. 현행 <code>CanonicalArmPrefixWarmStartBackend</code>는 mandatory file evidence와 일치하도록 <code>filesystem</code>을 선언하므로 실제 cuRobo adapter 구현 전에 typed in-memory trajectory와 bounded asynchronous materializer로 교체해야 한다.</p>
 
 <h2>Activation gate</h2>
 <ol>
@@ -73,8 +73,9 @@
 <li>cuRobo scene/backend, assembly asset, real-time acceleration, arm-prefix planning과 collision backend 확장 회귀 45개가 통과했다.</li>
 <li>Planning 환경 전체 suite 643개 중 640개가 실행됐고 code failure 없이 2개가 skip됐다. OpenCV 미설치로 import되지 않은 3개 module은 기존 calibration 환경에서 14개 모두 통과했다.</li>
 <li><code>git diff --check</code>를 통과했고 source <code>4396cef</code>를 GitHub <code>main</code>에 push했다.</li>
-<li>실패한 full evaluation 종료 후 검증된 incremental bundle로 서버 source를 <code>2085f4c</code>에서 <code>474a9f3</code>으로 fast-forward했다. 기존 native build는 보존했다.</li>
-<li>Source-bound endpoint screening <code>115689</code>는 2,000개 중 140개를 유지하며 완료됐다. 이 screening에 결속된 full evaluation <code>115694</code>가 실행 중이며 종료 전 서버 checkout은 바꾸지 않는다.</li>
+<li>검증된 incremental bundle로 서버 source를 <code>2085f4c</code>에서 <code>474a9f3</code>, 이후 <code>f868873</code>까지 fast-forward했다. 기존 native build는 보존했다.</li>
+<li>Source-bound endpoint screening <code>115689</code>는 2,000개 중 140개를 유지했다. Full evaluation <code>115694</code>는 10,313개 파일을 재검증해 117 geometry-clear diagnostic, 0 execution-authorized를 확인했다. Clock skew 때문에 timing evidence는 무효다.</li>
+<li>117개를 actual xArm6·Inspire·connector·workcell gate로 줄이는 deployment assessment <code>115695</code>를 제출했다.</li>
 <li>현행 evidence chain을 완료한 뒤 in-memory control result와 async recorder 경계를 먼저 고치고, driver 조건이 맞는 GPU에서 custom cuRobo rollout을 benchmark한다.</li>
 </ul>
 
