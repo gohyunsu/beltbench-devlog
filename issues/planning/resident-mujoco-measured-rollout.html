@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Resident MuJoCo measured rollout · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-054 · 2026-08-11 · resident MuJoCo measured rollout</div>
+<h1>계획 pose를 재생하는 데서 멈추지 않고 MuJoCo measured state와 실패를 기록한다.</h1>
+<p class="lede">Exact MJB admission만으로는 arm·hand가 servo를 따라갔는지, 실제 접촉이 생겼는지, object가 유지·release·bin containment 되었는지 알 수 없다. 이번 단계는 planning-validated resident command를 fixed-step MuJoCo에 넣고 measured q/qd, object SE(3), contact와 lifecycle을 source-bound evidence로 남겼다. 다만 현재 belt는 정적 모델이므로 contact 전 object 이동은 명시적 기구학 진단이며 물리 belt 검증으로 승격하지 않는다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/7856814"><code>7856814</code></a>는 measured backend를, <a href="https://github.com/gohyunsu/beltbench/commit/94544fa"><code>94544fa</code></a>는 독립 verifier 분리를, <a href="https://github.com/gohyunsu/beltbench/commit/030d041"><code>030d041</code></a>는 persisted admission/evidence 재검증 CLI를 구현한다. MuJoCo 결과는 항상 hardware execution과 online collision authority를 차단한다.</div>
+
+<h2>시작 시점의 문제</h2>
+<ol>
+<li><strong>Admission 뒤 실행기가 없음:</strong> v7 MJB의 actuator, free joint와 geometry가 맞다는 사실만 확인했으며 실제 resident command를 step하거나 measured trace를 만들지 않았다.</li>
+<li><strong>Viser와 simulator의 pose 중복:</strong> 계획 object 보간이 visualization 내부에 있어 MuJoCo가 재사용하면 simulation이 display 계층에 의존하거나 같은 lifecycle을 다시 구현해야 했다.</li>
+<li><strong>구형 backend 재사용의 계보 불일치:</strong> 기존 900줄 event backend는 다른 event-handoff scenario와 planning-to-dispatch receipt를 전제로 했다. Resident validated lease에는 그 timestamp가 없어 그대로 쓰면 latency를 조작하게 된다.</li>
+<li><strong>정적 conveyor의 물리 과장 위험:</strong> 현재 v7 deck은 움직이지 않는다. 물체가 계획대로 이동하는 animation을 moving-belt physics라고 부르면 friction·slip·contact 검증이 거짓이 된다.</li>
+<li><strong>강제 attachment 유혹:</strong> 손이 물체에 닿지 않아도 lifecycle sample에 맞춰 weld하거나 tool FK에 붙이면 보기 좋은 성공 animation은 만들 수 있지만 grasp demo 검증은 사라진다.</li>
+<li><strong>Artifact SHA만으로 부족:</strong> Trace 자체 SHA가 맞아도 다른 commanded q/qd를 넣어 다시 hash하면 source-bound evidence가 아니다.</li>
+</ol>
+
+<h2>선택한 transport와 권한</h2>
+<p>Scenario에 별도 <code>rollout_policy</code> source를 추가하고 resident backend가 허용하는 모드를 <code>lifecycle_kinematic_until_contact</code> 하나로 제한했다. Object free joint를 lifecycle sample 0으로 reset하고, scheduled contact까지 2 ms마다 constant-yaw translation과 belt linear velocity를 설정한다. Contact 이후에는 object를 자유 동역학으로 넘긴다. Artificial weld, visual bridge, tool-relative 강제 부착은 없다.</p>
+<p>이 방식은 moving object와 timed command의 접촉 진단에는 현실적인 offline 절충이지만 moving surface physics는 아니다. 따라서 diagnostic admission은 가능해도 <code>mujoco_precontact_kinematic_transport_not_physical_belt</code>가 physics failure에 항상 남는다.</p>
+<table class="table">
+<tr><th>항목</th><th>구현</th><th>권한</th></tr>
+<tr><td>Online IK/collision/trajopt/dynamics</td><td>향후 resident cuRobo V2 worker</td><td>Parity·p99 통과 뒤 deadline authority</td></tr>
+<tr><td>Pre-contact object motion</td><td>Lifecycle kinematic free-joint state</td><td>Diagnostic assumption only</td></tr>
+<tr><td>Robot motion</td><td>초기 q 1회 설정 뒤 position servo와 <code>mj_step</code></td><td>Measured simulation state</td></tr>
+<tr><td>Attach/release/containment</td><td>Contact force, relative pose, hold time, rigid-body speed와 bin geometry</td><td>Measured diagnostic evidence</td></tr>
+<tr><td>Exact mesh false negative</td><td>Offline HPP-FCL</td><td>cuRobo sphere parity oracle</td></tr>
+<tr><td>Visualization</td><td>Viser actual-time replay</td><td>Display only</td></tr>
+</table>
+
+<h2>중복을 제거한 모듈 경계</h2>
+<ul>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/c411e2c"><code>c411e2c</code></a>: named scalar joint binding, rigid-body pose/velocity와 canonical contact를 <code>mujoco_runtime_state.py</code>로 분리했다.</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/2b6ea62"><code>2b6ea62</code></a>: planned object lifecycle 보간을 <code>runtime/resident_object_lifecycle_timeline.py</code>로 이동해 Viser와 MuJoCo가 같은 기준을 사용하게 했다.</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/a93d383"><code>a93d383</code></a>: contact episode, drop-bin containment와 measured lifecycle state machine을 공용화해 구형 event backend와 resident backend가 동일 판정을 사용한다.</li>
+<li><code>resident_full_command_mujoco_backend.py</code>: MuJoCo model/reset/control/step/observation과 evidence 생성만 소유한다.</li>
+<li><code>resident_full_command_mujoco_verification.py</code>: schedule, acceptance decision과 external source replay 검증을 소유한다. Backend는 753줄에서 470줄로 줄었다.</li>
+<li><code>resident_full_command_mujoco_rollout.py</code>: immutable frame/evidence payload, SHA, load/write 권한만 소유한다.</li>
+</ul>
+
+<h2>실제 step과 측정 내용</h2>
+<p>Command는 simulator-neutral quintic sampler에서 arm command joint와 mimic-expanded full-hand joint로 확장한다. MuJoCo는 2 ms마다 step하고 10 ms control boundary에서 <code>data.ctrl</code>을 갱신한다. 첫 reference q만 reset 시 한 번 설정하며 이후 robot pose를 직접 덮어쓰지 않는다.</p>
+<p>매 physics step마다 measured q/qd의 유한성, object/tool SE(3), object twist, canonical contacts, drop-bin containment와 lifecycle state를 평가한다. Control sample마다 다음을 저장한다.</p>
+<ul>
+<li>시간, phase, reached event, commanded/measured q와 qd</li>
+<li>planned/measured object SE(3), linear/angular velocity</li>
+<li>planned/measured lifecycle state, active contact pair, kinematic transport flag</li>
+<li>전체 step의 arm/hand tracking 최대 오차와 pre-contact object pose 최대 오차</li>
+<li>contact episode, measured event timing, terminal state, wall time와 realtime factor</li>
+</ul>
+<p>Resident scenario에 controller receipt가 없으므로 planning-to-dispatch latency는 0으로 채우지 않고 <code>planning_to_dispatch_latency_available=false</code>로 둔다.</p>
+
+<h2>독립 evidence 검증</h2>
+<p>Persisted verifier는 scenario의 모든 source bytes를 다시 읽고 admission, MJB, command output SHA, tensor SHA, validated lease SHA와 rollout policy SHA를 대조한다. 각 frame의 time grid, commanded q/qd, phase/event, planned object pose/state와 transport flag도 원 command와 lifecycle에서 다시 계산한다.</p>
+<p>Summary maximum이 trace보다 작거나 event timing·failure decision이 다시 계산한 값과 다르면 거부한다. Test에서는 첫 commanded q를 바꾸고 artifact SHA를 정상적으로 다시 계산한 forged evidence도 <code>resident_rollout_command_trace_mismatch</code>로 거부했다.</p>
+
+<h2>실패를 숨기지 않는 회귀</h2>
+<p>Test MJB는 2 arm + 2 full-hand servo joint, object free joint와 conveyor를 가진다. Hand geometry를 object에서 멀리 둔 채 resident 3초 command를 1,500 step 실행했다. 결과는 301 control frame을 기록하고 contact 전 yaw를 유지한 평행이동을 재현했지만 lifecycle observation은 비어 있었다. Backend는 attachment를 만들지 않았고 required lifecycle와 terminal mismatch를 기록해 <code>diagnostic_passed=false</code>로 종료했다.</p>
+<p>이 테스트의 목적은 grasp 성공이 아니라 실패 시 animation과 physics evidence가 분리되는지 확인하는 것이다.</p>
+
+<h2>실제 v7 model-only 성능</h2>
+<p>Actual <code>workcell-pepsi-upside-down-v7/workcell.mjb</code>를 공용 binding으로 로드했다. 18개 actuator joint와 유일한 <code>object/pepsi_light/free</code>를 확인하고 3초, 1,500 step headless position-servo probe를 실행했다.</p>
+<ul>
+<li>Simulated duration: 3.000000 s</li>
+<li>Wall duration: 0.381727 s</li>
+<li>Realtime factor: 7.859014x</li>
+</ul>
+<p>이 값은 resident interpolation, per-step contact classification, lifecycle tracking, trace serialization과 source loading을 제외한 model-only 수치다. End-to-end p99나 grasp timing evidence로 사용하면 안 된다.</p>
+
+<h2>발생한 도구·환경 문제</h2>
+<ol>
+<li><strong><code>pytest</code> 미설치:</strong> <code>beltbench-mujoco</code> 환경에는 pytest가 없었다. 새 의존성을 즉시 추가하지 않고 repository의 <code>unittest</code>로 실행했다.</li>
+<li><strong>기본 Python의 NumPy 부재:</strong> Base Python으로 새 timeline test를 실행해 import 전에 실패했다. Planning 환경에는 NumPy/SciPy, MuJoCo 환경에는 simulator dependency가 있으므로 suite를 역할별 interpreter로 분리했다.</li>
+<li><strong>Sandbox의 temp directory 실패:</strong> 비승인 <code>conda run</code>이 writable temp를 찾지 못해 Conda 자체가 실패했다. Python executable을 직접 사용하고 test write가 필요한 호출만 승인된 환경에서 실행했다.</li>
+<li><strong>30초 command yield:</strong> 합친 suite가 완료 전에 shell session으로 yield되어 summary를 잃었다. Resident/MuJoCo 18개와 lifecycle/Viser 10개로 분리해 각각 명시적 exit 0을 확인했다.</li>
+<li><strong>대형 backend 책임:</strong> 첫 구현 후 backend가 753줄이었다. 기능은 통과했지만 유지보수 기준에 맞지 않아 verifier를 별도 모듈로 이동하고 같은 18개 회귀를 다시 통과시켰다.</li>
+</ol>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Resident/MuJoCo 핵심 suite 18개: 모두 통과, exit 0</li>
+<li>Lifecycle/Viser suite 10개: 모두 통과, exit 0</li>
+<li>Admission/evidence round-trip과 CLI 경계 12개: 모두 통과</li>
+<li>Run CLI와 independent verify CLI <code>--help</code>: exit 0</li>
+<li>Actual v7 low-level headless probe: 7.859014x realtime</li>
+</ul>
+
+<h2>현재 남은 hard gate</h2>
+<ol>
+<li>Local에는 actual cuRobo V2 producer/independent validator가 만든 source-closed resident Pepsi command bundle이 없다. 따라서 v7 actual resident grasp rollout이나 성공 trace는 아직 없다.</li>
+<li>junjinyong A6000 driver 535는 선택한 cuRobo V2 0.8.0 최소 driver 580.65.06을 충족하지 않는다. Sphere fitting, HPP-FCL parity와 GPU p99는 차단 상태다.</li>
+<li>Static-deck diagnostic을 실제 moving belt physics로 대체하려면 moving surface, measured friction/mass/contact와 belt calibration이 필요하다.</li>
+<li>Connector bolt-hole seating, calibration, stable pose, mass/friction, servo gain은 measured authority가 필요하다.</li>
+<li>Hardware가 준비되면 perception/controller timestamps, close timing, retention, drop reliability, abort와 emergency stop을 별도 검증해야 한다.</li>
+</ol>
+
+<p><a href="resident-mujoco-admission-curobo-authority.html">Resident MuJoCo admission과 cuRobo 권한</a>, <a href="full-command-actual-asset-diagnostic.html">Full-command actual-asset diagnostic</a>, <a href="curobo-realtime-collision-audit.html">cuRobo real-time collision audit</a>을 함께 참고한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
