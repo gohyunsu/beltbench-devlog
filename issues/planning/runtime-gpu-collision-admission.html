@@ -61,6 +61,7 @@
 <h2>Driver 전제 정정</h2>
 <p>이전 ISSUE-056은 cuRobo V2 0.8.0이 driver <code>580.65.06</code> 이상만 지원한다고 기록했다. 원인은 CUDA 13 driver 하한을 V2 전체 하한으로 해석한 것이다. 공식 <a href="https://github.com/NVlabs/curobo/blob/v0.8.0/pyproject.toml">v0.8.0 pyproject</a>는 <code>cu12</code>와 <code>cu13</code> extra를 별도로 제공한다. NVIDIA는 <a href="https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html">CUDA 12.x Linux minor compatibility</a> 하한을 <code>525.60.13</code>으로 문서화한다.</p>
 <p>따라서 driver <code>535.161.07</code> A6000은 CUDA 12 자격 검증 대상이지 원천 차단 대상이 아니다. 두 V2 policy는 새 ID와 <code>525.60.13</code> 하한으로 바꿨다. 단, cuRobo의 runtime CUDA compilation은 minor compatibility의 feature restriction을 받을 수 있으므로 실제 <code>cu12</code> install, FK/self/world/dynamic-object kernel smoke와 benchmark가 통과하기 전에는 compatible하다고 주장하지 않는다.</p>
+<div class="callout"><strong>2026-08-12 후속:</strong> 별도 RTX 3090 host에서 CUDA 12 FK·static world/self collision primitive smoke는 통과했다. v0.8.0의 Warp pin과 공개 wrapper 결함, 측정 범위는 <a href="curobo-v2-gpu-environment-qualification.html">ISSUE-059</a>에 기록했다. 이는 actual xArm/Inspire collision adapter나 runtime deadline 승인으로 승격되지 않는다.</div>
 
 <h2>발생한 문제, 원인, 해결</h2>
 <ol>
@@ -68,7 +69,7 @@
 <li><strong>기본 Python import 실패:</strong> base Python 3.13에는 <code>numpy</code>가 없어 test import가 중단됐다. 코드 실패와 환경 실패를 분리하고 <code>beltbench-planning</code> conda 환경에서 재실행했다.</li>
 <li><strong>잘못된 test module 이름:</strong> 광범위 회귀 명령에 존재하지 않는 두 module을 지정해 77개 통과 후 loader error가 났다. <code>rg --files tests</code>로 실제 이름을 찾아 97-test 묶음으로 재실행했다.</li>
 <li><strong>Lint 도구 부재:</strong> planning 환경에는 <code>ruff</code>가 없었다. 임의 설치로 lock을 바꾸지 않고 compile, 99-column scan, <code>git diff --check</code>와 unittest로 검증했다.</li>
-<li><strong>새 GPU 서버 인증 실패:</strong> Tailscale endpoint <code>100.115.46.72:1000</code>은 응답하지만 현재 Codex 셸의 WSL/Windows 키를 모두 거부했다. 비밀번호를 명령이나 로그에 넣지 않고 공개키 등록을 요청했다. 등록 후 모든 작업은 <code>~/.agile/projects</code> 아래에서만 수행한다.</li>
+<li><strong>새 GPU 서버 인증 실패:</strong> Tailscale host는 응답했지만 현재 작업 shell의 key를 처음에는 거부했다. 비밀번호나 token을 명령·로그에 넣지 않고 공개키를 등록한 뒤 모든 작업을 <code>~/.agile/projects</code> 아래에서 수행했다.</li>
 </ol>
 
 <h2>검증 결과</h2>
@@ -87,13 +88,12 @@
 <li>10 ms resident gate deadline과 50 ms warm-start deadline은 정책 가설이지 측정값이 아니다.</li>
 <li>Accepted retain assessment는 현재 in-memory result이며 별도 active-controller evidence snapshot과 실제 cancel protocol은 아직 없다.</li>
 <li>Actual source-closed continuous Pepsi/xArm/Inspire path-family bundle이 없어 1.0x full vertical slice를 아직 실행하지 못했다.</li>
-<li>새 Tailscale GPU 서버 사양과 cuRobo 설치 가능성은 SSH key 등록 후 확인해야 한다.</li>
+<li>RTX 3090 환경 kernel smoke는 통과했지만 actual xArm/Inspire assembly, moving-object semantics와 runtime workload는 아직 검증하지 않았다.</li>
 </ol>
 
 <h2>다음 실행 순서</h2>
 <ol>
-<li>새 GPU 서버 공개키 등록 후 <code>~/.agile/projects</code>에서 GPU, driver, compute capability, OS, disk와 conda를 기록한다.</li>
-<li>Driver에 따라 cuRobo v0.8.0 <code>cu12</code> 또는 <code>cu13</code> 환경을 별도 생성하고 exact lock과 kernel smoke artifact를 남긴다.</li>
+<li>v0.8.0의 공개 wrapper 결함과 공식 후속 source를 비교해 actual adapter의 exact revision을 선택한다.</li>
 <li>Evidence-gated actual collision adapter를 구현해 resident full command의 dynamic-world, attached-sphere, release-envelope pass를 실행한다.</li>
 <li>Exact xArm6/Inspire/connector sphere config를 HPP-FCL corpus와 비교해 false negative 0 gate를 통과시킨다.</li>
 <li>1,000회 post-warmup p50/p95/p99, deadline miss, graph/cache/buffer reuse와 transfer 수를 측정한다.</li>
