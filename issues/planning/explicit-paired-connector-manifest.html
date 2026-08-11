@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Explicit paired connector manifest · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-041 · 2026-08-11 · explicit paired connector manifest</div>
+<h1>구형 connector fallback을 복원하지 않고 두 CAD pose를 arm-tip assembly frame에 명시한다.</h1>
+<p class="lede">Source-consistent full grasp evaluation을 복구한 뒤 deployment assessment를 실행했지만, private robot manifest가 제거된 <code>paired_mount_meshes</code> schema를 사용해 strict loader에서 중단됐다. 기존 파일을 고치거나 예시 transform으로 바꾸지 않고, 구형 field 이름이 선언하던 mount-frame 의미를 explicit assembly pose로 한 번만 컴파일하는 append-only 경계를 구현했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/33b94d5"><code>33b94d5</code></a>와 server checkout을 일치시켰다. 새 private manifest SHA-256은 <code>a43510455c723f32cc98a504dd0b2b9d54b97564df367d66fd106e73466df73f</code>이다. Mount transform은 측정값이 아니므로 <code>provisional</code>이며 hardware execution authority가 없다.</div>
+
+<h2>발생한 문제</h2>
+<table class="table">
+<tr><th>실행</th><th>관찰</th><th>판정</th></tr>
+<tr><td>Deployment <code>115695</code></td><td>Full evaluation source verification은 통과했지만 <code>unsupported arm-hand connector visual type: paired_mount_meshes</code>에서 실패</td><td>Grasp나 IK 실패가 아니라 private asset schema drift다.</td></tr>
+<tr><td>Server robot manifest</td><td>xArm-side OBJ는 <code>arm_tip_visual_mesh</code>, Inspire-side OBJ는 <code>hand_root_visual_mesh</code>로만 선언</td><td>각 mesh frame이 이름에 암묵적으로만 들어 있다.</td></tr>
+<tr><td>Current loader</td><td><code>paired_assembly_meshes</code>와 두 개의 <code>arm_tip_from_*_mesh</code> transform을 요구</td><td>시각화뿐 아니라 cuRobo·MuJoCo collision assembly가 같은 rigid placement를 사용한다.</td></tr>
+</table>
+
+<h2>원인</h2>
+<p>Commit <code>e4e6adf</code>에서 connector contract가 <code>PairedMountConnectorAsset</code>에서 <code>PairedAssemblyConnectorAsset</code>으로 바뀌었다. 이전에는 arm-side CAD가 arm-tip frame, hand-side CAD가 hand-root frame에 있다는 것을 field 이름으로만 해석했다. 현행 계약은 두 CAD 모두 arm-tip assembly frame에 놓는 transform을 요구해 시각화, HPP-FCL, cuRobo sphere assembly와 MuJoCo import의 배치를 하나로 고정한다. Source code와 example manifest는 바뀌었지만 private server manifest는 재컴파일되지 않았다.</p>
+
+<h2>배제한 해결</h2>
+<ul>
+<li>Runtime loader에서 <code>paired_mount_meshes</code>를 다시 받아들이지 않았다. 암묵 transform 해석이 online path에 영구 fallback으로 남는다.</li>
+<li>Procedural white bridge로 대체하지 않았다. 실제 xArm/Inspire adapter CAD와 connector collision model을 잃는다.</li>
+<li>Current example의 47.5 mm mount transform을 복사하지 않았다. Server legacy manifest는 4.5 mm x offset과 35 mm z offset을 선언하며 둘 다 측정값이 아니다.</li>
+<li>기존 private <code>manifest.json</code>을 수정하지 않았다. 이전 run의 재현성과 digest를 깨뜨린다.</li>
+</ul>
+
+<h2>구현한 compiler</h2>
+<ol>
+<li>Legacy top-level과 connector field set이 정확히 일치하고 visual type이 <code>paired_mount_meshes</code>인지 검사한다. 알 수 없는 field는 거부한다.</li>
+<li>두 OBJ를 source manifest 기준으로 해석하고 저장된 SHA-256과 다시 비교한다.</li>
+<li>Arm-side CAD의 <code>arm_tip_from_arm_side_mesh</code>는 identity로 만든다.</li>
+<li>Hand-side CAD의 <code>arm_tip_from_hand_side_mesh</code>는 exact legacy <code>arm_tip_from_hand_root</code>를 사용한다.</li>
+<li>Output이 source asset directory 밖으로 나가거나 기존 파일을 덮어쓰는 것을 거부한다.</li>
+<li>Sibling temporary file을 current strict loader로 완전히 reload한 뒤 atomic rename한다.</li>
+</ol>
+<pre><code>python -m scripts.compile_paired_connector_robot_manifest \
+  --source ASSET_DIR/manifest.json \
+  --output ASSET_DIR/manifest-paired-assembly-v2.json</code></pre>
+
+<h2>검증과 현재 결과</h2>
+<ul>
+<li>Compiler, strict robot loader, cuRobo asset, MuJoCo admission과 collision activation 회귀 35개가 통과했다.</li>
+<li>새 manifest를 서버 current loader로 다시 읽어 arm-side identity와 hand-side <code>[0.0045, 0, 0.035]</code> translation 및 반전 rotation을 확인했다.</li>
+<li>기존 OBJ digest <code>44ebf1d9…d088</code>, <code>955240d2…4620</code>을 그대로 유지했다.</li>
+<li>새 manifest를 사용하는 deployment assessment <code>115696</code>을 append-only v13 run으로 제출했다. 아직 결과를 execution evidence로 사용하지 않는다.</li>
+</ul>
+
+<p><a href="curobo-realtime-collision-audit.html">cuRobo real-time collision 방향</a>과 <a href="inference-demo-physics-validation.html">actual assembly physics validation</a>을 함께 참고한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
