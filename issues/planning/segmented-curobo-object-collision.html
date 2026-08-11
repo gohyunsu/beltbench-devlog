@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Segmented cuRobo object collision · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-047 · 2026-08-11 · segmented cuRobo object collision</div>
+<h1>Object collision을 first contact에서 끝내지 않고 cuRobo의 실제 attachment 모델에 맞춰 분절한다.</h1>
+<p class="lede">Full event command를 resident tensor로 만들었어도 기존 moving-target collision batch는 first contact에서 끝났다. 이를 단순 연장하면 contact 이후에도 물체를 world obstacle로 취급하거나, attach 순간부터 물체를 collision world에서 누락하는 오류가 생긴다. cuRobo의 공개 world cache와 attachment 동작을 기준으로 검토한 결과, 하나의 고수준 MotionGen 호출에 상태 전환을 숨기지 않고 dynamic-world, attached-spheres, post-detach release의 고정 shape collision pass를 분리하는 방향이 가장 현실적이다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/6b23710"><code>6b23710</code></a>은 full template과 catalog에 selected grasp·connector transform digest를 보존하고, 전체 exact time grid에서 conveyor→contacting→attached→released/contained 상태와 중첩 collision pass를 재현한다. 아직 실제 cuRobo kernel output과 full-task resident lease가 없으므로 lifecycle은 <code>execution_blocked=true</code>다.</div>
+
+<h2>발생한 문제</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>방치 시 결과</th></tr>
+<tr><td>Target collision이 first contact에서 종료됐다.</td><td>기존 request는 arm-prefix hot path만 먼저 구현해 start-to-contact sample만 가졌다.</td><td>Contact-to-attach chase, grasped transport, release/return collision이 검증되지 않는다.</td></tr>
+<tr><td>Full template에 grasp ID만 있고 semantic grasp digest와 connector digest가 직접 노출되지 않았다.</td><td>Event request digest 내부에만 포함되어 post-attach adapter가 exact transform을 독립 확인하기 어려웠다.</td><td>다른 <code>object_from_hand_root</code> 또는 connector transform으로 attached geometry를 구성해도 catalog identity가 같아 보일 수 있다.</td></tr>
+<tr><td>처음 생각한 sample별 단일 collision strategy는 transition interval을 모호하게 만들었다.</td><td>Attach sample을 world pass 또는 attached pass 중 하나에만 배정했다.</td><td>바로 이전 sample부터 attach까지의 마지막 swept interval이 한 pass에서도 완전하게 검사되지 않을 수 있다.</td></tr>
+<tr><td>Drop object를 매 sample world mesh로 갱신하려 했다.</td><td>Ballistic visualization reference와 online collision authority를 같은 표현으로 사용하려 했다.</td><td>Mesh cache mutation, CUDA graph pointer 변경과 tail latency 증가가 발생할 수 있다.</td></tr>
+</table>
+
+<h2>cuRobo API를 기준으로 한 판단</h2>
+<p>cuRobo world checker는 geometry, pose, enable flag를 GPU tensor cache에 보존하며 cache 재생성은 CUDA graph의 tensor pointer 전제를 깨뜨린다. 공개 attachment API는 grasped object를 world checker에서 비활성화하고 robot link의 sphere geometry로 전환한다. 따라서 “모든 것을 GPU로 옮긴다”보다 “서로 다른 collision representation을 startup에 각각 preallocate·warm-up하고, runtime에는 pose와 enable state만 bounded하게 갱신한다”가 타당하다. 공식 <a href="https://curobo.org/get_started/2c_world_collision.html">world collision 문서</a>와 <a href="https://curobo.org/_api/curobo.wrap.reacher.motion_gen.html">MotionGen attachment API</a>를 기준으로 했다.</p>
+
+<h2>채택한 세 pass</h2>
+<ol>
+<li><code>dynamic_world [0..attach]</code>: fixed-yaw constant translation object pose를 preallocated world buffer에 넣는다. First contact 전에는 hand contact를 허용하지 않고, contact부터 attach까지 configured hand geometry만 허용한다.</li>
+<li><code>attached_spheres [attach..detach]</code>: world object를 끄고 checksummed object sphere set을 configured tool/hand frame에 붙인다. Intentional grasp pair만 제외하고 object-arm, object-workcell, robot self/static collision은 계속 검사한다.</li>
+<li><code>conservative_release_envelope [detach..end]</code>: drop의 exact ballistic pose는 Viser·MuJoCo reference로 유지하되 online return path는 bin 내부에서 끝나는 checksummed swept-volume obstacle과 검사한다. Static place는 detach 이후 object를 declared support의 world geometry로 되돌린다.</li>
+</ol>
+<p>Attach와 detach sample은 양쪽 pass에 중복된다. 이 overlap과 pose continuity를 동시에 요구해야 representation transition 직전의 swept interval이 빠지지 않는다. 세 pass는 세 번의 online replan이 아니라 하나의 resident command에 대한 fixed-shape collision/dynamics validation이다. Optimizer가 쓸 수 있는 영역은 여전히 measured start와 certified latch 사이 arm prefix뿐이다.</p>
+
+<h2>구현 내용</h2>
+<ol>
+<li><code>ResidentEventCommandTemplate</code>를 schema 1.2로 올리고 source event request의 <code>grasp_sha256</code>와 <code>connector_transform_sha256</code>를 직접 보존했다.</li>
+<li><code>ResidentFullCommandCatalogEntry</code>도 schema 1.1에서 같은 digest를 catalog slot과 dense tensor lineage에 결속했다.</li>
+<li><code>ReleaseMotion</code>에 canonical SHA-256을 추가해 ballistic/static release payload 전체를 ancestry로 사용할 수 있게 했다.</li>
+<li><code>ResidentObjectCollisionLifecycle</code>는 full-command request, runtime session, template, admission, prediction, moving contact, grasp, connector, interaction semantics와 세 collision geometry digest를 한 artifact에 결속한다.</li>
+<li>Contact 이전 pose는 exact grid에서 constant orientation·constant translation인지 contract 자체가 검사한다. Contact pose와 velocity는 기존 admission-bound collision batch와 exact 일치해야 한다.</li>
+<li><code>expected_object_from_tool</code>과 selected <code>object_from_hand_root</code>에서 connector transform을 역산하고 template digest와 비교한다. Visual-only bridge나 임의 offset은 허용하지 않는다.</li>
+<li>Attach 시 predicted object pose와 robot FK·grasp-relative attached pose가 1 µm/1 µrad data-integrity tolerance를 넘게 불연속이면 lifecycle compilation을 거부한다.</li>
+<li>Drop은 terminal <code>contained</code> support와 release swept-volume ID/digest가 없으면 거부한다. Pick-only와 static-place는 서로 다른 release 요구를 명시적으로 검사한다.</li>
+<li>Source verifier는 저장 payload를 신뢰하지 않고 full request, template, contact, grasp, release와 robot FK에서 lifecycle 전체를 재생성해 exact equality를 요구한다.</li>
+</ol>
+
+<h2>검증과 재감사</h2>
+<ul>
+<li>Lifecycle·full-command·release 집중 테스트 9개가 통과했다.</li>
+<li>Template, moving contact와 event trajectory를 포함한 관련 회귀 41개가 통과했다.</li>
+<li>Planning 전체 suite는 679개 중 674개 통과, 2개 skip이었다. 3개 import error는 해당 환경에 <code>cv2</code>가 없는 기존 분리 문제다.</li>
+<li>Calibration 환경에서 그 3개 module의 14개 테스트가 모두 통과했다.</li>
+<li>재감사 중 attach/detach boundary를 단일 sample strategy로 둔 초기 구현을 폐기하고 양쪽 pass가 boundary sample을 공유하도록 수정했다.</li>
+</ul>
+
+<h2>현재 제한과 다음 단계</h2>
+<ul>
+<li>현재 구현은 source-bound GPU 입력 계약이다. 실제 world-pose update, attached sphere activation, swept collision kernel과 hard-mask reduction을 실행하지 않았다.</li>
+<li>세 pass가 같은 warmed allocation과 graph-safe pointer를 사용하는지 증명하는 backend session/lease가 아직 없다.</li>
+<li>Attached sphere approximation과 release envelope는 HPP-FCL exact-mesh corpus에서 zero false negative gate를 통과해야 한다.</li>
+<li>Junjinyong server driver 535는 선택한 cuRobo V2 최소 driver 580.65.06보다 낮아 V2 parity와 p99 deadline benchmark를 실행할 수 없다.</li>
+<li>다음 구현은 prefix solver output과 세 collision-pass output을 하나의 full-task lease에 결속하고, C2 splice·continuous collision·event lineage를 독립 validator가 확인하도록 하는 것이다.</li>
+</ul>
+
+<p><a href="resident-full-command-template.html">Resident full-command template</a>, <a href="curobo-realtime-collision-audit.html">cuRobo collision audit</a>, <a href="precontact-command-replay-boundary.html">Pre-contact replay boundary</a>를 함께 참고한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>

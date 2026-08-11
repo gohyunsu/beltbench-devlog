@@ -17,6 +17,7 @@
 <p class="lede">Pre-contact capture의 범위를 바로잡은 뒤 splice 의미를 다시 검사했다. 단순히 first contact에서 기존 full-task reference suffix를 붙이는 방법도 안전하지 않았다. 현행 event schedule은 hand-close start가 first contact보다 앞서기 때문에, pre-contact request의 external hand hold와 source event trajectory의 hand closure가 이미 접촉 전에 충돌한다. 따라서 CPU에서 사후 suffix를 이어 붙이지 않고, close·contact·attach·lift·transfer·release·return 전체를 exact resident template으로 컴파일한 뒤 online cuRobo가 certified latch 전 arm prefix만 덮어쓰는 구조로 전환했다.</p>
 
 <div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/77f158d"><code>77f158d</code></a>는 complete event request를 named arm/hand <code>time/q/qd/qdd</code>와 exact fixed sample count로 컴파일하고, dtype별 tensor digest·runtime session·event/latch index를 CUDA catalog metadata와 full-grid arm-prefix request에 결속한다. 아직 실제 cuRobo upload/solve, full output lease와 controller adapter가 없으므로 <code>execution_authorized=false</code>이며 기존 pre-contact capture를 full pick으로 승격하지 않는다.</div>
+<div class="callout"><strong>2026-08-11 후속:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/6b23710"><code>6b23710</code></a>에서 template schema를 1.2로 올려 grasp·connector digest를 직접 결속하고, first contact 이후 object collision lifecycle 입력을 구현했다. 자세한 state transition과 중첩 collision pass는 <a href="segmented-curobo-object-collision.html">ISSUE-047</a>에 기록한다.</div>
 
 <h2>발생한 문제</h2>
 <table class="table">
@@ -50,7 +51,7 @@
 
 <h2>구현한 해결</h2>
 <ol>
-<li><code>ResidentEventCommandTemplate</code> schema 1.1을 추가했다. Template은 complete task duration, exact fixed sample count, named arm/hand joints, source segment와 phase를 가진 <code>time/q/qd/qdd</code> samples를 보존한다.</li>
+<li><code>ResidentEventCommandTemplate</code> schema 1.2를 추가했다. Template은 complete task duration, exact fixed sample count, named arm/hand joints, source segment와 phase를 가진 <code>time/q/qd/qdd</code> samples와 grasp·connector digest를 보존한다.</li>
 <li>모든 source waypoint를 exact sample index로 넣고, replan cutoff·close start·contact·close complete·attach·release·detach event를 원래 waypoint와 window에 결속한다.</li>
 <li>모든 certified latch time을 subdivision boundary로 먼저 삽입한다. Reconstructed quintic의 arm/hand target이 latch certificate target과 exact 일치하지 않으면 compilation을 거부한다.</li>
 <li>Sampling은 source waypoint와 latch로 먼저 구간을 나눈 뒤 maximum interval 이하로 subdivision한다. Sample density를 바꿔도 physical event와 splice state가 이동하지 않는다.</li>
@@ -78,7 +79,7 @@
 <ul>
 <li>새 full-template 집중 테스트 5개가 통과했다.</li>
 <li>Event trajectory, path-family와 기존 arm-prefix를 포함한 인접 회귀 46개가 통과했다.</li>
-<li>Planning 환경의 최신 전체 suite는 678개 중 673개 통과, 2개 기존 skip이었다. 3개 module import error는 선택적 <code>cv2</code>가 없는 기존 환경 분리 문제다.</li>
+<li>후속 lifecycle까지 포함한 planning 환경의 최신 전체 suite는 679개 중 674개 통과, 2개 기존 skip이었다. 3개 module import error는 선택적 <code>cv2</code>가 없는 기존 환경 분리 문제다.</li>
 <li>Calibration 환경에서 calibration·pickplace·pose module의 14개 테스트가 모두 통과했다.</li>
 <li>새 CLI <code>--help</code>, 전체 package/script byte-compile와 <code>git diff --check</code>가 통과했다.</li>
 </ul>
@@ -87,8 +88,7 @@
 <ul>
 <li>Offline full template과 next-generation catalog/request 계약까지 구현했다. 기존 <code>ResidentPathCatalogEntry</code>, fixed-shape request, output lease, controller handoff와 capture는 계속 pre-contact scope이며 조용히 새 의미로 바꾸지 않았다.</li>
 <li>Catalog의 upload event는 metadata일 뿐 device byte upload를 증명하지 않는다. 실제 GPU device-to-device template copy, cuRobo arm-prefix overwrite와 C2 splice validator는 아직 구현하지 않았다.</li>
-<li>Post-attach attached-object collision과 release transition을 실제 cuRobo kernel로 실행하지 않았다.</li>
-<li>현재 object collision batch는 first contact에서 끝난다. Contact-to-attach의 translating/contacting object, attach-to-detach의 grasp-relative attached geometry, detach 이후 ballistic release에는 selected grasp transform과 explicit release-motion 입력이 더 필요하다. 이를 생략한 full lease는 허용하지 않는다.</li>
+<li>기존 pre-contact object batch는 계속 first contact에서 끝난다. 별도 full-task lifecycle 입력이 contact-to-attach, attached transport와 release를 source-bound하게 닫았지만 아직 실제 cuRobo kernel로 실행하지 않았다.</li>
 <li>Junjinyong server의 NVIDIA driver 535는 선택한 cuRobo V2 정책 최소 580.65.06보다 낮다. V2 parity·latency·deadline 결과를 주장할 수 없다.</li>
 <li>다음 구현은 cuRobo output을 하나의 full-task resident lease에 결속하고, C2 splice·pre/post-attach collision·event lineage를 독립 검증하는 것이다.</li>
 <li>그 다음 actual full command만 MuJoCo와 1x auto-loop Viser에 연결한다. Hardware 복구 후 controller interpolation, measured tracking과 grasp/drop 성공률을 검증한다.</li>
