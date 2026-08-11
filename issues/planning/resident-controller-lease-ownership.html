@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Resident controller lease ownership · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-043 · 2026-08-11 · resident controller lease ownership</div>
+<h1>Deadline miss가 사용 중인 CUDA slot 재사용으로 이어지지 않도록 controller와 allocator ownership을 분리한다.</h1>
+<p class="lede">GPU-resident trajectory를 반환해도 planner, validator, controller와 allocator가 언제 같은 slot을 소유하는지 명확하지 않으면 timeout 직후 buffer를 덮어쓸 수 있다. 특히 controller worker가 lease를 take한 뒤 ack를 잃은 상태는 “실패”가 아니라 consumer가 메모리를 사용 중일 수 있는 불확실 상태다. CPU fallback이나 즉시 free를 추가하지 않고 one-shot mailbox, cancel quarantine, CUDA-event release token과 allocator receipt로 생명주기를 고정했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/9ba3183"><code>9ba3183</code></a>은 diagnostic same-process CUDA handoff contract를 구현한다. 실제 controller SDK callback, CUDA allocator와 cuRobo kernel이 없는 현재에는 hardware execution authority가 없다.</div>
+
+<h2>위험 분석</h2>
+<table class="table">
+<tr><th>상태</th><th>잘못된 처리</th><th>채택한 처리</th></tr>
+<tr><td><code>pending</code>, worker가 take하지 않음</td><td>계속 slot을 점유하거나 임의 timeout 처리</td><td>Validation completion event 뒤 release token 발행 가능</td></tr>
+<tr><td><code>in_flight</code>, ack timeout</td><td>Planner 실패로 간주하고 즉시 allocator에 반환</td><td><code>cancel_pending</code>으로 전이하고 controller cancel confirmation을 기다림</td></tr>
+<tr><td>Cancel confirmation timeout</td><td>다음 frame 계획을 위해 강제 재사용</td><td><code>quarantined</code>로 격리하고 절대 release하지 않음</td></tr>
+<tr><td>Accepted controller가 completion을 보고하지 않음</td><td>무기한 점유 또는 예정 시간 뒤 자동 free</td><td>Lease duration + completion grace watchdog 뒤 cancel/quarantine</td></tr>
+<tr><td>Allocator가 release callback을 받음</td><td>Callback 반환만으로 freed 처리</td><td>Exact release/lease digest와 synchronized CUDA event가 결속된 receipt 요구</td></tr>
+</table>
+
+<h2>Capability와 policy</h2>
+<p><code>ResidentTrajectoryAdapterCapability</code>는 arm/hand 종류를 하드코딩하지 않는다. Startup backend가 exact arm/end-effector ID, runtime-session digest, planning-buffer allocation, joint/waypoint/duration 상한, dtype/layout과 최소 lead time을 선언한다. 현재 lease에는 CUDA IPC handle metadata가 없으므로 transport는 <code>cuda_same_process</code>만 허용한다. 구현되지 않은 <code>cuda_ipc</code>를 문자열만으로 승인하지 않는다.</p>
+<p>Policy는 take, ack, completion, cancel-confirmation latency를 별도로 둔다. Draft example은 각각 2 ms, 3 ms, 20 ms completion grace, 20 ms cancel confirmation을 제안하지만 측정값이 아니다. Target controller에서 raw trial을 측정하기 전에는 threshold를 실행 권한으로 사용하지 않는다.</p>
+
+<h2>One-shot 상태기계</h2>
+<ol>
+<li>Accepted warm-start cycle만 <code>pending</code>으로 publish한다. Exact admission/result/validation ID와 trajectory/stop lease를 함께 묶는다.</li>
+<li>Worker take는 capacity one이며 재호출로 같은 lease를 다시 받을 수 없다.</li>
+<li>Accepted ack 뒤 <code>owned_by_controller</code>가 되고, controller는 validation CUDA event를 기다린 뒤 trajectory를 사용한다.</li>
+<li>Ack 또는 completion timeout은 release가 아니라 cancel request를 생성한다. Worker는 이를 한 번 take해 실제 controller cancel을 수행한다.</li>
+<li>Cancel/completion/rejection은 consumer-completion CUDA event를 반환해야 <code>release_pending</code>이 된다.</li>
+<li>Allocator가 release token을 한 번 take하고 해당 event를 synchronize한 뒤 exact lease digest receipt를 반환한다.</li>
+<li>Receipt 검증이 끝나야 최종 <code>released</code>다. Wrong event, wrong release ID와 future timestamp는 거부한다.</li>
+</ol>
+
+<h2>Fixed-shape 출력 재감사</h2>
+<p>Ownership 구현 중 canonical solver가 16-sample request에 내부적으로 유효한 64-waypoint lease를 반환해도 기존 검증을 통과할 수 있음을 발견했다. CUDA graph의 fixed shape를 선언하면서 output tail을 허용하는 모순이었다. Canonical backend는 이제 generated waypoint count, optimized-prefix count와 trajectory duration을 exact request mask/time grid에서 재계산한다. Runtime-session hash와 allocation이 같아도 shape나 duration이 다르면 validator 전에 거부한다.</p>
+
+<h2>배제한 fallback</h2>
+<ul>
+<li>Ack timeout에서 즉시 slot을 free하지 않는다. Controller가 command를 queue했지만 응답만 유실됐을 수 있다.</li>
+<li>Cancel timeout에서 CPU stop path나 새 planner로 자동 전환하지 않는다. 같은 hardware와 memory ownership이 불명확하다.</li>
+<li>지원 metadata가 없는 CUDA IPC를 capability option으로 남기지 않았다.</li>
+<li>Controller와 allocator callback을 mailbox lock 안에서 호출하지 않는다. Lock은 상태 전이에만 사용한다.</li>
+<li>Arm, hand, joint 수와 duration을 xArm/Inspire 상수로 고정하지 않고 runtime capability로 검사한다.</li>
+</ul>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Publish→take→accept→complete→release token→allocator receipt의 정상 경로를 재현했다.</li>
+<li>Take timeout, adapter rejection, pre-take cancel, ack timeout, completion timeout, cancel-confirmation timeout과 quarantine을 검증했다.</li>
+<li>Foreign allocation, lead-time 부족, wrong allocator event, same-slot lease와 fixed-shape/duration drift를 fail-closed로 검증했다.</li>
+<li>Resident runtime 집중 회귀 55개와 Python compile, <code>git diff --check</code>가 통과했다.</li>
+<li>전체 planning suite 661개에서 새 code failure는 없었다. OpenCV import 3개는 calibration 환경에서 14개 모두 통과했고 2개는 기존 skip이다.</li>
+<li>Planning 환경에는 Black이 설치되어 있지 않아 formatting tool check는 실행하지 못했다.</li>
+</ul>
+
+<h2>다음 검증</h2>
+<p>다음 단계는 이 protocol을 구현하는 same-process CUDA controller/allocator test double이 아니라 실제 adapter를 연결하는 것이다. 이후 custom cuRobo rollout이 exact lease를 생산하고 independent GPU validator와 controller가 CUDA event chain을 공유하는지 target driver에서 측정한다. HPP-FCL parity, 50 ms planning policy, controller deadline과 supervised stop trial 중 하나라도 실패하면 execution activation은 계속 차단한다.</p>
+
+<p><a href="gpu-resident-warm-start-result.html">GPU-resident result transport</a>와 <a href="curobo-realtime-collision-audit.html">cuRobo activation gate</a>를 함께 참고한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>

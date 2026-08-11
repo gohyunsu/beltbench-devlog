@@ -16,7 +16,7 @@
 <h1>GPU에 옮길 수 있는 코드가 아니라, 제어 주기의 resident batch hot path만 cuRobo로 가속한다.</h1>
 <p class="lede">실시간성이 중요하다는 이유로 모든 모듈을 GPU로 옮기면 작은 상태기계와 장치 I/O까지 kernel launch와 host-device 동기화 비용을 부담한다. BeltBench는 deadline을 직접 줄이는 고정 크기 수치 연산만 GPU에 상주시킨다. cuRobo V2는 최종 온라인 충돌·arm-prefix 최적화 권위자 후보지만, 현재는 exact assembly parity와 서버 runtime 조건을 충족하지 못했으므로 HPP-FCL을 offline oracle로 유지한다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/474a9f3"><code>474a9f3</code></a>에서 cuRobo scene 변환을 보수적으로 수정했고, <a href="https://github.com/gohyunsu/beltbench/commit/4396cef"><code>4396cef</code></a>에서 in-memory result와 synchronous artifact write 0회 gate를 추가했다. <a href="https://github.com/gohyunsu/beltbench/commit/f868873"><code>f868873</code></a>은 concrete backend transport를 activation evidence에 결속했으며, <a href="https://github.com/gohyunsu/beltbench/commit/56bb677"><code>56bb677</code></a>은 실제 warm-start 결과를 immutable CUDA lease와 bounded async recorder로 교체했다. 이는 runtime contract와 collision activation gate의 완료이지 cuRobo online authority 활성화가 아니다. <code>junjinyong</code> A6000의 driver <code>535.161.07</code>은 pinned V2 정책의 최소 <code>580.65.06</code>을 충족하지 않는다.</div>
+<div class="callout"><strong>현재 효력:</strong> source commit <a href="https://github.com/gohyunsu/beltbench/commit/474a9f3"><code>474a9f3</code></a>에서 cuRobo scene 변환을 보수적으로 수정했고, <a href="https://github.com/gohyunsu/beltbench/commit/4396cef"><code>4396cef</code></a>에서 in-memory result와 synchronous artifact write 0회 gate를 추가했다. <a href="https://github.com/gohyunsu/beltbench/commit/56bb677"><code>56bb677</code></a>은 warm-start 결과를 immutable CUDA lease로 교체했고, <a href="https://github.com/gohyunsu/beltbench/commit/9ba3183"><code>9ba3183</code></a>은 controller/allocator one-shot ownership을 추가했다. 이는 runtime contract와 collision activation gate의 완료이지 cuRobo online authority 활성화가 아니다. <code>junjinyong</code> A6000의 driver <code>535.161.07</code>은 pinned V2 정책의 최소 <code>580.65.06</code>을 충족하지 않는다.</div>
 
 <h2>최종 모듈 배치</h2>
 <table class="table">
@@ -57,7 +57,7 @@
 <h2>In-memory 결과 gate</h2>
 <p>이전 benchmark는 CUDA graph, resident buffer와 host-device 왕복 횟수를 검사했지만, solver가 반환 직전에 파일을 썼는지 또는 파일 reference만 반환했는지는 구분하지 못했다. 따라서 짧게 측정된 총 latency만으로 file-backed adapter가 통과할 수 있었다.</p>
 <p>Realtime acceleration schema를 policy/capability <code>1.6</code>, raw trial <code>1.3</code>으로 올렸다. Target policy는 <code>required_result_transport=in_memory</code>와 <code>maximum_synchronous_artifact_writes=0</code>을 요구한다. Capability, raw trial, concrete backend instance 중 하나라도 filesystem transport를 선언하거나 한 trial이라도 동기 write를 관찰하면 activation이 실패한다.</p>
-<p><code>56bb677</code>에서 <code>CanonicalArmPrefixWarmStartBackend</code>는 <code>in_memory</code>를 선언한다. Trajectory/stop lease는 exact runtime-session hash, planning-buffer allocation, 서로 다른 slot, monotonic generation, fixed shape와 producer CUDA event를 결속한다. Validator는 동일 lease digest와 validation completion event를 반환한다. Slot이 재사용되면 generation이 달라져 stale result를 승인할 수 없다. <code>BoundedAsyncWarmStartArtifactRecorder</code>의 planner-side submit은 validation이나 materialization 없이 <code>put_nowait</code>만 수행하며, worker가 ancestry를 다시 검증한 후 sink를 호출한다. 이 구현은 transport blocker를 제거했지만 actual cuRobo kernel benchmark와 controller lease ownership은 아직 남아 있다.</p>
+<p><code>56bb677</code>에서 <code>CanonicalArmPrefixWarmStartBackend</code>는 <code>in_memory</code>를 선언한다. Trajectory/stop lease는 exact runtime-session hash, planning-buffer allocation, 서로 다른 slot, monotonic generation, fixed shape와 producer CUDA event를 결속한다. Validator는 동일 lease digest와 validation completion event를 반환한다. Slot이 재사용되면 generation이 달라져 stale result를 승인할 수 없다. <code>BoundedAsyncWarmStartArtifactRecorder</code>의 planner-side submit은 validation이나 materialization 없이 <code>put_nowait</code>만 수행하며, worker가 ancestry를 다시 검증한 후 sink를 호출한다. <code>9ba3183</code>은 validated lease를 controller가 한 번만 take하고 consumer event가 결속된 allocator receipt 뒤에만 반환하도록 ownership blocker를 제거했다. Actual cuRobo kernel benchmark와 hardware adapter는 여전히 남아 있다.</p>
 
 <h2>Activation gate</h2>
 <ol>
@@ -72,13 +72,13 @@
 <h2>검증 결과와 다음 순서</h2>
 <ul>
 <li>cuRobo scene/backend, assembly asset, real-time acceleration, arm-prefix planning과 collision backend 확장 회귀 45개가 통과했다.</li>
-<li>Resident lease, canonical backend, runtime engine과 async recorder 집중 회귀 46개가 통과했다.</li>
-<li>Planning 환경 전체 suite 652개에서 code failure 없이 2개가 skip됐고, OpenCV 미설치로 import되지 않은 3개 module은 calibration 환경에서 14개 모두 통과했다.</li>
-<li><code>git diff --check</code>를 통과했고 source <code>56bb677</code>을 GitHub <code>main</code>에 push했다.</li>
+<li>Resident lease, canonical backend, runtime engine, async recorder와 controller ownership 집중 회귀 55개가 통과했다.</li>
+<li>Planning 환경 전체 suite 661개에서 새 code failure 없이 2개가 skip됐고, OpenCV 미설치로 import되지 않은 3개 module은 calibration 환경에서 14개 모두 통과했다.</li>
+<li><code>git diff --check</code>를 통과했고 source <code>9ba3183</code>을 GitHub <code>main</code>에 push했다.</li>
 <li>검증된 incremental bundle로 서버 source를 <code>2085f4c</code>에서 <code>474a9f3</code>, 이후 <code>f868873</code>까지 fast-forward했다. 기존 native build는 보존했다.</li>
 <li>Source-bound endpoint screening <code>115689</code>는 2,000개 중 140개를 유지했다. Full evaluation <code>115694</code>는 10,313개 파일을 재검증해 117 geometry-clear diagnostic, 0 execution-authorized를 확인했다. Clock skew 때문에 timing evidence는 무효다.</li>
 <li>Explicit connector manifest를 사용하는 deployment <code>115696</code>, shortlist <code>115697</code>, portfolio <code>115698</code>을 모두 완료했다. Portfolio는 5.0초 intercept의 301-frame full-mesh diagnostic을 통과했지만 execution candidate는 비워 두었다.</li>
-<li>다음 순서는 resident lease의 validation-to-controller ownership을 구현하고, driver 조건이 맞는 GPU에서 custom cuRobo rollout을 HPP-FCL corpus 및 50 ms target policy로 benchmark하는 것이다.</li>
+<li>Resident lease의 validation-to-controller-to-allocator ownership은 <code>9ba3183</code>에서 구현했다. 다음 순서는 actual adapter를 연결하고 driver 조건이 맞는 GPU에서 custom cuRobo rollout을 HPP-FCL corpus 및 50 ms target policy로 benchmark하는 것이다.</li>
 </ul>
 
 <p>cuRobo의 <a href="https://nvlabs.github.io/curobo/latest/reference/runtime_configuration.html">runtime configuration</a>, <a href="https://nvlabs.github.io/curobo/latest/api/curobo.motion_planner.html">motion planner API</a>, <a href="https://nvlabs.github.io/curobo/latest/reference/self_collision.html">self-collision model</a>과 <a href="https://nvlabs.github.io/curobo/latest/getting-started/installation.html">installation requirements</a>를 기준으로 감사했다. 이전 단계는 <a href="inference-demo-physics-validation.html">assembly와 physics validation</a>, <a href="sampled-path-family-production-evidence.html">source-consistent path-family evidence</a>에 기록했다.</p>
