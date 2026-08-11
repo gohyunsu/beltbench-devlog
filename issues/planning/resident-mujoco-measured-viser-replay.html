@@ -14,7 +14,7 @@
 <main class="wrap article">
 <div class="eyebrow">ISSUE-055 · 2026-08-11 · measured MuJoCo Viser replay</div>
 <h1>계획 animation과 measured simulation replay를 분리하고 1.0x로 재생한다.</h1>
-<p class="lede">기존 Viser는 planning-validated command와 lifecycle을 재생했지만 MuJoCo가 실제로 측정한 servo q, object pose, contact와 실패를 보여주지는 않았다. Source commit <a href="https://github.com/gohyunsu/beltbench/commit/7a80842"><code>7a80842</code></a>는 scenario, admission, evidence를 다시 독립 검증한 뒤 실제 arm, Inspire hand, paired connector, object, conveyor, table과 drop bin 위에 measured state를 1.0x로 자동 반복한다. 보간은 display 전용이며 새로운 접촉이나 성공 상태를 만들지 않는다.</p>
+<p class="lede">기존 Viser는 planning-validated command와 lifecycle을 재생했지만 MuJoCo가 실제로 측정한 servo q, object pose, contact와 실패를 보여주지는 않았다. Source commit <a href="https://github.com/gohyunsu/beltbench/commit/7a80842"><code>7a80842</code></a>는 scenario, admission, evidence를 다시 독립 검증한 뒤 실제 arm, Inspire hand, paired connector, object, conveyor, table과 drop bin 위에 measured state를 1.0x로 자동 반복한다. <a href="https://github.com/gohyunsu/beltbench/commit/ea842e1"><code>ea842e1</code></a>은 GPU smoke 결과를 PBS stdout stage-out과 분리해 capability evidence를 직접 남긴다. 보간은 display 전용이며 새로운 접촉이나 성공 상태를 만들지 않는다.</p>
 
 <div class="callout"><strong>현재 효력:</strong> measured rollout이 존재할 때만 새 viewer를 열 수 있다. Viewer는 <code>physics_validation=false</code>, <code>online_collision_authority=false</code>, <code>execution_authorized=false</code>를 유지하며 planner나 controller로 어떤 값도 되돌려 보내지 않는다. Local에 actual cuRobo V2 resident Pepsi bundle이 없으므로 actual grasp replay 성공은 아직 주장하지 않는다.</div>
 
@@ -62,6 +62,7 @@
 <li><strong>Visualization 환경의 <code>hppfcl</code> 부재:</strong> 새 replay와 무관한 <code>test_end_effector</code>를 visualization 환경에 함께 넣자 native planning module import가 실패했다. Visualization 회귀와 planning hand-model 회귀를 각 Conda 환경으로 분리했다.</li>
 <li><strong>Sandbox에서 Conda temp 생성 실패:</strong> 비승인 style probe가 writable temp directory를 찾지 못해 Conda 자체 예외를 냈다. Test write가 필요한 실행은 승인된 환경에서 수행하고, 설치되지 않은 formatter를 새 의존성으로 추가하지 않았다. <code>git diff --check</code>와 기존 형식 기준으로 검사했다.</li>
 <li><strong>Measured limit overshoot:</strong> Shared scene은 계획 상태에 URDF limit을 강제한다. <code>enforce_urdf_limits</code>를 명시적 boolean으로 분리하고 measured viewer만 false를 사용하되 joint identity와 finite state validation은 항상 수행하도록 했다.</li>
+<li><strong>PBS stdout stage-out 실패:</strong> junjinyong job <code>115836.ECE-util1</code>은 A6000 node에서 exit 0이었지만 <code>Post job file processing error</code>로 driver 출력이 login node에 전달되지 않았다. Smoke script가 <code>beltbench-runs/gpu-smoke/JOB_ID.txt</code>를 임시 파일 뒤 atomic rename으로 직접 만들도록 수정했다. 재실행 <code>115838.ECE-util1</code>의 artifact는 정상 회수됐다.</li>
 </ol>
 
 <h2>검증 결과</h2>
@@ -72,6 +73,7 @@
 <li>MuJoCo admission/backend/evidence/replay 통합 17개: 모두 통과</li>
 <li>새 Viser CLI <code>--help</code>: import와 필수 인자 확인, exit 0</li>
 <li><code>git diff --check</code>: 통과</li>
+<li>junjinyong capability artifact: <code>ece-a6gpu6</code>, NVIDIA RTX A6000, driver <code>535.161.07</code>, 49,140 MiB</li>
 </ul>
 
 <h2>실행 방법</h2>
