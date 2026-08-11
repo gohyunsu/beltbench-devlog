@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Resident MuJoCo admission과 cuRobo 권한 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-053 · 2026-08-11 · resident MuJoCo admission and cuRobo authority</div>
+<h1>MuJoCo 진단을 source-bound하고 cuRobo를 online collision authority로 유지한다.</h1>
+<p class="lede">실시간 grasp demo에서 collision을 CPU mesh checker로 계속 처리하는 것으로 보이면 cuRobo를 쓰지 않는 이유를 설명할 수 없다. 반대로 모든 작은 상태 머신까지 GPU로 옮기면 kernel launch와 동기화가 늘어 end-to-end p99가 나빠질 수 있다. 이번 단계는 GPU 수치 hot path, CPU causal control, offline oracle와 asynchronous physics의 권한을 분리하고, planning-validated resident command가 정확히 같은 MuJoCo 모델에만 들어가도록 admission을 닫았다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/afc22c1"><code>afc22c1</code></a>은 backend-neutral full-command source join과 exact-MJB admission을 구현한다. MuJoCo는 항상 <code>online_collision_authority=false</code>이고, 실제 cuRobo V2 kernel·parity·target-GPU p99 또는 hardware 실행을 증명하지 않는다.</div>
+
+<h2>질문을 다시 정의한 이유</h2>
+<p>“GPU로 바꿀 수 있는 모든 모듈을 GPU로 바꾼다”는 구현 목표는 잘못됐다. 목표는 GPU 모듈 수가 아니라 sensor timestamp부터 controller command까지의 p99 latency, deadline miss와 collision false negative다. 작은 timestamp 비교, lease generation, deadline/cancel state와 controller acknowledgement는 host I/O 순서를 소유한다. 이를 GPU kernel로 보내면 병렬 이득 없이 host-device synchronization만 추가된다.</p>
+<table class="table">
+<tr><th>책임</th><th>배치</th><th>이유와 권한</th></tr>
+<tr><td>Image/depth pose inference</td><td>GPU, camera cadence와 비동기</td><td>Dense tensor workload이며 가능하면 planar estimate까지 device에 유지한다.</td></tr>
+<tr><td>Timestamp join, freshness, deadline, cancel, controller I/O</td><td>CPU</td><td>작고 순서가 중요한 causal state다. GPU로 옮기면 synchronization이 늘어난다.</td></tr>
+<tr><td>Intercept batch, FK/IK, self/world/moving-object continuous collision, trajopt, dynamics, hard reduction</td><td>한 개의 resident cuRobo V2 GPU worker</td><td>후보·seed·time grid 병렬 수치 hot path이며 향후 online planning/collision authority다.</td></tr>
+<tr><td>Exact mesh false-negative 비교</td><td>Offline HPP-FCL CPU oracle</td><td>Sphere approximation 승격 전에 zero-false-negative corpus gate를 제공한다.</td></tr>
+<tr><td>Tracking/contact/retention/drop physics</td><td>Asynchronous MuJoCo 또는 Isaac</td><td>Measured simulation trace를 만들지만 control deadline과 online collision을 소유하지 않는다.</td></tr>
+<tr><td>Viser</td><td>Asynchronous</td><td>사람이 planning 결과를 확인하는 display이며 controller feedback이 아니다.</td></tr>
+</table>
+
+<h2>기존 구조의 문제</h2>
+<ol>
+<li><strong>공통 source join이 visualization 아래에 존재:</strong> MuJoCo가 그대로 재사용하면 simulation이 Viser 계층을 import하고 display pose가 physics input처럼 보인다.</li>
+<li><strong>구형 event backend와 새 full command의 계보 불일치:</strong> 기존 MJB는 event handoff와 offline planar observation으로 생성됐다. 새 resident output·producer lease·validated lease·lifecycle을 확인하지 않고 연결하면 서로 다른 initial object state와 command를 섞는다.</li>
+<li><strong>파일 hash만으로 compiled model을 설명할 수 없음:</strong> 같은 MJB라도 actuator target 순서, position-servo coverage, free joint 배치, geometry namespace와 collision pair가 예상과 다를 수 있다.</li>
+<li><strong>진단 가능과 physics-valid의 혼합:</strong> Provisional mass, friction, servo gain, connector와 calibration은 모델 실행 자체를 막지 않지만 물리 검증 결과로 승격되어서는 안 된다.</li>
+<li><strong>cuRobo block의 최신성:</strong> 과거 driver 측정만 인용하면 환경이 바뀌었을 때 V2 구현을 계속 미루는 오류가 생긴다. Compute node에서 다시 측정해야 했다.</li>
+</ol>
+
+<h2>구현한 source 경계</h2>
+<p>Planning command의 공통 8-source semantic join을 <code>beltbench/runtime/resident_full_command_inputs.py</code>로 이동했다. Output, producer lease, validated lease, arm-prefix request, object lifecycle, robot manifest, object manifest와 workcell의 payload/tensor/session/template/slot/event/scene identity를 재계산한다. Viser는 이 runtime loader를 호출할 뿐 수치 권한을 소유하지 않는다.</p>
+<p>MuJoCo scenario는 여기에 arm/assembly collision semantics, assembly MJCF/report, conveyor calibration, stable pose, physics config, actuation config, simulation policy, simulator capability, workcell preflight와 exact MJB를 추가한다. Loose-source override나 runtime fallback은 없다. Workcell preflight가 기록한 각 source digest, canonical assembly report와 MJB digest가 scenario와 다르면 모델을 열기 전에 거부한다.</p>
+
+<h2>Exact MJB admission</h2>
+<ul>
+<li>MuJoCo family/version, deterministic reset, <code>mjb</code> capability, fixed 2 ms step와 command duration policy를 확인한다.</li>
+<li>Compiled body/joint/qpos/qvel/geometry/actuator dimensions을 workcell preflight와 대조한다.</li>
+<li>Actuator order가 arm joint 뒤 mimic-expanded full-hand joint 순서와 정확히 같고 전부 bounded position servo인지 확인한다.</li>
+<li>Free joint가 하나뿐인지, 그 joint가 이름만 같은 것이 아니라 실제 object body에 속하는지 읽어 확인한다.</li>
+<li>Arm, hand, 흰색 paired connector, workcell, object visual/collision geometry의 누락과 추가를 모두 거부한다.</li>
+<li>Semantic checked pair와 compiled explicit pair를 대조하고 checked와 ignored의 합이 assembly 전체 pair partition인지 확인한다.</li>
+<li>Robot/connector CAD와 transform digest가 assembly report와 같은지 확인한다.</li>
+<li>Compiled model의 default object SE(3)를 <code>mj_forward</code> 후 읽고 resident lifecycle sample 0과 translation·rotation 각각 <code>1e-8</code> 이내인지 확인한다.</li>
+</ul>
+<p><code>diagnostic_rollout_ready</code>는 위 executable-model 조건만 나타낸다. <code>physics_validation_ready</code>는 여기에 모든 non-informational preflight limitation과 measured calibration/stable pose/physics/actuation 상태를 추가한다. 두 경우 모두 hardware execution과 online collision authority는 false다.</p>
+
+<h2>실제 자산 probe</h2>
+<p>Local v7 MJB SHA-256은 <code>96e8dafa0af197841a3b11163d1c7407e7780c72fa0dfb9b5c751cd939cc0e26</code>이다. 새 probe로 MuJoCo 3.10.0, timestep 0.002 s, actuator 18개, 유일한 <code>object/pepsi_light/free</code>가 실제 <code>object/pepsi_light</code> body에 속함을 읽었다. Default object translation은 <code>(0.620000, -0.400000, 0.141052)</code>다.</p>
+<p>이 결과는 모델 introspection smoke일 뿐이다. 실제 cuRobo producer/validator가 만든 resident five-artifact set이 없어 closed scenario를 만들지 않았고, 따라서 새 backend rollout이나 measured trace도 주장하지 않는다. Fixture를 실제 Pepsi planning output으로 포장하지 않았다.</p>
+
+<h2>junjinyong A6000 재측정</h2>
+<p><code>SERVER_GUIDE.md</code> 절차대로 public-key SSH, <code>ssu_a6gpu</code> helper/queue를 확인한 뒤 repository의 capability-only PBS probe를 제출했다. Job <code>115818</code>은 A6000 compute node에서 exit 0으로 완료됐고 source commit과 tracked worktree가 실행 전후 같았다. 원격 checkout에 이미 있던 untracked BODex build 산출물은 수정하거나 삭제하지 않았다.</p>
+<ul>
+<li>GPU: NVIDIA RTX A6000, memory 49,140 MiB, compute capability 8.6</li>
+<li>Driver: <code>535.161.07</code></li>
+<li>선택한 cuRobo V2 0.8.0 policy 최소 driver: <code>580.65.06</code></li>
+</ul>
+<p>따라서 현재 서버에서 V2를 억지로 설치해 나온 실패나 legacy V1 결과를 production collision authority로 바꾸지 않는다. Driver가 갱신되면 sphere fitting, HPP-FCL parity, fixed-shape CUDA graph와 1,000-trial p99를 우선 실행한다.</p>
+
+<h2>발생한 문제, 원인과 해결</h2>
+<ol>
+<li><strong><code>compileall</code> read-only 실패:</strong> 현재 도구 sandbox가 <code>__pycache__</code> 쓰기를 막았다. Syntax 문제로 오판하지 않고 AST parse와 승인된 conda test 실행으로 분리했다.</li>
+<li><strong>MuJoCo capability에 MJB 누락:</strong> 기존 example은 MJCF/URDF/OBJ/STL만 선언하면서 실제 backend는 MJB를 읽었다. Admission이 binary format을 요구하도록 하고 capability에 <code>mjb</code>를 명시했다.</li>
+<li><strong>첫 admission의 collision partition 누락:</strong> Checked pair를 비교했지만 ignored pair와 전체 pair의 완전성은 확인하지 않았다. 누락 pair가 broad ignore처럼 작동할 수 있어 complete/disjoint partition hard gate와 regression을 추가했다.</li>
+<li><strong>Free joint 이름만 검사:</strong> 다른 body에 동일 관례 이름이 있어도 통과할 여지가 있었다. Compiled <code>body_jntadr/body_jntnum</code>에서 object body joint 소유권을 읽도록 보강했다.</li>
+<li><strong>PBS login shell에서 <code>qsub</code> 미발견:</strong> Non-interactive SSH가 profile PATH를 제공하지 않았다. Guide에 기록된 PBS 설치 경로의 <code>/opt/pbs/bin/qsub</code>를 사용했다.</li>
+<li><strong>완료 직후 결과 디렉터리 지연:</strong> PBS state가 exiting일 때 shared filesystem 목록이 잠시 비어 있었다. Job을 재제출하지 않고 completion과 directory materialization을 분리해 poll했다.</li>
+<li><strong>Planning env의 <code>cv2</code> 부재:</strong> 전체 suite의 calibration, pickplace, pose artifact 세 import 오류는 기존 환경 분리 문제였다. Calibration conda 환경에서 해당 14개를 별도 실행했다.</li>
+</ol>
+
+<h2>검증 결과</h2>
+<ul>
+<li>새 scenario/admission regression은 source closure, exact admission, actuator order, free-joint uniqueness/body ownership, initial pose, pair partition과 provisional readiness 분리를 검증한다.</li>
+<li>최종 focused admission·Viser·legacy MuJoCo admission 22개가 모두 통과했다.</li>
+<li>최종 pushed commit의 expanded resident/MuJoCo 회귀 52개는 50개 통과, MuJoCo optional 2개 skip이었다.</li>
+<li>Planning 전체는 보강 전 706개 중 701개 통과, 2개 skip, 기존 <code>cv2</code> import 오류 3개였다. 새 코드는 해당 오류와 무관하다.</li>
+<li>Calibration 환경의 OpenCV 의존 14개와 MuJoCo 환경 전용 31개가 모두 통과했다.</li>
+<li>Public runtime/simulation imports, 두 CLI <code>--help</code>, AST parse, 88-column Python 검사와 <code>git diff --check</code>가 통과했다.</li>
+</ul>
+
+<h2>남은 순서</h2>
+<ol>
+<li>관리자 승인 아래 target driver를 V2 요구사항 이상으로 갱신하거나 별도 지원 GPU worker를 확보한다.</li>
+<li>Exact xArm/Inspire/connector sphere model을 만들고 HPP-FCL mesh corpus에서 false negative 0과 허용 false-positive budget을 통과시킨다.</li>
+<li>Custom fixed-shape cuRobo V2 producer/independent validator를 구현해 dynamic-world, attached-sphere와 release-envelope continuous collision을 한 resident session에서 실행한다.</li>
+<li>실제 output·producer/validated lease·lifecycle로 MuJoCo scenario를 만들고 position-servo backend가 measured state/contact/containment trace를 별도 생성하게 한다.</li>
+<li>Physics parameter를 측정하기 전 결과는 diagnostic으로만 유지하고, hardware가 준비되면 controller lease, latency, moving contact와 grasp/drop reliability를 검증한다.</li>
+</ol>
+
+<p><a href="curobo-realtime-collision-audit.html">cuRobo real-time collision audit</a>, <a href="full-command-actual-asset-diagnostic.html">Full-command actual-asset diagnostic</a>, <a href="full-task-resident-validation.html">Full-task resident validation</a>을 함께 참고한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
