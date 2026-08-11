@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Resident abort command and collision · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-049 · 2026-08-11 · resident abort command and collision</div>
+<h1>GPU 가속은 모듈 수가 아니라 resident hot path와 검증 권한으로 설계한다.</h1>
+<p class="lede">Full-grid abort catalog까지 구현했지만 각 route는 실제 command와 object collision lifecycle 대신 호출자가 넣은 SHA-256 문자열만 참조했다. 이 상태에서는 cuRobo를 사용한다고 문서에 적어도 command shape, dtype, latch 연속성, attached-object pose와 release envelope가 실제 source에서 생성됐는지 확인할 수 없다. 사수님의 “충돌에 cuRobo를 왜 쓰지 않는가”라는 질문에 대한 올바른 수정은 CPU collision을 GPU로 단순 치환하는 것이 아니라, cuRobo가 맡을 수치 연산과 CPU가 유지할 safety/I/O 권한을 분리하고 그 경계를 typed artifact로 강제하는 것이다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/429b7f4"><code>429b7f4</code></a>는 exact abort <code>time/q/qd/qdd</code>, deterministic resident tensor digest, single-state object collision lifecycle와 catalog binding을 구현했다. cuRobo V2 policy는 attached-object와 release-envelope collision을 별도 필수 operation으로 요구한다. 실제 V2 kernel result, CUDA producer/validator event와 controller lease는 아직 없으므로 실행 권한은 차단된다.</div>
+
+<h2>검토 결론</h2>
+<table class="table">
+<tr><th>책임</th><th>배치</th><th>근거</th></tr>
+<tr><td>Image/depth inference, batched intercept target, FK/IK, self/world/object collision, trajopt, dynamics, hard reduction</td><td>Resident GPU / cuRobo V2</td><td>Batch·horizon 병렬성이 크고 중간 tensor를 host로 복사하지 않을수록 이득이 크다.</td></tr>
+<tr><td>Timestamp join, freshness, greatest-reached index, deadline, cancel escalation</td><td>CPU</td><td>작은 ordered state machine이며 host clock·I/O와 결합된다. GPU kernel launch가 오히려 synchronization을 늘린다.</td></tr>
+<tr><td>Controller acknowledgement, protective stop, lease ownership</td><td>CPU/controller safety system</td><td>수치 계산이 아니라 causal I/O와 hardware safety authority다.</td></tr>
+<tr><td>Exact mesh false-negative oracle</td><td>Offline HPP-FCL</td><td>cuRobo sphere/primitive 근사의 배포 전 parity를 검사하며 online fallback으로 사용하지 않는다.</td></tr>
+<tr><td>MuJoCo/Isaac, Viser</td><td>비동기</td><td>Physics와 시각화가 control deadline을 막거나 controller authority를 대신하면 안 된다.</td></tr>
+</table>
+
+<h2>발견한 문제와 원인</h2>
+<ol>
+<li><strong>Placeholder command digest:</strong> route spec이 command ID, command SHA, tensor SHA, sample count와 duration을 모두 독립 입력으로 받았다. 서로 모순되는 metadata도 형식만 맞으면 catalog까지 도달할 수 있었다.</li>
+<li><strong>Dtype lineage 누락:</strong> 첫 구현의 tensor hash는 기본 <code>float32</code>를 사용했다. Nominal catalog가 <code>float64</code>여도 abort digest가 조용히 다른 dtype으로 계산될 수 있었다.</li>
+<li><strong>Abort collision digest만 존재:</strong> conveyor translation, attached FK pose, contained release envelope 중 어느 전략을 썼는지와 sample grid가 command에 일치하는지 검증할 객체가 없었다.</li>
+<li><strong>너무 넓은 capability 이름:</strong> V2 policy의 <code>robot_world_collision</code>만으로는 attached object와 drop release envelope를 실제 benchmark가 실행했는지 구분할 수 없었다.</li>
+<li><strong>“모두 GPU” 해석 위험:</strong> timestamp와 cancel state까지 GPU로 옮기면 host-device synchronization과 kernel launch가 늘고 safety ownership이 흐려진다. 가속 목표는 GPU 모듈 개수가 아니라 end-to-end p99와 transfer 수여야 한다.</li>
+</ol>
+
+<h2>구현한 해결</h2>
+<ul>
+<li><code>ResidentAbortCommand</code>는 full-command request, nominal collision lifecycle, runtime session, nominal template, motion-limit profile, planner result, latch, dtype와 exact named joint samples를 하나의 immutable payload로 결속한다.</li>
+<li>첫 abort sample의 arm/hand position·velocity·acceleration이 nominal latch와 정확히 같아야 한다. Abort 이후 hand는 고정되고 terminal arm velocity·acceleration은 0이어야 한다. 이는 continuous collision이나 terminal-region safety를 대신하지 않으므로 contract는 계속 execution-blocked다.</li>
+<li>Dense tensor hash의 axis order를 <code>time,(arm+end_effector)_(q,qd,qdd)</code>로 고정하고 dtype를 command source에서만 받는다.</li>
+<li><code>ResidentAbortObjectCollisionLifecycle</code>는 기존 object sample/pass 계약을 재사용한다. Conveyor는 측정 속도로 평행이동하고, attached object는 각 arm sample의 robot-neutral FK를 따르며, contained drop은 release envelope, placed object는 static world를 사용한다.</li>
+<li>Catalog compiler는 command와 lifecycle을 source에서 다시 생성해 payload가 같은지 확인한다. Command/tensor/lifecycle digest, sample count와 duration은 artifact에서 파생되며 호출자가 중복 입력할 수 없다.</li>
+<li>cuRobo V2 runtime policy에 <code>attached_object_collision</code>과 <code>release_envelope_collision</code>을 추가했다. Capability와 1,000-trial benchmark가 이를 실제 operation으로 보고하지 않으면 activation은 fail closed한다.</li>
+</ul>
+
+<h2>구현 중 문제와 처리</h2>
+<ul>
+<li>중단된 patch가 두 새 파일에 부분 적용됐을 가능성이 있어 작업 재개 직후 line count, head/tail과 <code>git diff --check</code>로 파일 완전성을 먼저 확인했다.</li>
+<li>초기 command contract를 재검토하면서 dtype 결함을 발견했다. Optional hash 함수 인자를 제거하고 command의 source-bound dtype만 사용하도록 바꿨으며 foreign dtype verification 실패를 테스트했다.</li>
+<li><code>beltbench-planning</code> 환경에는 <code>pytest</code>가 없어 새 패키지를 임의 설치하지 않았다. 해당 환경의 Python과 표준 <code>unittest</code>로 동일 test module을 실행했다.</li>
+<li>전체 planning suite의 3개 import error는 <code>cv2</code> 미설치 때문이었다. 환경에 OpenCV를 덧붙이지 않고 기존 <code>beltbench-calibration</code> 환경에서 해당 3개 모듈을 별도로 실행했다.</li>
+<li><code>black</code>과 <code>ruff</code>도 planning lock에 없어 설치하지 않았다. 전체 unittest, focused backend test, 89자 초과 검색과 cached <code>git diff --check</code>로 검증 범위를 명시했다.</li>
+</ul>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Abort/full-command/realtime/collision-backend focused test 35개가 통과했다.</li>
+<li>Planning 환경 전체 685개 중 680개가 통과하고 2개가 skip됐다. Error 3개는 기존 <code>cv2</code> import 분리 문제뿐이다.</li>
+<li><code>beltbench-calibration</code> 환경에서 위 3개 모듈의 14개 테스트가 모두 통과했다.</li>
+<li>Command/lifecycle payload round-trip, deterministic tensor hash, C2 latch mismatch, moving hand, foreign dtype, source mismatch, coverage 누락·중복, 잘못된 mode, resource alias와 policy deadline을 회귀 테스트한다.</li>
+<li>사용자 작업 중인 source의 <code>AGENTS.md</code>와 두 planning 문서는 stage하지 않았고 이번 commit에 포함되지 않았다.</li>
+</ul>
+
+<h2>현재 제한과 다음 단계</h2>
+<p>Unit test의 abort path는 planner API 경계를 검증하기 위한 unvalidated hold command다. Collision lifecycle도 cuRobo에 넣을 exact typed input일 뿐 continuous collision 결과가 아니다. 현재 A6000 server driver 535는 공식 cuRobo V2 0.8.0 요구사항인 580.65.06 이상을 만족하지 않아 V2 p99, CUDA graph replay와 parity를 측정할 수 없다. V1 compatibility 결과를 V2 authority로 승격하지 않는다.</p>
+<ol>
+<li>Nominal full command, arm-prefix C2 splice, abort catalog, command/lifecycle와 producer/validator CUDA event를 하나의 full-task resident lease에 결속한다.</li>
+<li>지원 driver에서 custom cuRobo V2 rollout을 구현하고 fixed shape FK/self/world/attached/release collision, dynamics와 hard reduction을 한 resident hot path로 측정한다.</li>
+<li>동일 robot/world/configuration hash의 HPP-FCL corpus에서 false negative 0을 확인하고 target GPU 1,000 trial에서 deadline miss 0을 요구한다.</li>
+<li>검증된 full command capture만 MuJoCo와 actual-time Viser에 비동기로 연결한다.</li>
+</ol>
+
+<p>공식 근거는 <a href="https://nvlabs.github.io/curobo/latest/reference/runtime_configuration.html">cuRobo runtime configuration</a>, <a href="https://nvlabs.github.io/curobo/latest/reference/self_collision.html">self collision</a>, <a href="https://nvlabs.github.io/curobo/latest/api/curobo.scene.html">scene storage</a>, <a href="https://nvlabs.github.io/curobo/latest/api/curobo.motion_planner.html">motion planner API</a>, <a href="https://nvlabs.github.io/curobo/latest/getting-started/installation.html">installation requirements</a>를 사용했다. <a href="full-command-abort-coverage.html">Full-command abort coverage</a>와 <a href="segmented-curobo-object-collision.html">Segmented cuRobo object collision</a>을 함께 참고한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
