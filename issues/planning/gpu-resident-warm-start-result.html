@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GPU-resident warm-start result · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-042 · 2026-08-11 · GPU-resident warm-start result</div>
+<h1>Planner 결과를 파일 reference가 아니라 세대가 고정된 CUDA buffer lease로 전달한다.</h1>
+<p class="lede">Benchmark policy는 in-memory 결과와 synchronous artifact write 0회를 요구했지만 실제 canonical warm-start contract는 trajectory, stop path, solver report의 <code>SourceFileEvidence</code>를 성공 조건으로 요구했다. 빠른 cuRobo kernel을 붙여도 반환 직전에 JSON을 쓰면 control deadline이 storage latency에 종속된다. 파일 field에 예외를 추가하지 않고 runtime 결과 계약 자체를 GPU-resident ownership에 맞게 교체했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/56bb677"><code>56bb677</code></a>에서 canonical backend는 <code>in_memory</code> transport를 선언한다. 이 변경은 warm-start output transport blocker를 제거하지만 실제 cuRobo V2 kernel, target-GPU deadline, collision parity, controller commit을 승인하지 않는다.</div>
+
+<h2>발생한 문제와 원인</h2>
+<table class="table">
+<tr><th>문제</th><th>직접 원인</th><th>시스템 영향</th></tr>
+<tr><td>Successful warm start가 세 파일 evidence를 반드시 요구</td><td>Offline 재현 artifact와 online control result를 하나의 dataclass에 결합</td><td>Disk write와 hash가 measured deadline 안으로 들어올 수 있다.</td></tr>
+<tr><td>Backend capability가 <code>in_memory</code>여도 concrete backend는 <code>filesystem</code></td><td>Activation gate를 먼저 강화하고 실제 transport migration은 보류</td><td>Production policy가 canonical backend를 올바르게 차단하지만 구현 경로가 없다.</td></tr>
+<tr><td>단순 Python tensor reference는 stale slot을 구분하지 못함</td><td>Preallocated GPU slot은 주기마다 재사용되며 object identity만으로 content generation을 증명할 수 없음</td><td>이전 결과가 새 buffer content를 가리키는 ABA 문제가 생길 수 있다.</td></tr>
+<tr><td>증거 저장을 비동기로 옮기면 queue 포화가 planner를 막을 위험</td><td>Unbounded queue 또는 blocking <code>put</code>는 storage 장애를 control latency로 전파</td><td>실시간성 주장과 fail-closed deadline이 깨진다.</td></tr>
+</table>
+
+<h2>채택한 계약</h2>
+<p><code>ResidentTrajectoryLease</code>는 tensor byte 자체를 core contract로 복사하지 않는다. 대신 아래의 불변 identity와 shape만 전달한다.</p>
+<ul>
+<li>Exact warmed runtime-session SHA-256과 preallocated planning-buffer allocation ID</li>
+<li>Trajectory와 stop path에 서로 다른 slot ID</li>
+<li>Slot 재사용 때마다 증가하는 lease generation과 unique lease ID</li>
+<li><code>cuda</code> device, dtype, <code>time_q_qd_qdd.v1</code> fixed layout</li>
+<li>Arm/hand joint count, maximum/valid waypoint count</li>
+<li>Solver write 완료를 나타내는 producer CUDA event ID와 immutable flag</li>
+</ul>
+<p>Trajectory와 stop path는 같은 runtime session과 joint shape를 사용해야 하고, canonical backend에서는 둘 다 exact planning-buffer allocation에 속해야 한다. Backend descriptor의 joint/waypoint 상한을 넘기거나 두 결과가 같은 slot을 공유하면 contract failure로 닫힌다. Infeasible, cancelled, backend-error와 deadline-exceeded 결과는 부분 lease나 solver report ID를 하나도 유지할 수 없다.</p>
+
+<h2>Independent validation binding</h2>
+<p>Validator가 새 파일 hash를 만들도록 요구하면 같은 동기 I/O 문제가 반복된다. 따라서 validation은 trajectory/stop lease metadata digest, resident suffix digest, solver/validator identity, metric evidence, validation-completion CUDA event에 결속한다. Lease digest에는 allocation, slot, generation과 producer event가 들어가므로 같은 slot의 다음 세대는 다른 결과다. 이 metadata digest는 tensor collision safety를 대신하지 않는다. 실제 validator가 producer event 뒤 같은 lease content를 검사했다는 runtime adapter 책임과 HPP-FCL parity gate는 그대로 남는다.</p>
+
+<h2>Bounded async persistence</h2>
+<ol>
+<li>Planner thread는 <code>BoundedAsyncWarmStartArtifactRecorder.submit</code>에서 type check와 <code>put_nowait</code>만 수행한다.</li>
+<li>Queue가 가득 차면 즉시 <code>false</code>를 반환하고 drop counter를 증가시킨다. Planner decision이나 controller deadline을 기다리지 않는다.</li>
+<li>Worker는 admission/result/validation ancestry와 acceptance failure를 다시 계산한다.</li>
+<li>검증을 통과한 record만 sink에 넘긴다. 실제 device-to-host copy, serialization, hashing과 파일 쓰기는 sink 책임이다.</li>
+<li>Invalid record와 sink exception은 failure counter와 마지막 exception type으로 관찰한다. Planner thread에서 retry하지 않는다.</li>
+<li>Shutdown drain은 control loop 밖에서만 호출한다.</li>
+</ol>
+
+<h2>배제한 해결</h2>
+<ul>
+<li><code>mem://</code> 문자열을 <code>SourceFileEvidence.reference</code>에 넣지 않았다. 파일 계약을 가장한 메모리 transport이며 ownership과 generation을 표현하지 못한다.</li>
+<li>모든 trajectory를 CPU tuple이나 JSON payload로 반환하지 않았다. GPU-resident collision/validation 이후 불필요한 D2H copy와 synchronization이 생긴다.</li>
+<li>Unbounded logging thread나 blocking queue를 사용하지 않았다. 저장 장치 지연이 메모리 증가 또는 control deadline 지연으로 전파된다.</li>
+<li>Async recorder 실패를 planner fallback으로 연결하지 않았다. Diagnostic persistence와 safety authority는 다른 책임이다.</li>
+</ul>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Lease payload round-trip, generation digest 변화, host/mutable/overlength 거부를 검증했다.</li>
+<li>Foreign runtime allocation, 같은 trajectory/stop slot, partial failure output, descriptor shape 초과를 fail-closed로 검증했다.</li>
+<li>Runtime engine은 accepted warm start에서 file reference 대신 exact resident trajectory lease를 선택한다.</li>
+<li>Recorder 정상 drain, queue saturation, invalid record, sink exception과 idempotent close를 검증했다.</li>
+<li>집중 회귀 46개와 <code>git diff --check</code>가 통과했다.</li>
+<li>Planning suite 652개에는 코드 실패가 없었고 OpenCV 없는 환경의 import error 3개만 남았다. 동일 세 module은 calibration 환경에서 14개 모두 통과했다.</li>
+</ul>
+
+<h2>남은 실행 경계</h2>
+<p>다음 구현은 validator가 승인한 lease generation을 controller mailbox가 한 번만 take하고, cancel/stop/release 뒤 allocator에 반환하는 ownership state machine이다. 그 뒤 compatible driver의 target GPU에서 custom cuRobo rollout이 이 exact lease를 생산하도록 연결하고, HPP-FCL false-negative 0과 p99/deadline-miss policy를 동시에 검증한다. 현재 commit만으로는 실행 command를 만들 수 없다.</p>
+
+<p><a href="curobo-realtime-collision-audit.html">cuRobo hot-path 배치와 activation gate</a>, <a href="explicit-paired-connector-manifest.html">explicit connector evidence chain</a>을 함께 참고한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>

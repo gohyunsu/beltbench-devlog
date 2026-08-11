@@ -16,7 +16,7 @@
 <h1>구형 connector fallback을 복원하지 않고 두 CAD pose를 arm-tip assembly frame에 명시한다.</h1>
 <p class="lede">Source-consistent full grasp evaluation을 복구한 뒤 deployment assessment를 실행했지만, private robot manifest가 제거된 <code>paired_mount_meshes</code> schema를 사용해 strict loader에서 중단됐다. 기존 파일을 고치거나 예시 transform으로 바꾸지 않고, 구형 field 이름이 선언하던 mount-frame 의미를 explicit assembly pose로 한 번만 컴파일하는 append-only 경계를 구현했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/33b94d5"><code>33b94d5</code></a>와 server checkout을 일치시켰다. 새 private manifest SHA-256은 <code>a43510455c723f32cc98a504dd0b2b9d54b97564df367d66fd106e73466df73f</code>이다. Mount transform은 측정값이 아니므로 <code>provisional</code>이며 hardware execution authority가 없다.</div>
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/33b94d5"><code>33b94d5</code></a>와 server checkout을 일치시켰다. 새 private manifest SHA-256은 <code>a43510455c723f32cc98a504dd0b2b9d54b97564df367d66fd106e73466df73f</code>이다. 이 manifest로 deployment, shortlist, portfolio의 append-only chain을 완료했지만 mount transform과 grasp protocol은 여전히 <code>provisional</code>이므로 hardware execution authority가 없다.</div>
 
 <h2>발생한 문제</h2>
 <table class="table">
@@ -55,7 +55,12 @@
 <li>Compiler, strict robot loader, cuRobo asset, MuJoCo admission과 collision activation 회귀 35개가 통과했다.</li>
 <li>새 manifest를 서버 current loader로 다시 읽어 arm-side identity와 hand-side <code>[0.0045, 0, 0.035]</code> translation 및 반전 rotation을 확인했다.</li>
 <li>기존 OBJ digest <code>44ebf1d9…d088</code>, <code>955240d2…4620</code>을 그대로 유지했다.</li>
-<li>새 manifest를 사용하는 deployment assessment <code>115696</code>을 append-only v13 run으로 제출했다. 아직 결과를 execution evidence로 사용하지 않는다.</li>
+<li>Deployment <code>115696</code>은 117 grasp × 3 horizon 중 228 candidate-time pair를 유지했다. <code>pregrasp_ik</code> 117건과 <code>pregrasp_robot_object_clearance</code> 6건은 탈락 근거로 보존했다.</li>
+<li>Shortlist <code>115697</code>은 941개 source file을 재검증하고 69 eligible 중 8개를 선택했다.</li>
+<li>Portfolio <code>115698</code>은 969개 source file을 재검증하고 rank 5 <code>bodex-a9b299caeade8d79</code>, <code>intercept-005000ms</code>를 diagnostic candidate로 선택했다.</li>
+<li>선택 경로의 301 frame full-mesh 검증은 invalid frame 0, 최소 robot self distance 0.2206 mm, 최소 non-contact robot-object distance 0.4573 mm, support penetration 0이었다.</li>
+<li>Execution candidate는 생성하지 않았다. Provisional intrinsic grasp, connector metrology, continuous trajectory/timing, calibration/latency, controller와 supervised hardware validation이 남아 있다.</li>
+<li>Compute/file-system clock skew가 -366초이므로 세 PBS run의 기능 완료와 별개로 timing evidence는 무효다.</li>
 </ul>
 
 <p><a href="curobo-realtime-collision-audit.html">cuRobo real-time collision 방향</a>과 <a href="inference-demo-physics-validation.html">actual assembly physics validation</a>을 함께 참고한다.</p>
