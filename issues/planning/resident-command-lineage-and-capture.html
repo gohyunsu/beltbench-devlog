@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Resident command lineage and capture · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-044 · 2026-08-11 · resident command lineage and capture</div>
+<h1>cuRobo가 만든 명령과 reference animation을 구분하고, controller 이후에도 exact tensor 계보를 보존한다.</h1>
+<p class="lede">cuRobo를 online collision·IK·trajectory optimization 권위자로 채택하더라도 resident lease metadata만으로는 실제 <code>q/qd/qdd</code>를 재생할 수 없다. 기존 MuJoCo와 Viser는 선택된 event reference를 재생할 뿐 향후 cuRobo가 최적화할 GPU tensor를 소비하지 않는다. 이를 동일 궤적이라고 부르는 오류를 막기 위해 canonical request, joint order, time grid, controller completion event와 allocator-side capture를 하나의 fail-closed 계보로 묶었다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/229edc9"><code>229edc9</code></a>은 exact planner-command binding과 optional post-controller capture 계약을 구현한다. 실제 cuRobo V2 solver, CUDA allocator/controller adapter와 capture producer는 아직 없으며, junjinyong의 NVIDIA driver 535는 선택한 V2 production 정책의 최소 580.65.06보다 낮다. 따라서 현재 MuJoCo·Viser 출력은 reference-only이고 hardware execution authority도 없다.</div>
+
+<h2>발생한 문제</h2>
+<table class="table">
+<tr><th>관찰</th><th>원인</th><th>잘못된 결론</th></tr>
+<tr><td>Lease에는 allocation·slot·generation·shape만 있고 tensor 값이 없다.</td><td>Control deadline에서 D2H copy와 파일 저장을 제거하기 위해 결과를 GPU-resident metadata로 바꿨다.</td><td>Lease ID만 같으면 MuJoCo/Viser가 cuRobo 결과를 재생한다고 오인할 수 있다.</td></tr>
+<tr><td>Canonical fixed-shape request는 solver 호출 뒤 사라진다.</td><td>Result가 request digest, named joint order와 exact time grid를 보존하지 않았다.</td><td>같은 waypoint 수의 다른 요청이나 joint permutation을 구분하지 못한다.</td></tr>
+<tr><td>Allocator가 controller completion 직후 slot을 재사용할 수 있다.</td><td>Optional diagnostic copy가 lease release lifecycle에 결속되지 않았다.</td><td>비동기 D2H copy 중 다음 generation이 같은 slot을 덮어쓸 수 있다.</td></tr>
+<tr><td>Host가 trajectory duration 전에 completion을 보고할 수 있었다.</td><td>기존 mailbox는 scheduled start 이후인지만 확인했다.</td><td>부분 소비된 command를 정상 완료와 exact replay 대상으로 잘못 표시할 수 있다.</td></tr>
+</table>
+
+<h2>가속 방향</h2>
+<p>실시간성은 모든 코드를 GPU로 옮기는 문제가 아니다. 반복적으로 큰 batch를 평가하고 CPU-GPU 왕복을 제거할 수 있는 hot path만 resident GPU로 유지하고, 작은 상태기계와 I/O는 CPU에 남기는 편이 지연과 복잡도 모두에서 유리하다.</p>
+<table class="table">
+<tr><th>모듈</th><th>권위와 실행 위치</th><th>근거</th></tr>
+<tr><td>Pose network·tracking</td><td>GPU</td><td>영상 tensor와 neural inference를 같은 device에 유지한다.</td></tr>
+<tr><td>Batched FK/IK, self/static collision, time-indexed moving-target collision</td><td>cuRobo GPU online authority</td><td>여러 grasp·intercept time·seed를 한 번에 검사하고 intermediate D2H를 제거한다.</td></tr>
+<tr><td>Mutable arm prefix + immutable resident suffix trajectory optimization</td><td>Custom cuRobo rollout/cost</td><td>Stock <code>BatchMotionPlanner</code>만으로는 fixed suffix, moving target와 phase별 allowed contact 의미를 표현하기 부족하다.</td></tr>
+<tr><td>Exact mesh collision parity</td><td>HPP-FCL CPU offline oracle</td><td>Sphere/cuboid approximation의 false negative를 찾고 cuRobo activation을 제한한다.</td></tr>
+<tr><td>Timestamp/encoder join, planar predictor, freshness/deadline/cancel state, controller I/O</td><td>CPU</td><td>작은 연산을 GPU kernel launch와 synchronization으로 옮기면 오히려 latency와 jitter가 증가할 수 있다.</td></tr>
+<tr><td>MuJoCo·Isaac validation, Viser와 artifact persistence</td><td>Control loop 밖 async consumer</td><td>시각화·physics·disk 지연이 다음 제어 결정을 막아서는 안 된다.</td></tr>
+</table>
+
+<h2>왜 cuRobo인가</h2>
+<p>사수님의 질문대로 실제 online collision을 HPP-FCL Python loop에 남기는 것은 최종 방향으로 타당하지 않다. BeltBench는 cuRobo를 batch FK/IK·collision·arm-prefix optimization의 최종 online backend로 두고, HPP-FCL은 독립 exact-mesh reference oracle로 제한한다. 다만 “cuRobo를 사용한다”는 이름만으로 moving grasp safety가 생기지는 않는다.</p>
+<ul>
+<li>Object는 tabletop pose와 initial yaw를 가진 채 belt frame에서 평행이동하므로 target collision geometry도 시간에 따라 이동해야 한다.</li>
+<li>Allowed hand-object contact는 closing/attach phase에만 열리고, 그 전에는 target collision을 hard gate로 유지해야 한다.</li>
+<li>Online correction은 arm prefix만 수정하고 certified hand command와 resident suffix는 불변이어야 한다.</li>
+<li>Sphere/cuboid 모델은 actual connector·arm·hand mesh를 보수적으로 덮어야 하며, HPP-FCL sample set에서 false negative 0을 달성하기 전에는 online authority를 활성화하지 않는다.</li>
+<li>Target GPU에서 warm-up 뒤 p50/p95/p99, deadline miss와 CUDA synchronization을 측정해야 실시간성을 주장할 수 있다.</li>
+</ul>
+
+<h2>구현한 해결</h2>
+<ol>
+<li><code>ResidentTrajectoryCommandBinding</code>에 canonical fixed-shape request SHA-256, request ID, arm/hand named joint order, exact time grid와 optimized-prefix count를 보존한다.</li>
+<li>Canonical backend는 solver가 반환한 binding을 신뢰하지 않고 자신이 조립한 exact request에서 다시 만든다. Waypoint count, prefix count와 duration drift는 validator 전에 거부한다.</li>
+<li>Warm-start result schema 3.1은 성공 후보에 binding을 요구한다. Legacy 3.0은 과거 증거로 읽을 수 있지만 controller mailbox에는 진입할 수 없다. 실패 결과에 binding이 남아도 거부한다.</li>
+<li>Mailbox는 scheduled trajectory end 전에 들어온 completion을 거부한다. Timeout은 기존대로 cancel/quarantine이며 slot을 자동 재사용하지 않는다.</li>
+<li>선택적 <code>ResidentTrajectoryCapture</code>는 <code>controller_completed</code> release만 허용하고 exact <code>time/q/qd/qdd</code> extent, request/binding/lease digest와 source completion event를 기록한다.</li>
+<li>Allocator는 controller event 뒤 capture를 수행하고 별도 capture-completion CUDA event를 기록한다. Receipt가 해당 event와 capture digest를 확인한 뒤에만 slot을 재사용한다.</li>
+<li>Capture와 persistence는 control deadline 밖의 optional diagnostic이다. Queue나 storage가 느리면 버릴 수 있어야 하며 다음 planning cycle을 기다리게 해서는 안 된다.</li>
+</ol>
+
+<h2>증거의 의미</h2>
+<p>이 capture가 증명하는 것은 “controller가 소비 완료했다고 보고한 exact command tensor”이다. 실제 로봇이 그 command를 정확히 추종했다는 뜻이 아니며 measured encoder feedback, tracking error와 physical grasp success를 대신하지 않는다. Hardware 단계에서는 command capture와 controller feedback을 같은 clock/event lineage에 별도로 결속해야 한다.</p>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Public contract import와 request/binding/lease/capture JSON round-trip을 검증했다.</li>
+<li>Foreign lease generation, joint/time mismatch, programmatic <code>NaN</code> sample, non-completed release, capture 없는 receipt와 premature completion을 fail-closed로 검증했다.</li>
+<li>Legacy 3.0 evidence는 읽지만 execution path에는 넣지 않고, 새 3.1 성공 결과의 missing binding과 실패 결과의 residual binding을 거부했다.</li>
+<li>Resident 집중 회귀 46개와 cuRobo·runtime 확장 회귀 79개가 통과했다.</li>
+<li>전체 planning suite 665개에서 새 code failure는 없었다. OpenCV import 3개는 calibration 환경에서 14개 모두 통과했고 2개는 기존 skip이다.</li>
+<li><code>git diff --check</code>와 변경 파일 line-length 검사가 통과했다.</li>
+</ul>
+
+<h2>남은 작업 순서</h2>
+<ol>
+<li>Compatible NVIDIA driver와 pinned cuRobo V2 환경을 확보한다. 현재 driver에서 V1을 억지로 production backend로 승격하지 않는다.</li>
+<li>Fixed-shape request를 직접 소비하는 custom cuRobo rollout, preallocated allocator와 CUDA graph warm path를 구현한다.</li>
+<li>Actual connector·arm·hand·belt·bin scene에서 HPP-FCL false-negative 0 parity와 deadline policy를 함께 통과시킨다.</li>
+<li>Same-process controller adapter와 post-controller capture producer를 연결하고 cancellation/quarantine을 실제 CUDA event로 검증한다.</li>
+<li>Verified capture를 MuJoCo exact-command rollout과 Viser 1x auto-loop에 연결한다. 그 전에는 기존 event animation을 cuRobo 결과라고 표시하지 않는다.</li>
+<li>Hardware가 복구되면 encoder feedback, calibration·perception latency와 grasp/drop success를 추가해 inference demo를 검증한다. AutoDex training 재현은 이 경로의 선행 조건으로 두지 않는다.</li>
+</ol>
+
+<p><a href="resident-controller-lease-ownership.html">Resident controller lease ownership</a>, <a href="gpu-resident-warm-start-result.html">GPU-resident result transport</a>, <a href="curobo-realtime-collision-audit.html">cuRobo online authority audit</a>를 함께 참고한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>

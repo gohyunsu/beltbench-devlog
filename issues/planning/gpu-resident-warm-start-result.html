@@ -16,7 +16,7 @@
 <h1>Planner 결과를 파일 reference가 아니라 세대가 고정된 CUDA buffer lease로 전달한다.</h1>
 <p class="lede">Benchmark policy는 in-memory 결과와 synchronous artifact write 0회를 요구했지만 실제 canonical warm-start contract는 trajectory, stop path, solver report의 <code>SourceFileEvidence</code>를 성공 조건으로 요구했다. 빠른 cuRobo kernel을 붙여도 반환 직전에 JSON을 쓰면 control deadline이 storage latency에 종속된다. 파일 field에 예외를 추가하지 않고 runtime 결과 계약 자체를 GPU-resident ownership에 맞게 교체했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/56bb677"><code>56bb677</code></a>에서 canonical backend는 <code>in_memory</code> transport를 선언한다. 후속 <a href="https://github.com/gohyunsu/beltbench/commit/9ba3183"><code>9ba3183</code></a>은 controller와 allocator의 one-shot ownership을 추가했다. 실제 cuRobo V2 kernel, target-GPU deadline, collision parity와 hardware controller는 아직 승인하지 않는다.</div>
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/56bb677"><code>56bb677</code></a>에서 canonical backend는 <code>in_memory</code> transport를 선언한다. 후속 <a href="https://github.com/gohyunsu/beltbench/commit/9ba3183"><code>9ba3183</code></a>은 one-shot ownership을, <a href="https://github.com/gohyunsu/beltbench/commit/229edc9"><code>229edc9</code></a>은 exact command binding과 post-controller capture contract를 추가했다. 실제 cuRobo V2 kernel, target-GPU deadline, collision parity와 hardware controller는 아직 승인하지 않는다.</div>
 
 <h2>발생한 문제와 원인</h2>
 <table class="table">
@@ -73,7 +73,7 @@
 <h2>남은 실행 경계</h2>
 <p>Validator가 승인한 lease generation을 controller mailbox가 한 번만 take하고 cancel/stop/completion 뒤 allocator receipt로 반환하는 ownership state machine은 ISSUE-043에서 구현했다. 다음은 실제 same-process CUDA controller/allocator adapter와 compatible driver의 custom cuRobo rollout을 연결하고 HPP-FCL false-negative 0과 p99/deadline-miss policy를 동시에 검증하는 일이다. 현재 commit만으로는 hardware command를 만들 수 없다.</p>
 
-<p><a href="resident-controller-lease-ownership.html">Resident controller lease ownership</a>, <a href="curobo-realtime-collision-audit.html">cuRobo hot-path 배치와 activation gate</a>, <a href="explicit-paired-connector-manifest.html">explicit connector evidence chain</a>을 함께 참고한다.</p>
+<p><a href="resident-command-lineage-and-capture.html">Resident command lineage와 capture</a>, <a href="resident-controller-lease-ownership.html">Resident controller lease ownership</a>, <a href="curobo-realtime-collision-audit.html">cuRobo hot-path 배치와 activation gate</a>, <a href="explicit-paired-connector-manifest.html">explicit connector evidence chain</a>을 함께 참고한다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
 </body>

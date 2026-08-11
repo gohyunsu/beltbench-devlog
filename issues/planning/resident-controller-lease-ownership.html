@@ -16,7 +16,7 @@
 <h1>Deadline miss가 사용 중인 CUDA slot 재사용으로 이어지지 않도록 controller와 allocator ownership을 분리한다.</h1>
 <p class="lede">GPU-resident trajectory를 반환해도 planner, validator, controller와 allocator가 언제 같은 slot을 소유하는지 명확하지 않으면 timeout 직후 buffer를 덮어쓸 수 있다. 특히 controller worker가 lease를 take한 뒤 ack를 잃은 상태는 “실패”가 아니라 consumer가 메모리를 사용 중일 수 있는 불확실 상태다. CPU fallback이나 즉시 free를 추가하지 않고 one-shot mailbox, cancel quarantine, CUDA-event release token과 allocator receipt로 생명주기를 고정했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/9ba3183"><code>9ba3183</code></a>은 diagnostic same-process CUDA handoff contract를 구현한다. 실제 controller SDK callback, CUDA allocator와 cuRobo kernel이 없는 현재에는 hardware execution authority가 없다.</div>
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/9ba3183"><code>9ba3183</code></a>은 diagnostic same-process CUDA handoff contract를 구현한다. 후속 <a href="https://github.com/gohyunsu/beltbench/commit/229edc9"><code>229edc9</code></a>은 exact request binding, full-duration completion gate와 optional post-controller capture를 추가했다. 실제 controller SDK callback, CUDA allocator와 cuRobo kernel이 없는 현재에는 hardware execution authority가 없다.</div>
 
 <h2>위험 분석</h2>
 <table class="table">
@@ -68,7 +68,7 @@
 <h2>다음 검증</h2>
 <p>다음 단계는 이 protocol을 구현하는 same-process CUDA controller/allocator test double이 아니라 실제 adapter를 연결하는 것이다. 이후 custom cuRobo rollout이 exact lease를 생산하고 independent GPU validator와 controller가 CUDA event chain을 공유하는지 target driver에서 측정한다. HPP-FCL parity, 50 ms planning policy, controller deadline과 supervised stop trial 중 하나라도 실패하면 execution activation은 계속 차단한다.</p>
 
-<p><a href="gpu-resident-warm-start-result.html">GPU-resident result transport</a>와 <a href="curobo-realtime-collision-audit.html">cuRobo activation gate</a>를 함께 참고한다.</p>
+<p><a href="resident-command-lineage-and-capture.html">Resident command lineage와 capture</a>, <a href="gpu-resident-warm-start-result.html">GPU-resident result transport</a>와 <a href="curobo-realtime-collision-audit.html">cuRobo activation gate</a>를 함께 참고한다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
 </body>
