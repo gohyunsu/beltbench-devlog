@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Runtime GPU collision admission · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-058 · 2026-08-12 · runtime GPU collision admission</div>
+<h1>매 observation의 cuRobo 충돌 승인을 controller publish 앞에 강제한다.</h1>
+<p class="lede">Resident cuRobo 방향과 recorded planning runner는 있었지만 실제 조합에서는 선택된 trajectory가 그 generation의 GPU collision 결과 없이 publish되거나, active trajectory가 남은 구간 재검사 없이 유지될 수 있었다. Source commit <a href="https://github.com/gohyunsu/beltbench/commit/5d2a464"><code>5d2a464</code></a>은 exact request-bound collision assessment를 planning과 controller 사이의 필수 admission boundary로 만들고, 잘못된 cuRobo V2 driver 전제를 공식 패키지와 NVIDIA CUDA 문서에 맞게 정정한다.</p>
+
+<div class="callout"><strong>결론:</strong> cuRobo를 사용하지 않는 것이 아니라 online numerical collision authority로 사용한다. 다만 모든 module을 GPU로 옮기지는 않는다. Image inference, batched FK/IK/collision/trajopt와 device-side reduction은 resident GPU hot path에 두고, timestamp join, freshness, deadline, cancel, controller ACK는 CPU causal state machine으로 유지한다.</div>
+
+<h2>발견한 안전성 공백</h2>
+<ol>
+<li><strong>Latch publish 우회:</strong> 기존 <code>RuntimeSelectionControlCoordinator</code>는 <code>latch_precompiled</code> selection을 GPU collision 결과 없이 controller mailbox에 publish할 수 있었다.</li>
+<li><strong>Active retain 공백:</strong> controller가 이미 소유한 path는 redispatch하지 않는 것이 맞지만, 최신 robot/object state에 대한 남은 trajectory collision 재검사가 없었다.</li>
+<li><strong>호출자 신뢰:</strong> 초기 수정안은 caller가 계산한 빈 failure tuple을 mailbox에 넘겼다. Caller가 검증을 생략하면 accepted assessment만으로 publish될 수 있었다.</li>
+<li><strong>허위 margin 위험:</strong> Gate 결과를 <code>minimum_normalized_margin</code>으로 표현하면 cuRobo decision/cost를 exact mesh signed clearance처럼 오해할 수 있었다.</li>
+<li><strong>Source 결속 부족:</strong> Assessment가 trajectory ID만 가지면 같은 ID의 다른 request payload나 다른 generation 결과를 재사용할 수 있다.</li>
+</ol>
+
+<h2>선택한 실행 경계</h2>
+<table class="table">
+<tr><th>Action</th><th>검사 구간</th><th>실패 disposition</th></tr>
+<tr><td><code>latch_precompiled</code></td><td><code>[0, trajectory_end]</code> 전체 future command</td><td><code>collision_gate_rejected</code>, publish 없음</td></tr>
+<tr><td><code>retain_active</code></td><td><code>[measured_active_path_time, trajectory_end]</code></td><td><code>active_trajectory_cancel_required</code></td></tr>
+<tr><td><code>stop_active</code></td><td>별도 certified stop path 책임</td><td><code>active_trajectory_stop_required</code></td></tr>
+<tr><td><code>switch_latch</code></td><td>아직 replacement/splice protocol 없음</td><td><code>trajectory_replacement_protocol_required</code></td></tr>
+</table>
+<p>Gate deadline은 planning completion에 policy budget을 더한 시각과 observation commit deadline 중 이른 값이다. Planning runner, gate와 mailbox는 같은 monotonic clock object를 사용하고, gate와 mailbox는 같은 exact policy를 사용해야 한다.</p>
+
+<h2>구현한 계약</h2>
+<ol>
+<li><code>RuntimeTrajectoryCollisionGateAssessment</code>가 generation, canonical runtime-request SHA-256, activation, action, path family, event-trajectory digest, policy digest, collision-configuration digest와 검사 시간 구간을 결속한다.</li>
+<li>결과는 <code>collision_free</code> decision으로 기록한다. Exact signed clearance를 만들지 않으며, unavailable/error/collision은 reason code와 함께 fail-closed한다.</li>
+<li>Fixed batch, 실행 operation, CUDA graph, resident world/catalog, preallocated buffer, host-device round trip과 synchronous write 수를 policy와 독립적으로 다시 검사한다.</li>
+<li>보고된 검사 sample 수가 exact event request의 명시 waypoint 수보다 작으면 <code>collision_gate_waypoint_coverage_incomplete</code>로 거부한다. Continuous/swept 밀도는 이후 backend session evidence가 추가로 책임진다.</li>
+<li><code>RuntimeControllerHandoffMailbox</code>가 collision policy를 소유하고 publish 직전에 failure를 재계산한다. 외부 caller는 빈 failure 목록을 넘겨 우회할 수 없다.</li>
+<li>Accepted handoff schema 1.1은 exact gate assessment를 포함한다. Causal loader는 runtime request digest와 selection/gate/publish timestamp 순서를 다시 검증한다.</li>
+<li>Viser handoff panel은 gate backend, evidence scope, clear/reject decision, trajectory interval, sample count, latency와 deadline을 표시한다.</li>
+</ol>
+
+<h2>실제 adapter가 없을 때의 동작</h2>
+<p><code>UnavailableRuntimeTrajectoryCollisionGate</code>는 CUDA operation, resident cache나 graph replay를 허위로 기록하지 않는다. Device를 <code>unavailable</code>로 표시하고 항상 reject한다. 따라서 <code>run_recorded_path_family.py</code>는 collision policy와 configuration을 필수 입력으로 받지만, 현재 product CLI는 실제 cuRobo adapter가 주입되기 전까지 accepted handoff를 생성하지 않고 exit 2로 끝난다. Test double의 accepted 결과는 contract 회귀용이며 target-GPU evidence가 아니다.</p>
+
+<h2>GPU 배치 판단</h2>
+<table class="table">
+<tr><th>GPU resident</th><th>CPU deterministic</th><th>비동기</th></tr>
+<tr><td>Neural pose front end, batched targets/FK/IK, self/world/object collision, bounded trajopt, hard-mask reduction</td><td>Sensor/encoder join, generation/freshness, deadline, cancel/stop state, controller transport와 ACK</td><td>HPP-FCL mesh oracle, MuJoCo/Isaac physics, Viser, JSON evidence persistence</td></tr>
+</table>
+<p>작은 branch-heavy state machine까지 CUDA kernel로 옮기면 launch와 synchronization이 늘어난다. 목표 지표는 GPU module 개수가 아니라 sensor-to-command p99, deadline miss, host-device round trip과 cancellation latency다.</p>
+
+<h2>Driver 전제 정정</h2>
+<p>이전 ISSUE-056은 cuRobo V2 0.8.0이 driver <code>580.65.06</code> 이상만 지원한다고 기록했다. 원인은 CUDA 13 driver 하한을 V2 전체 하한으로 해석한 것이다. 공식 <a href="https://github.com/NVlabs/curobo/blob/v0.8.0/pyproject.toml">v0.8.0 pyproject</a>는 <code>cu12</code>와 <code>cu13</code> extra를 별도로 제공한다. NVIDIA는 <a href="https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html">CUDA 12.x Linux minor compatibility</a> 하한을 <code>525.60.13</code>으로 문서화한다.</p>
+<p>따라서 driver <code>535.161.07</code> A6000은 CUDA 12 자격 검증 대상이지 원천 차단 대상이 아니다. 두 V2 policy는 새 ID와 <code>525.60.13</code> 하한으로 바꿨다. 단, cuRobo의 runtime CUDA compilation은 minor compatibility의 feature restriction을 받을 수 있으므로 실제 <code>cu12</code> install, FK/self/world/dynamic-object kernel smoke와 benchmark가 통과하기 전에는 compatible하다고 주장하지 않는다.</p>
+
+<h2>발생한 문제, 원인, 해결</h2>
+<ol>
+<li><strong>Accepted assessment timestamp 실패:</strong> Controller lead-time test가 gate deadline 뒤에 accepted assessment를 만들었다. Gate contract가 올바르게 거부한 것이므로, gate evidence는 제시간에 생성하고 publish만 늦추도록 fixture를 수정했다.</li>
+<li><strong>기본 Python import 실패:</strong> base Python 3.13에는 <code>numpy</code>가 없어 test import가 중단됐다. 코드 실패와 환경 실패를 분리하고 <code>beltbench-planning</code> conda 환경에서 재실행했다.</li>
+<li><strong>잘못된 test module 이름:</strong> 광범위 회귀 명령에 존재하지 않는 두 module을 지정해 77개 통과 후 loader error가 났다. <code>rg --files tests</code>로 실제 이름을 찾아 97-test 묶음으로 재실행했다.</li>
+<li><strong>Lint 도구 부재:</strong> planning 환경에는 <code>ruff</code>가 없었다. 임의 설치로 lock을 바꾸지 않고 compile, 99-column scan, <code>git diff --check</code>와 unittest로 검증했다.</li>
+<li><strong>새 GPU 서버 인증 실패:</strong> Tailscale endpoint <code>100.115.46.72:1000</code>은 응답하지만 현재 Codex 셸의 WSL/Windows 키를 모두 거부했다. 비밀번호를 명령이나 로그에 넣지 않고 공개키 등록을 요청했다. 등록 후 모든 작업은 <code>~/.agile/projects</code> 아래에서만 수행한다.</li>
+</ol>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Policy, collision gate, handoff, runtime evidence, Viser, path engine, kinematic feedback와 inference simulation 97 tests: 통과</li>
+<li>Gate/handoff 집중 회귀 31 tests: 통과</li>
+<li><code>run_recorded_path_family.py --help</code>: 새 필수 collision 인자와 import 통과</li>
+<li><code>bash -n scripts/server/curobo_capability_probe.pbs</code>: 통과</li>
+<li><code>git diff --cached --check</code>와 99-column scan: 통과</li>
+<li>Source push: <code>5d2a464</code>, GitHub <code>gohyunsu/beltbench</code> main</li>
+</ul>
+
+<h2>아직 주장할 수 없는 것</h2>
+<ol>
+<li>실제 cuRobo V2 kernel adapter, CUDA graph replay output, HPP-FCL parity와 1,000회 p99 evidence는 없다.</li>
+<li>10 ms resident gate deadline과 50 ms warm-start deadline은 정책 가설이지 측정값이 아니다.</li>
+<li>Accepted retain assessment는 현재 in-memory result이며 별도 active-controller evidence snapshot과 실제 cancel protocol은 아직 없다.</li>
+<li>Actual source-closed continuous Pepsi/xArm/Inspire path-family bundle이 없어 1.0x full vertical slice를 아직 실행하지 못했다.</li>
+<li>새 Tailscale GPU 서버 사양과 cuRobo 설치 가능성은 SSH key 등록 후 확인해야 한다.</li>
+</ol>
+
+<h2>다음 실행 순서</h2>
+<ol>
+<li>새 GPU 서버 공개키 등록 후 <code>~/.agile/projects</code>에서 GPU, driver, compute capability, OS, disk와 conda를 기록한다.</li>
+<li>Driver에 따라 cuRobo v0.8.0 <code>cu12</code> 또는 <code>cu13</code> 환경을 별도 생성하고 exact lock과 kernel smoke artifact를 남긴다.</li>
+<li>Evidence-gated actual collision adapter를 구현해 resident full command의 dynamic-world, attached-sphere, release-envelope pass를 실행한다.</li>
+<li>Exact xArm6/Inspire/connector sphere config를 HPP-FCL corpus와 비교해 false negative 0 gate를 통과시킨다.</li>
+<li>1,000회 post-warmup p50/p95/p99, deadline miss, graph/cache/buffer reuse와 transfer 수를 측정한다.</li>
+<li>실제 continuous Pepsi bundle을 만들고 accepted gate, diagnostic handoff, MuJoCo feedback과 1.0x Viser를 한 source-closed vertical slice로 연결한다.</li>
+</ol>
+
+<p><a href="curobo-resident-collision-gate-direction.html">이전 cuRobo 방향과 정정</a>, <a href="recorded-path-family-diagnostic-runner.html">Recorded runner</a>, <a href="runtime-path-family-harness.html">Runtime harness</a>를 함께 참고한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>

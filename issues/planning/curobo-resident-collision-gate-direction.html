@@ -16,6 +16,8 @@
 <h1>첫 inference demo는 resident path와 cuRobo GPU collision gate로 닫는다.</h1>
 <p class="lede">교수님의 practical real-time grasp demo 우선 지시와 사수님의 “왜 충돌 감지에 cuRobo를 사용하지 않는가”라는 질문을 기준으로 전체 방향을 다시 감사했다. 결론은 cuRobo를 단순 후보가 아니라 online collision hot path로 채택하되, 첫 데모에서 full online planning까지 한꺼번에 요구하지 않는 것이다. Source commit <a href="https://github.com/gohyunsu/beltbench/commit/e2e0da4"><code>e2e0da4</code></a>는 resident command 전용 collision workload와 후속 warm-start workload를 분리하고, 서버 capability probe와 fail-closed benchmark 조건을 명시했다.</p>
 
+<div class="callout"><strong>2026-08-12 정정:</strong> 이 기록의 driver <code>580.65.06</code> 원천 차단 결론은 CUDA 13 하한을 cuRobo V2 전체 하한으로 잘못 적용한 것이다. v0.8.0은 CUDA 12 extra를 제공하며 CUDA 12.x Linux minor-compatibility 하한은 <code>525.60.13</code>이다. Driver 535 host는 실제 kernel qualification 대상이다. 상세 원인과 수정은 <a href="runtime-gpu-collision-admission.html">ISSUE-058</a>에 기록했다.</div>
+
 <div class="callout"><strong>결론:</strong> 첫 데모는 offline 검증된 grasp와 resident path family를 재사용한다. 매 최신 observation마다 고정 크기 cuRobo gate가 self/static-world와 phase-specific moving-object collision을 검사한다. 범위를 벗어나거나 GPU 결과가 늦거나 없으면 command를 내지 않는다. HPP-FCL CPU planning fallback은 없으며, cuRobo arm-prefix warm start는 이 경로가 실제 p99를 통과한 다음 단계다.</div>
 
 <h2>질문의 타당성</h2>

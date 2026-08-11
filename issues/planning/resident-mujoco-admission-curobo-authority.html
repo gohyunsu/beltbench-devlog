@@ -18,6 +18,8 @@
 
 <div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/afc22c1"><code>afc22c1</code></a>은 backend-neutral full-command source join과 exact-MJB admission을 구현한다. MuJoCo는 항상 <code>online_collision_authority=false</code>이고, 실제 cuRobo V2 kernel·parity·target-GPU p99 또는 hardware 실행을 증명하지 않는다.</div>
 
+<div class="callout"><strong>2026-08-12 정정:</strong> 아래의 V2 최소 driver <code>580.65.06</code> 결론은 CUDA 13 하한을 V2 전체에 적용한 오류다. v0.8.0 CUDA 12 extra의 server qualification과 실제 kernel 검증이 올바른 다음 단계다. <a href="runtime-gpu-collision-admission.html">ISSUE-058</a>에 원인과 수정 내용을 기록했다.</div>
+
 <h2>질문을 다시 정의한 이유</h2>
 <p>“GPU로 바꿀 수 있는 모든 모듈을 GPU로 바꾼다”는 구현 목표는 잘못됐다. 목표는 GPU 모듈 수가 아니라 sensor timestamp부터 controller command까지의 p99 latency, deadline miss와 collision false negative다. 작은 timestamp 비교, lease generation, deadline/cancel state와 controller acknowledgement는 host I/O 순서를 소유한다. 이를 GPU kernel로 보내면 병렬 이득 없이 host-device synchronization만 추가된다.</p>
 <table class="table">
