@@ -16,7 +16,7 @@
 <h1>전체 arm-hand event command를 먼저 고정하고, cuRobo는 arm prefix만 GPU에서 갱신한다.</h1>
 <p class="lede">Pre-contact capture의 범위를 바로잡은 뒤 splice 의미를 다시 검사했다. 단순히 first contact에서 기존 full-task reference suffix를 붙이는 방법도 안전하지 않았다. 현행 event schedule은 hand-close start가 first contact보다 앞서기 때문에, pre-contact request의 external hand hold와 source event trajectory의 hand closure가 이미 접촉 전에 충돌한다. 따라서 CPU에서 사후 suffix를 이어 붙이지 않고, close·contact·attach·lift·transfer·release·return 전체를 exact resident template으로 컴파일한 뒤 online cuRobo가 certified latch 전 arm prefix만 덮어쓰는 구조로 전환했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/5fb7c9a"><code>5fb7c9a</code></a>는 complete event request를 named arm/hand <code>time/q/qd/qdd</code>, exact waypoint/event/latch index와 source digest에 결속하는 offline template을 구현한다. 아직 GPU catalog overwrite, full output lease, controller adapter가 없으므로 <code>execution_authorized=false</code>이며 기존 pre-contact capture를 full pick으로 승격하지 않는다.</div>
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/46e5a71"><code>46e5a71</code></a>는 complete event request를 named arm/hand <code>time/q/qd/qdd</code>, exact fixed sample count, waypoint/event/latch index와 source digest에 결속하는 offline template을 구현한다. 아직 GPU catalog overwrite, full output lease, controller adapter가 없으므로 <code>execution_authorized=false</code>이며 기존 pre-contact capture를 full pick으로 승격하지 않는다.</div>
 
 <h2>발생한 문제</h2>
 <table class="table">
@@ -29,6 +29,9 @@
 
 <h2>원인 분석</h2>
 <p>문제는 suffix 파일 하나가 부족한 것이 아니라 command assembly의 권위가 정의되지 않은 것이다. Arm과 hand를 따로 생성한 뒤 contact에서 결합하면 event timing, interpolation, attachment collision semantics와 controller lineage가 분리된다. 실시간성을 이유로 이 결합을 online CPU 작업으로 남기면 매 trial의 allocation·serialization·검증 비용도 늘어난다. 올바른 경계는 complete synchronized command를 offline에 고정하고, online에서는 bounded prefix overwrite 한 번만 허용하는 것이다.</p>
+
+<h2>구현 후 재감사에서 찾은 fixed-shape 문제</h2>
+<p>첫 구현은 maximum sample interval만 고정하고 필요한 subdivision 수를 path마다 계산했다. 이는 각 template의 sample 수가 달라질 수 있어 fixed tensor shape와 CUDA graph replay 전제를 깨뜨린다. Offline compiler 입력에 exact sample count를 추가하고, 모든 critical boundary 구간에 최소 한 interval을 배정한 뒤 현재 interval 폭이 가장 큰 구간부터 deterministic하게 subdivision을 추가하도록 수정했다. 지정 수로 maximum interval을 만족할 수 없으면 template을 만들지 않는다. 따라서 catalog는 모든 path family에 같은 count를 요구할 수 있고 waypoint·event·latch exact sample도 유지한다.</p>
 
 <h2>cuRobo 충돌 방향</h2>
 <p>사수님의 질문에 대한 최종 방향은 cuRobo를 online collision authority로 채택하는 것이다. 기존 HPP-FCL을 online loop에 그대로 두는 이유는 없다. 다만 sphere/cuboid 근사와 attached-object semantics가 exact mesh와 다를 수 있으므로 HPP-FCL을 제거하지 않고 offline 독립 oracle로 역할을 바꾼다.</p>
@@ -47,7 +50,7 @@
 
 <h2>구현한 해결</h2>
 <ol>
-<li><code>ResidentEventCommandTemplate</code> schema 1.0을 추가했다. Template은 complete task duration, named arm/hand joints, source segment와 phase를 가진 exact <code>time/q/qd/qdd</code> samples를 보존한다.</li>
+<li><code>ResidentEventCommandTemplate</code> schema 1.1을 추가했다. Template은 complete task duration, exact fixed sample count, named arm/hand joints, source segment와 phase를 가진 <code>time/q/qd/qdd</code> samples를 보존한다.</li>
 <li>모든 source waypoint를 exact sample index로 넣고, replan cutoff·close start·contact·close complete·attach·release·detach event를 원래 waypoint와 window에 결속한다.</li>
 <li>모든 certified latch time을 subdivision boundary로 먼저 삽입한다. Reconstructed quintic의 arm/hand target이 latch certificate target과 exact 일치하지 않으면 compilation을 거부한다.</li>
 <li>Sampling은 source waypoint와 latch로 먼저 구간을 나눈 뒤 maximum interval 이하로 subdivision한다. Sample density를 바꿔도 physical event와 splice state가 이동하지 않는다.</li>
