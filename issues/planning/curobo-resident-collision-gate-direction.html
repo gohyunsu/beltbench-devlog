@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>cuRobo resident collision gate 방향 전환 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-056 · 2026-08-11 · cuRobo resident collision gate</div>
+<h1>첫 inference demo는 resident path와 cuRobo GPU collision gate로 닫는다.</h1>
+<p class="lede">교수님의 practical real-time grasp demo 우선 지시와 사수님의 “왜 충돌 감지에 cuRobo를 사용하지 않는가”라는 질문을 기준으로 전체 방향을 다시 감사했다. 결론은 cuRobo를 단순 후보가 아니라 online collision hot path로 채택하되, 첫 데모에서 full online planning까지 한꺼번에 요구하지 않는 것이다. Source commit <a href="https://github.com/gohyunsu/beltbench/commit/e2e0da4"><code>e2e0da4</code></a>는 resident command 전용 collision workload와 후속 warm-start workload를 분리하고, 서버 capability probe와 fail-closed benchmark 조건을 명시했다.</p>
+
+<div class="callout"><strong>결론:</strong> 첫 데모는 offline 검증된 grasp와 resident path family를 재사용한다. 매 최신 observation마다 고정 크기 cuRobo gate가 self/static-world와 phase-specific moving-object collision을 검사한다. 범위를 벗어나거나 GPU 결과가 늦거나 없으면 command를 내지 않는다. HPP-FCL CPU planning fallback은 없으며, cuRobo arm-prefix warm start는 이 경로가 실제 p99를 통과한 다음 단계다.</div>
+
+<h2>질문의 타당성</h2>
+<p>사수님의 질문은 타당하다. Robot state와 수십 개 candidate 또는 trajectory sample을 동시에 검사하는 collision workload는 GPU 병렬화 효과가 크고, cuRobo는 batched FK, robot sphere collision, resident world와 CUDA graph를 제공한다. BeltBench가 목표로 하는 bounded candidate batch와 잘 맞는다. 따라서 실제 online collision을 Python loop의 Pinocchio/HPP-FCL로 수행하는 방향은 폐기해야 한다.</p>
+<p>다만 “모든 module을 GPU화”는 실시간성의 동의어가 아니다. Timestamp join, generation ordering, deadline, cancel, lease ownership과 controller acknowledgement는 작은 branch-heavy I/O state machine이다. 이를 GPU kernel로 옮기면 host synchronization을 더 만들 뿐이다. 최적화 대상은 GPU module 수가 아니라 sensor-to-command p99와 host-device synchronization 횟수다.</p>
+
+<h2>기존 상태에서 확인한 문제</h2>
+<ol>
+<li><strong>실제 cuRobo 결과 부재:</strong> Contract, fixed-shape input, collision lifecycle과 validation lease는 있었지만 actual cuRobo V2 kernel이 만든 source-closed output은 없었다.</li>
+<li><strong>서버 환경 차단:</strong> junjinyong A6000 allocation은 driver <code>535.161.07</code>이다. 선택한 cuRobo V2 <code>0.8.0</code>의 공식 최소 driver <code>580.65.06</code>보다 낮다.</li>
+<li><strong>두 workload의 혼합:</strong> 기존 full runtime policy는 IK, collision, trajectory optimization, dynamics와 reduction을 모두 요구했다. 이미 검증된 resident command를 최신 scene에서 다시 거르는 첫 데모 workload에도 이를 그대로 적용하면, 아직 하지 않은 planning operation까지 수행했다고 기록할 위험이 있었다.</li>
+<li><strong>Stock API 불일치:</strong> cuRobo의 high-level grasp planner는 BeltBench의 arm-prefix write mask, immutable hand/suffix, waypoint별 translating object pose와 named contact mask를 그대로 제공하지 않는다. Custom rollout/cost adapter가 필요하다.</li>
+<li><strong>충돌 표현 권한 부족:</strong> cuRobo sphere model은 exact mesh가 아니다. xArm, Inspire hand, connector와 workcell의 동일 state corpus에서 HPP-FCL 대비 false negative 0을 입증하기 전에는 online authority가 될 수 없다.</li>
+</ol>
+
+<h2>선택한 단계적 구조</h2>
+<table class="table">
+<tr><th>단계</th><th>온라인 동작</th><th>실패 동작</th></tr>
+<tr><td>1. 첫 inference demo</td><td>Resident atlas/path 조회, fixed-shape cuRobo FK와 segmented collision, GPU hard mask/reduction</td><td>Unsupported, late, collision, tube violation이면 no command</td></tr>
+<tr><td>2. Bounded warm start</td><td>Measured arm state에서 certified latch까지 cuRobo arm-prefix IK/trajopt/dynamics 후 immutable suffix 결합</td><td>Deadline 전에 완전 검증되지 않으면 no command</td></tr>
+<tr><td>3. Hardware execution</td><td>CPU freshness/safety gate와 future-start controller handoff, measured feedback/abort</td><td>Stale generation, ack timeout, tracking violation이면 cancel/stop</td></tr>
+</table>
+<p>이 순서는 “항상 full replan”보다 빠르고, “offline path이므로 collision을 생략”하는 방식보다 설명 가능하다. Resident path certificate가 continuous path tube와 dynamics를 담당하고, online cuRobo sampled gate는 최신 robot/object/workcell state의 추가 guard를 담당한다. 둘 중 하나도 다른 하나의 증거를 대체하지 않는다.</p>
+
+<h2>첫 collision gate의 정확한 범위</h2>
+<ul>
+<li><code>dynamic_world</code>: path start부터 attachment까지 constant-yaw translation object pose를 waypoint별로 검사한다.</li>
+<li><code>attached_spheres</code>: attachment부터 detachment까지 object를 hand attachment frame의 checksummed sphere set으로 검사한다.</li>
+<li><code>conservative_release_envelope</code>: drop 이후 return path를 bin 내부로 끝나는 보수적 swept volume과 검사한다.</li>
+<li>Robot self/static-world collision, invalid candidate mask와 maximin survivor reduction을 같은 GPU worker에 둔다.</li>
+<li>Host에는 winner 하나 또는 no-result와 축약 metric만 전달하고 deadline 안에서 JSON을 쓰지 않는다.</li>
+</ul>
+<p>첫 policy는 의도적으로 batched IK, trajectory optimization, dynamics constraints와 continuous collision을 요구하지 않는다. 이들은 resident certificate 또는 후속 full warm-start policy의 책임이다. Sampled gate 결과를 continuous swept collision로 표기하는 것은 금지한다.</p>
+
+<h2>CPU와 GPU 책임</h2>
+<table class="table">
+<tr><th>GPU resident</th><th>CPU deterministic</th><th>비동기 검증</th></tr>
+<tr><td>Perception neural inference, candidate tensor, FK/IK, self/world/object collision, optional trajopt, hard reduction</td><td>Timestamp/encoder join, atlas metadata lookup, freshness/generation/deadline, controller protocol, watchdog</td><td>HPP-FCL mesh oracle, MuJoCo/Isaac physics, Viser, artifact persistence</td></tr>
+</table>
+<p>Track filter와 constant-translation prediction은 arithmetic이 작으므로 우선 producer 가까이에 둔다. Perception output이 이미 GPU에 있고 profile에서 이득이 확인되면 fusion할 수 있지만, 별도 GPU round trip을 만들기 위해 옮기지는 않는다.</p>
+
+<h2>이번 구현</h2>
+<ol>
+<li><code>curobo-v2-resident-collision-gate-policy.example.json</code>을 추가했다. 64 이하 fixed batch, 10 ms draft deadline, 1 host-device round trip, 0 synchronous write, 1,000 post-warmup trial과 zero miss를 요구한다.</li>
+<li>Gate operation은 FK, self/world collision, dynamic target/contact, attachment, release envelope, GPU reduction, CUDA graph/stream으로 제한했다. IK/trajopt/continuous collision은 명시적으로 제외했다.</li>
+<li>기존 <code>curobo-v2-runtime-policy</code>는 후속 full warm-start workload로 유지했다. CPU fallback은 두 policy 모두 <code>reject</code>다.</li>
+<li>PBS capability probe가 driver뿐 아니라 compute capability와 Python major/minor를 판정하고, 모두 통과할 때만 <code>environment_compatible</code>를 출력하게 했다.</li>
+<li>Architecture 문서의 첫 demo cycle을 “resident candidate마다 cuRobo gate 필수, no warm-start fallback”으로 수정했다.</li>
+</ol>
+
+<h2>발생한 문제, 원인, 해결</h2>
+<ol>
+<li><strong>기본 Python test import 실패:</strong> 활성 base Python 3.13에 <code>numpy</code>가 없어 unittest import가 실패했다. 코드 문제와 환경 문제를 구분하고 기존 <code>beltbench-planning</code> conda 환경에서 재실행했다.</li>
+<li><strong>Probe 상태명 과장:</strong> 처음에는 driver만 통과해도 <code>install_probe_permitted</code>라고 썼다. GPU architecture와 Python 조건을 검사하지 않은 상태에서 너무 강한 표현이었다. 세 조건을 각각 기록하고 전부 통과할 때만 <code>environment_compatible</code>로 바꿨다.</li>
+<li><strong>Continuous collision 혼동:</strong> Resident gate policy에 continuous collision을 넣으면 sampled state gate가 swept proof처럼 보인다. 해당 operation을 제외하고 startup resident certificate의 별도 책임으로 문서와 테스트에 고정했다.</li>
+<li><strong>무차별 GPU화 위험:</strong> 모든 작은 state machine까지 GPU로 옮기라는 해석을 배제했다. GPU boundary는 numerical batch, CPU boundary는 causal I/O로 유지하고 end-to-end p99로 판단하도록 했다.</li>
+</ol>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Realtime acceleration policy 단독 14 tests: 통과</li>
+<li>Acceleration, collision parity, cuRobo assets, warm-start와 async artifact 통합 42 tests: 통과</li>
+<li><code>bash -n scripts/server/curobo_capability_probe.pbs</code>: 통과</li>
+<li><code>git diff --check</code>: 통과</li>
+<li>Source push: <code>e2e0da4</code>, GitHub <code>gohyunsu/beltbench</code> main</li>
+</ul>
+
+<h2>아직 주장할 수 없는 것</h2>
+<ol>
+<li>10 ms는 목표 policy이며 target GPU 측정값이 아니다.</li>
+<li>Actual cuRobo V2 collision pass, CUDA graph replay, parity와 p99 evidence는 없다.</li>
+<li>Connector-inclusive watertight collision envelope와 measured seating transform이 완료되지 않았다.</li>
+<li>Stock cuRobo API만으로 time-indexed moving target/contact semantics가 충족된다고 볼 수 없다. BeltBench adapter kernel이 필요하다.</li>
+<li>MuJoCo measured rollout은 physics diagnostic이며 cuRobo online collision authority를 대체하지 않는다.</li>
+</ol>
+
+<h2>다음 실행 순서</h2>
+<ol>
+<li>Driver 580.65.06 이상인 A6000/동급 host를 확보하거나 junjinyong node driver upgrade를 요청한다.</li>
+<li>새 capability probe가 <code>environment_compatible=true</code>인지 먼저 확인한다.</li>
+<li>Exact xArm6, Inspire Left, connector sphere/ignore config를 생성하고 1,445-state HPP-FCL corpus에서 false negative 0 parity를 측정한다.</li>
+<li>Resident full-command tensor를 소비하는 segmented cuRobo collision adapter를 구현한다.</li>
+<li>1,000회 post-warmup gate benchmark에서 p50/p95/p99, transfer 수, graph reuse와 deadline miss를 기록한다.</li>
+<li>그 다음 recorded observation부터 gate decision, diagnostic controller handoff, MuJoCo feedback과 1.0x Viser까지 한 실행으로 연결한다.</li>
+<li>첫 vertical slice가 안정된 뒤에만 bounded arm-prefix warm start를 활성화한다.</li>
+</ol>
+
+<p><a href="curobo-realtime-collision-audit.html">cuRobo real-time collision audit</a>, <a href="segmented-curobo-object-collision.html">Segmented object collision</a>, <a href="resident-mujoco-measured-viser-replay.html">Measured MuJoCo Viser replay</a>를 함께 참고한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
