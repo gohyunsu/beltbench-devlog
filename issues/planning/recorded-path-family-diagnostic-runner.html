@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Recorded path-family diagnostic runner · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-057 · 2026-08-11 · recorded inference edge composition</div>
+<h1>한 observation을 bounded planning에서 진단 handoff까지 실제 코드로 연결한다.</h1>
+<p class="lede">Resident path, runtime planning, controller mailbox, feedback와 Viser 모듈은 각각 있었지만, checksummed 입력을 받아 한 세대를 실제로 통과시키는 production-shaped 실행 경로가 없었다. Source commit <a href="https://github.com/gohyunsu/beltbench/commit/83ec080"><code>83ec080</code></a>은 기존 계약을 우회하지 않고 startup verification, latest-generation planning, future-start handoff, causal evidence를 하나의 CLI edge composition으로 연결한다.</p>
+
+<div class="callout"><strong>결론:</strong> 새 runner는 controller나 simulator를 내장하지 않는다. 한 recorded observation을 측정 가능한 planning 경로로 통과시키고, 허용된 future-start trajectory만 capacity-one mailbox에서 diagnostic acknowledgement한다. 이후 kinematic feedback과 1.0x Viser는 immutable output을 소비하는 별도 단계로 유지한다.</div>
+
+<h2>확인한 문제</h2>
+<ol>
+<li><strong>실행 edge 부재:</strong> <code>RuntimePlanningRunner</code>, <code>RuntimeSelectionControlCoordinator</code>, atomic handoff materializer가 있었지만 source artifact에서 이들을 조합하는 production CLI가 없었다.</li>
+<li><strong>과거 smoke artifact의 한계:</strong> local wall-clock fixture는 planned-only session이며 현재 controller-handoff evidence까지 재현하지 못했다.</li>
+<li><strong>실제 continuous bundle 부재:</strong> Pepsi, xArm6, Inspire Left actual-asset playback과 MuJoCo MJB는 있지만 source-closed continuous path-family bundle과 resident event request 묶음은 없다.</li>
+<li><strong>Capability 과장 위험:</strong> offline consumer가 acknowledgement할 수 있다는 사실은 실제 xArm adapter의 future-start, synchronized arm-hand, cancel, prevalidated stop 지원을 증명하지 않는다.</li>
+</ol>
+
+<h2>선택한 모듈 경계</h2>
+<table class="table">
+<tr><th>단계</th><th>책임</th><th>측정 구간 포함 여부</th></tr>
+<tr><td>Bootstrap</td><td>Atlas, bundle, validation report, resident event request의 digest와 의미 검증</td><td>제외</td></tr>
+<tr><td>One generation</td><td>Encoder, robot state, fused track publish와 bounded resident selection</td><td>포함</td></tr>
+<tr><td>Diagnostic handoff</td><td>Future-start initial latch만 capacity-one mailbox로 전달하고 ack</td><td>포함</td></tr>
+<tr><td>Materialization</td><td>Session, causality assessment, handoff snapshot을 원자적으로 기록</td><td>제외</td></tr>
+<tr><td>Feedback와 Viser</td><td>동일 handoff에서 지연 feedback과 actual-asset scenario 생성, 1.0x auto-loop</td><td>별도 비동기 단계</td></tr>
+</table>
+<p>이 경계는 파일 I/O와 SHA-256을 planning deadline 밖으로 밀어내고, viewer나 physics가 command 선택 latency를 늘리지 않게 한다. 한편 timestamp join, deadline, mailbox와 causality는 CPU state machine으로 유지한다. 이 작업은 cuRobo resident collision worker를 대체하지 않으며, 이후 GPU gate가 들어갈 위치를 분명히 한다.</p>
+
+<h2>구현 내용</h2>
+<ol>
+<li><code>scripts/run_recorded_path_family.py</code>가 atlas와 deployment source를 먼저 검증하고 resident projector와 event catalog를 준비한다.</li>
+<li>Conveyor state, fused planar track, synchronized robot motion state를 같은 generation에 넣고 기존 <code>RuntimePlanningRunner</code>를 그대로 실행한다.</li>
+<li><code>process_one_offline_diagnostic_generation()</code>은 기존 coordinator와 mailbox만 조합한다. 새 selection path나 fallback planner를 만들지 않는다.</li>
+<li><code>source_anchored</code> replay clock은 기록된 timestamp 차이를 바꾸지 않고 실제 경과 시간만 source epoch에 더한다. <code>wall</code> mode는 current-boot 입력만 허용한다.</li>
+<li>Future-start가 아니면 handoff를 만들지 않고 verified runtime session만 저장한 뒤 exit 2로 종료한다.</li>
+<li>공간, yaw, belt-speed 또는 active-phase correction이 materialize되지 않았으면 기존 <code>runtime_trajectory_correction_not_materialized</code> gate에서 fail-closed한다.</li>
+</ol>
+
+<h2>발생한 문제, 원인, 해결</h2>
+<ol>
+<li><strong>잘못된 test module 지정:</strong> 처음 회귀 명령에 존재하지 않는 <code>tests.test_controller_feedback</code> 두 개를 넣어 import error가 발생했다. 기능 실패가 아니라 명령 오류임을 확인하고 실제 <code>test_kinematic_feedback</code>와 visualization suite로 교정했다.</li>
+<li><strong>Base 환경 dependency 부족:</strong> 기본 Python에는 <code>numpy</code>가 없어 기존 planning import가 실패할 수 있다. 프로젝트가 고정한 <code>beltbench-planning</code> conda 환경에서 실행했다.</li>
+<li><strong>진단 capability의 허위 선언:</strong> 초기 초안은 xArm/Inspire 이름으로 cancel과 stop을 <code>true</code>로 둔 example capability를 포함했다. 실제 adapter가 없으므로 해당 파일을 제거했다. CLI는 향후 adapter에서 생성하거나 측정한 capability를 외부 입력으로 요구한다.</li>
+<li><strong>통합 fixture 재사용 불가:</strong> bundle verifier fixture는 resident event trajectory까지 source-closed하지 않는다. 억지로 두 fixture 계층을 결합하지 않고 하위 계약 회귀와 CLI import 검증을 사용하며, 실제 continuous bundle을 별도 생산 게이트로 남겼다.</li>
+</ol>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Path-family engine, planning runner, controller handoff, causal handoff materialization, delayed kinematic feedback, Viser input과 viewer를 포함한 63 tests: 통과</li>
+<li><code>python -m scripts.run_recorded_path_family --help</code>: planning conda 환경에서 import와 CLI surface 통과</li>
+<li><code>git diff --cached --check</code>: 통과</li>
+<li>Source push: <code>83ec080</code>, GitHub <code>gohyunsu/beltbench</code> main</li>
+</ul>
+
+<h2>아직 주장할 수 없는 것</h2>
+<ol>
+<li>실제 Pepsi continuous path-family bundle이 없으므로 새 CLI의 actual-asset grasp run은 아직 없다.</li>
+<li>Diagnostic acknowledgement는 ROS transport, controller interpolation, cancel, stop 또는 hardware tracking을 증명하지 않는다.</li>
+<li>cuRobo V2 resident collision gate와 이 runner는 아직 실제 GPU output으로 결합되지 않았다.</li>
+<li>Source-anchored replay는 recorded timestamp 관계를 보존할 뿐 원래 sensor cadence의 실시간 동작을 증명하지 않는다.</li>
+</ol>
+
+<h2>다음 순서</h2>
+<ol>
+<li>Pepsi upside-down stable pose와 selected grasp를 사용하는 source-closed continuous path-family 및 exact resident event request를 생산한다.</li>
+<li>동일 세대의 fixed-shape command batch를 cuRobo collision worker에 넣고, late/error/collision이면 handoff 전에 거부한다.</li>
+<li>Accepted handoff를 기존 kinematic feedback과 actual-asset Viser scenario에 연결해 1.0x auto-loop vertical slice를 실행한다.</li>
+<li>Supported driver host에서 1,000회 post-warmup p99와 HPP-FCL zero-false-negative parity를 확보한다.</li>
+<li>실제 xArm controller adapter를 구현한 뒤에만 truthful capability, ack, cancel/stop과 measured feedback을 활성화한다.</li>
+</ol>
+
+<p><a href="curobo-resident-collision-gate-direction.html">cuRobo resident collision gate 방향</a>, <a href="runtime-path-family-harness.html">Runtime path-family harness</a>, <a href="resident-mujoco-measured-viser-replay.html">Measured MuJoCo Viser replay</a>를 함께 참고한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
