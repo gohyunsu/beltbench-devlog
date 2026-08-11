@@ -28,7 +28,7 @@
 </table>
 
 <h2>cuRobo API를 기준으로 한 판단</h2>
-<p>cuRobo world checker는 geometry, pose, enable flag를 GPU tensor cache에 보존하며 cache 재생성은 CUDA graph의 tensor pointer 전제를 깨뜨린다. 공개 attachment API는 grasped object를 world checker에서 비활성화하고 robot link의 sphere geometry로 전환한다. 따라서 “모든 것을 GPU로 옮긴다”보다 “서로 다른 collision representation을 startup에 각각 preallocate·warm-up하고, runtime에는 pose와 enable state만 bounded하게 갱신한다”가 타당하다. 공식 <a href="https://curobo.org/get_started/2c_world_collision.html">world collision 문서</a>와 <a href="https://curobo.org/_api/curobo.wrap.reacher.motion_gen.html">MotionGen attachment API</a>를 기준으로 했다.</p>
+<p>cuRobo V2 scene은 obstacle pose와 enable state를 runtime에 갱신할 수 있고, grasped object collision은 sphere fitting 후 robot model에 부착하는 표현을 제공한다. 두 표현의 전환을 API가 자동으로 처리한다고 가정하지 않는다. BeltBench adapter가 world object disable과 attached sphere activation을 원자적으로 수행하고 tensor dimension·reference를 고정해야 한다. 따라서 “모든 것을 GPU로 옮긴다”보다 “서로 다른 collision representation을 startup에 각각 preallocate·warm-up하고, runtime에는 pose와 enable state만 bounded하게 갱신한다”가 타당하다. 공식 V2 <a href="https://nvlabs.github.io/curobo/latest/api/curobo.scene.html">scene API</a>, <a href="https://nvlabs.github.io/curobo/latest/reference/sphere_fitting.html">sphere fitting 문서</a>와 <a href="https://nvlabs.github.io/curobo/latest/reference/runtime_configuration.html">runtime/CUDA graph 문서</a>를 기준으로 했다.</p>
 
 <h2>채택한 세 pass</h2>
 <ol>
