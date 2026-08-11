@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Exact full command producer lease · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-050 · 2026-08-11 · exact full-command producer lease</div>
+<h1>Arm-prefix solver 출력과 complete arm-hand command를 한 resident tensor로 결속한다.</h1>
+<p class="lede">기존 <code>ResidentTrajectoryLease</code>는 first contact까지의 pre-contact command만 나타낸다. 이를 release와 bin drop까지 억지로 확장하면 이미 검증된 capture·controller 의미가 바뀌고, hand closure와 object attachment lifecycle이 누락된 채 full-task 권한처럼 보일 수 있다. 따라서 pre-contact lease는 유지하고, fixed full-task template에서 arm prefix만 쓸 수 있는 exact output과 별도 producer lease를 추가했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/28e3a29"><code>28e3a29</code></a>는 external solver가 만든 complete <code>time/q/qd/qdd</code>를 immutable tensor와 warmed CUDA allocation에 결속한다. 다만 producer completion만 증명할 뿐 segmented collision, dynamics, abort, independent validator와 controller 권한은 아직 없으므로 실행은 명시적으로 차단된다.</div>
+
+<h2>발견한 문제와 원인</h2>
+<ol>
+<li><strong>초기 hand 상태가 request에 결속되지 않음:</strong> arm은 measured <code>q/qd/qdd</code>에서 시작하지만 resident hand schedule의 첫 target이 실제 measured hand state와 같은지 request가 확인하지 않았다. 시작 상태가 다르면 첫 sample부터 불연속 command가 된다.</li>
+<li><strong>Exact solver output 부재:</strong> arm-prefix request와 offline template 사이에 외부 planner result를 typed full command로 고정하는 artifact가 없었다. 따라서 어떤 sample을 planner가 바꿀 수 있고 latch 이후 무엇이 immutable한지 machine-checkable하지 않았다.</li>
+<li><strong>Pre-contact lease의 범위 불일치:</strong> 기존 lease를 재사용하면 first contact까지만 정의된 collision·stop 경계를 complete pick·release·drop command와 혼동하게 된다.</li>
+<li><strong>Tensor hash 중복:</strong> nominal template와 abort command가 동일한 axis order를 별도 구현했다. dtype 또는 <code>q/qd/qdd</code> 순서가 한쪽에서 달라질 유지보수 위험이 있었다.</li>
+<li><strong>Source replay 우회 가능성:</strong> producer lease의 초안은 output 내부 digest만 믿었다. 형식상 유효하지만 실제 request/template/lifecycle에서 재구성되지 않은 output이 lease에 들어갈 수 있어 builder에서 source replay가 필요했다.</li>
+</ol>
+
+<h2>구현한 해결</h2>
+<ul>
+<li><code>ResidentFullCommandArmPrefixRequest</code> schema 1.1은 resident initial hand target을 포함하고 measured hand position·velocity·acceleration과 exact equality를 요구한다. 불일치 시 fallback 없이 request를 거부한다.</li>
+<li><code>ResidentFullCommandOutput</code>은 sample 0 arm을 measured state로, sample 1부터 latch 직전까지만 arm optimizer write 영역으로 고정한다. Latch와 전체 arm suffix, 모든 hand sample, phase, source segment와 time grid는 template와 정확히 같아야 한다.</li>
+<li>공통 <code>resident_joint_command_tensor_sha256</code>가 nominal, solver output과 abort의 <code>time,(arm+end_effector)_(q,qd,qdd)</code> layout과 little-endian dtype를 한 곳에서 검증하고 해시한다.</li>
+<li><code>ResidentFullCommandLease</code>는 output digest와 tensor digest, allocation, slot, generation, producer backend와 producer CUDA event를 결속한다. Stale slot generation과 foreign allocation을 거부한다.</li>
+<li>Lease builder는 request, template, nominal object collision lifecycle과 runtime session을 다시 받아 exact output builder를 재실행한다. Caller가 output metadata를 직접 조작해 source 검증을 우회할 수 없다.</li>
+<li>새 producer lease는 <code>execution_authorized=false</code>를 강제한다. 기존 pre-contact lease를 변경하지 않아 검증 범위와 controller 의미를 보존했다.</li>
+</ul>
+
+<h2>구현 중 문제와 처리</h2>
+<ul>
+<li>테스트 helper를 처음 추가할 때 lifecycle fixture 반환 앞에 삽입해 아래 fixture 코드가 unreachable해지는 patch 위치 오류가 있었다. 함수 경계를 다시 읽고 helper를 fixture 종료 뒤로 이동한 다음 집중 테스트로 복구를 확인했다.</li>
+<li>공통 tensor helper 추출 중 조건식의 <code>or</code>가 누락되는 구문 결함을 발견했다. 즉시 수정하고 <code>compileall</code>, <code>git diff --check</code>와 template/abort/full-output digest 회귀 테스트를 함께 실행했다.</li>
+<li>초기 lease builder가 output 자체만 검증하는 것을 재검토 중 발견했다. 실제 source 객체를 받도록 API를 좁히고 <code>verify_resident_full_command_output</code>을 builder 내부에서 재생하도록 변경했다.</li>
+<li>Planning 환경에는 OpenCV가 없으므로 전체 suite의 calibration import 오류를 dependency 설치로 숨기지 않았다. 같은 세 모듈을 기존 calibration 전용 환경에서 별도로 실행했다.</li>
+<li>사용자 작업 중인 source의 <code>AGENTS.md</code>와 두 planning 문서는 stage하지 않았다.</li>
+</ul>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Full command, producer lease, abort와 command-template 집중 테스트 22개가 통과했다.</li>
+<li>Planning 환경 전체 690개 중 685개가 통과하고 2개가 skip됐다. Error 3개는 모두 <code>cv2</code>가 없는 환경에서 calibration 모듈 import가 실패한 기존 환경 분리 문제다.</li>
+<li><code>beltbench-calibration</code> 환경에서 해당 calibration·pickplace·pose artifact 테스트 14개가 모두 통과했다.</li>
+<li><code>compileall</code>, line-length 검색, cached <code>git diff --check</code>가 통과했다.</li>
+<li>Round-trip, deterministic payload/tensor hash, writable interior arm prefix, hand mutation, latch 이후 arm mutation, initial measured hand mismatch, foreign session/allocation, stale generation, mutability와 overlength를 회귀 테스트한다.</li>
+</ul>
+
+<h2>현재 제한과 다음 단계</h2>
+<p>테스트의 planner backend는 API 경계를 검증하기 위한 <code>fixture.unvalidated_arm_prefix</code>이며 실제 cuRobo 결과가 아니다. Producer event는 쓰기 완료 시점만 표현하고 충돌 안전성을 증명하지 않는다. 또한 nominal full command의 segmented collision과 dynamics, 각 abort route의 lifecycle·terminal-region 검증, validator CUDA event, controller handoff가 아직 하나의 causal artifact로 닫히지 않았다.</p>
+<ol>
+<li>Nominal full command와 모든 phase-conditioned abort command를 각각 fixed-shape cuRobo collision·dynamics pass에 넣고 source-bound completion event를 생성한다.</li>
+<li>Producer와 다른 validator backend identity, nominal/abort evidence digest, final validator event를 결속한 full-task validated lease를 구현한다.</li>
+<li>지원 driver의 cuRobo V2에서 1,000-trial p99와 deadline miss 0, HPP-FCL exact-mesh corpus false negative 0을 확인한 뒤에만 online collision authority를 활성화한다.</li>
+<li>Validated full command capture를 MuJoCo와 actual-time Viser에 비동기로 연결하고, 시각화나 physics rollout이 controller deadline을 막지 않게 한다.</li>
+</ol>
+
+<p><a href="resident-abort-command-collision.html">Resident abort command and collision</a>, <a href="resident-full-command-template.html">Resident full-command template</a>, <a href="precontact-command-replay-boundary.html">Pre-contact replay boundary</a>를 함께 참고한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
