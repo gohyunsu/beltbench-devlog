@@ -60,6 +60,16 @@
 <li>Playback은 1.0x actual time, Play와 Loop가 기본 on이다. Arm, hand, 흰색 paired connector, object, workcell, path, frames와 전체 label을 제어한다.</li>
 </ul>
 
+<h2>후속 계층 재검토</h2>
+<div class="callout"><strong>2026-08-11 후속:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/5db1d1c"><code>5db1d1c</code></a>에서 command interpolation을 Viser 모듈 밖으로 이동했다. 시각화와 simulation이 같은 수치 계약을 사용하되 서로를 import하지 않도록 수정했다.</div>
+<p>첫 구현의 replay class는 exact sample·quintic joint 계산과 object의 belt/FK/release display를 함께 소유했다. Viser에서는 동작하지만 MuJoCo adapter가 이를 재사용하면 simulation이 visualization 계층에 의존하고, 시각 pose가 measured physics state로 잘못 유입될 위험이 있었다.</p>
+<ul>
+<li><code>ResidentFullCommandTrajectory</code>는 request/output digest, template, session, joint order와 exact time grid를 검증하고 command <code>q/qd/qdd</code>만 평가한다. Viser와 MuJoCo를 import하지 않는다.</li>
+<li>Viser replay는 neutral trajectory에 constant-yaw belt pose, attached URDF FK와 post-detach lifecycle display만 합성한다.</li>
+<li><code>ResidentFullCommandServoReference</code>는 validated lease를 output payload/tensor에 다시 결속하고 independent hand command를 URDF mimic rule에 따라 full joint position·velocity로 확장한다.</li>
+<li>현재 결과는 desired-servo 입력 경계다. Existing MJB는 구형 event handoff와 initial observation에 결속되어 있으므로 resident lifecycle initial pose, collision semantics, preflight hash, timestep, actuator order와 object free joint admission 전에는 실행하지 않는다.</li>
+</ul>
+
 <h2>구현 중 발견과 수정</h2>
 <ol>
 <li><strong>Nominal pass role 오판:</strong> 첫 lineage 강화에서 role을 <code>nominal_full_command</code>로 추정해 테스트가 pass 집합을 찾지 못했다. 실제 typed contract의 <code>nominal</code>/<code>abort</code>를 확인하고 nominal pass만 displayed output에 재결속했다.</li>
@@ -72,8 +82,9 @@
 <h2>검증 결과</h2>
 <ul>
 <li>새 scenario round-trip, checksum, semantic lineage, nominal pass 위조, 상태별 pose source와 attached FK mismatch 테스트 5개가 통과했다.</li>
+<li>후속 neutral trajectory, mimic-aware full-hand servo와 foreign validated lease rejection을 추가해 full-command 집중 테스트 18개가 통과했다.</li>
 <li>Full-command visualization, full-task validation과 producer output 집중 테스트 17개가 통과했다.</li>
-<li>Planning 전체 699개 중 694개 통과, 2개 skip, 3개는 기존 <code>cv2</code> 환경 분리 import 오류다. Calibration 환경 14개는 모두 통과했다.</li>
+<li>후속 Planning 전체 700개 중 695개 통과, 2개 skip, 3개는 기존 <code>cv2</code> 환경 분리 import 오류다. Calibration 환경 14개는 모두 통과했다.</li>
 <li>전체 compile, public API 8-source export, builder와 Viser CLI help가 통과했다.</li>
 <li>Strict paired-assembly manifest로 실제 xArm6 6-joint URDF FK와 Inspire Left connector asset load를 확인했다. 물리 seating과 transform은 여전히 provisional이다.</li>
 </ul>
