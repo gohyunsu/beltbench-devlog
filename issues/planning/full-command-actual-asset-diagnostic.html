@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Full-command actual-asset diagnostic · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-052 · 2026-08-11 · full-command actual-asset diagnostic</div>
+<h1>Planning-validated full command를 실제 자산 Viser 경계에 연결한다.</h1>
+<p class="lede">실시간 inference demo에서 cuRobo가 생성·검증한 full command를 확인하려면 arm, hand, connector, object와 workcell을 같은 시간축에서 재생할 수 있어야 한다. 그러나 시각화가 controller feedback이나 physics 결과처럼 보이면 검증 권한이 뒤섞인다. 따라서 기존 pre-contact capture는 유지하고, exact full output과 validation lineage를 별도의 actual-time diagnostic으로 닫았다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/025e3fe"><code>025e3fe</code></a>는 planning-validated full-command의 closed scenario, 상태별 replay와 actual-asset Viser CLI를 구현한다. Fixture lease는 구조 테스트일 뿐 실제 cuRobo V2 kernel, controller consumption, MuJoCo rollout 또는 hardware grasp 증거가 아니다.</div>
+
+<h2>문제와 영향</h2>
+<ol>
+<li><strong>Pre-contact와 full task의 계보 혼합:</strong> 기존 resident capture는 first contact까지만 controller 이후 복사한다. 여기에 별도 reference suffix를 붙이면 attach·transport·release가 실제 command였던 것처럼 보인다.</li>
+<li><strong>Validated라는 표시의 과장:</strong> Final lease 파일 하나만 읽으면 output, producer slot, request, object lifecycle과 actual scene asset이 정말 같은 실행 후보인지 확인할 수 없다.</li>
+<li><strong>Attached object의 시각적 부유:</strong> Lifecycle pose를 단순 선형 보간하면 interpolated arm FK와 object가 어긋나 hand가 물체를 놓친 상태로 이동할 수 있다.</li>
+<li><strong>시각화의 deadline 침범 위험:</strong> Viser용 FK, mesh load와 status 계산을 planning thread에 넣으면 GPU 가속 이득과 p99 latency를 악화시킨다.</li>
+<li><strong>구형 connector manifest:</strong> 로컬 actual-asset 파일은 strict runtime이 의도적으로 거부하는 <code>paired_mount_meshes</code>를 계속 가리켜 기존 viewer도 시작할 수 없었다.</li>
+</ol>
+
+<h2>결정한 경계</h2>
+<table class="table">
+<tr><th>계층</th><th>책임</th><th>권한</th></tr>
+<tr><td>cuRobo resident GPU</td><td>Arm-prefix optimization, FK/IK, self/world/object continuous collision, dynamics와 hard reduction</td><td>지원 GPU에서 실제 kernel·parity·deadline을 통과한 뒤 online planning authority</td></tr>
+<tr><td>CPU runtime</td><td>Timestamp, freshness, deadline, cancel, lease ownership과 controller I/O</td><td>Causal safety state와 host transport authority</td></tr>
+<tr><td>Full-command Viser</td><td>Saved output와 lifecycle의 actual-time actual-asset display</td><td>비동기 planning-result diagnostic만 허용</td></tr>
+<tr><td>MuJoCo·Isaac</td><td>Commanded control을 physics로 실행하고 measured rollout trace 생성</td><td>별도 simulation evidence이며 hardware 권한 없음</td></tr>
+<tr><td>Hardware controller</td><td>One-shot command consumption, feedback, cancel과 protective stop</td><td>실제 실행 권한의 최종 소유자</td></tr>
+</table>
+
+<h2>8개 source를 닫은 이유</h2>
+<p>Scenario는 full-command output, producer lease, validated lease, arm-prefix request, object collision lifecycle, robot manifest, object manifest와 workcell만 정확히 허용한다. 각 파일 SHA-256을 고정한 뒤 semantic loader가 다음을 다시 계산한다.</p>
+<ul>
+<li>Output payload digest와 dtype-dependent <code>time/q/qd/qdd</code> tensor digest</li>
+<li>Producer lease digest와 allocation·slot·generation·completion event</li>
+<li>Request, template, runtime session, joint order, duration과 fixed sample count</li>
+<li>Nominal validation pass 전체의 command·tensor·lifecycle digest</li>
+<li>Arm, hand, object, stable pose, grasp와 connector transform identity</li>
+<li>Conveyor와 terminal support obstacle가 workcell에 실제 존재하는지</li>
+</ul>
+<p>Abort catalog와 validator policy 전체를 viewer에서 재실행하지는 않는다. 그 source closure는 validation producer의 책임이며 viewer는 supplied lease를 execution authority로 승격하지 않는다.</p>
+
+<h2>상태별 actual-time 구현</h2>
+<ul>
+<li>Planner sample time에서는 exact output joint와 exact lifecycle object pose를 표시한다.</li>
+<li>Sample 사이 joint는 output contract에 선언된 quintic Hermite <code>q/qd/qdd</code>로 평가한다.</li>
+<li>Attach 전 object는 초기 yaw를 고정하고 lifecycle의 belt velocity로 평행이동한다.</li>
+<li>Attach 이후 detach 전에는 interpolated arm state, 선택 URDF FK와 checksummed object/tool relation으로 object pose를 다시 계산한다.</li>
+<li>모든 exact attached sample에서 URDF FK와 lifecycle pose의 translation·rotation 오차를 검사한다. Mount나 URDF가 다르면 floating animation 대신 startup을 거부한다.</li>
+<li>Detach 이후는 lifecycle sample의 SE(3) 보간으로 release·contained 상태를 보인다. 이는 ballistic physics를 재계산한 결과가 아니다.</li>
+<li>Playback은 1.0x actual time, Play와 Loop가 기본 on이다. Arm, hand, 흰색 paired connector, object, workcell, path, frames와 전체 label을 제어한다.</li>
+</ul>
+
+<h2>구현 중 발견과 수정</h2>
+<ol>
+<li><strong>Nominal pass role 오판:</strong> 첫 lineage 강화에서 role을 <code>nominal_full_command</code>로 추정해 테스트가 pass 집합을 찾지 못했다. 실제 typed contract의 <code>nominal</code>/<code>abort</code>를 확인하고 nominal pass만 displayed output에 재결속했다.</li>
+<li><strong>Read-only test 오류:</strong> Base Python compile과 conda help가 <code>__pycache__</code>·temporary file을 쓰지 못해 실패했다. 코드 오류로 분류하지 않고 분리 conda 환경의 writable test로 재실행했다.</li>
+<li><strong>Planning env의 OpenCV 부재:</strong> 전체 suite에서 calibration, pickplace, pose artifact 3개가 import 오류를 냈다. 기존 환경 분리 원칙대로 calibration 환경에서 해당 14개를 별도 검증했다.</li>
+<li><strong>Stale connector schema:</strong> Actual xArm/Inspire smoke가 구형 <code>paired_mount_meshes</code>에서 fail-closed했다. Runtime fallback을 추가하지 않고 기존 compiler로 append-only <code>paired_assembly_meshes</code> manifest를 만들고 모든 공개 명령 예시를 새 파일로 변경했다.</li>
+<li><strong>실제 V2 산출물 부재:</strong> Test fixture를 Pepsi/xArm 실결과처럼 포장해 서버를 띄우지 않았다. CLI와 actual URDF/CAD load까지만 검증하고 real command scenario는 실제 adapter output을 기다린다.</li>
+</ol>
+
+<h2>검증 결과</h2>
+<ul>
+<li>새 scenario round-trip, checksum, semantic lineage, nominal pass 위조, 상태별 pose source와 attached FK mismatch 테스트 5개가 통과했다.</li>
+<li>Full-command visualization, full-task validation과 producer output 집중 테스트 17개가 통과했다.</li>
+<li>Planning 전체 699개 중 694개 통과, 2개 skip, 3개는 기존 <code>cv2</code> 환경 분리 import 오류다. Calibration 환경 14개는 모두 통과했다.</li>
+<li>전체 compile, public API 8-source export, builder와 Viser CLI help가 통과했다.</li>
+<li>Strict paired-assembly manifest로 실제 xArm6 6-joint URDF FK와 Inspire Left connector asset load를 확인했다. 물리 seating과 transform은 여전히 provisional이다.</li>
+</ul>
+
+<h2>현재 제한과 다음 단계</h2>
+<p>Full-command Viser 경계는 준비됐지만 실제 cuRobo V2 output·validation lease가 없으므로 계획 품질이나 실시간성을 증명하지 않는다. A6000 target의 현 driver도 선택한 V2 policy 최소 조건을 만족하지 않아 kernel graph, parity와 p99를 측정하지 못했다. 또한 post-detach display는 lifecycle interpolation이며 contact와 containment physics가 아니다.</p>
+<ol>
+<li>지원 driver GPU에서 fixed-shape cuRobo V2 producer와 19-slot validator를 구현해 real output/lease를 materialize한다.</li>
+<li>동일 verified full command를 MuJoCo desired-control adapter로 보내고 commanded state와 measured rollout을 별도 trace로 기록한다.</li>
+<li>Target GPU 1,000 trial에서 sensor-to-command p99, deadline miss 0, one readback과 HPP-FCL false negative 0을 확인한다.</li>
+<li>Hardware가 준비되면 controller one-shot lease, measured feedback, moving-contact timing과 grasp/drop success를 검증한다.</li>
+</ol>
+
+<p><a href="full-task-resident-validation.html">Full-task resident validation</a>, <a href="precontact-command-replay-boundary.html">Pre-contact replay boundary</a>, <a href="explicit-paired-connector-manifest.html">Explicit paired connector</a>를 함께 참고한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
