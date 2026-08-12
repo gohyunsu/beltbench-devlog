@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>approach offset experiment and uncertainty scope · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-069 · 2026-08-13 · approach offset experiment and uncertainty scope</div>
+<h1>효과 없는 approach offset 탐색을 제거하고 pose uncertainty의 적용 대상을 분리했다.</h1>
+<p class="lede">접근 거리를 늘리면 robot-object 여유가 커질 것이라는 가설을 실제 36-candidate exact-mesh 실험으로 검증했지만, 병목은 접근 시작점이 아니라 <code>close_above_object/contact</code>의 공통 terminal geometry였다. 동시에 object pose covariance가 고정 workcell margin에도 차감되는 수식 오류를 schema 8에서 수정했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> cuRobo를 runtime 방향에서 제외하지 않는다. 정적 batch kernel은 유망하지만 현재 Pepsi 동적 proxy path는 precontact에서 거부되고 전체 402-sample pass는 deadline을 만족하지 않는다. 다른 grasp/precontact geometry와 commit-time uncertainty envelope를 먼저 확보해야 한다.</div>
+
+<h2>실험</h2>
+<table class="table">
+<tr><th>항목</th><th>값</th></tr>
+<tr><td>입력</td><td>screened grasp 4개 × intercept time 3개 × approach offset 3개</td></tr>
+<tr><td>Offset</td><td>0.08, 0.10, 0.12 m</td></tr>
+<tr><td>Backend</td><td>Pinocchio/HPP-FCL exact CPU mesh oracle</td></tr>
+<tr><td>총 계산</td><td>36 candidates, 890.845938 s</td></tr>
+<tr><td>결과</td><td>selected diagnostic/execution candidate 없음, refinement 없음</td></tr>
+<tr><td>증거</td><td><code>evidence/bodex-generation-pepsi-20260812-v2/portfolio-robust-approach-v1/report.json</code></td></tr>
+</table>
+
+<h2>발생한 문제와 원인</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>결과</th></tr>
+<tr><td>Offset 3개가 같은 margin을 냈다.</td><td>Offset은 초기 approach waypoint만 바꾸고 close/contact의 object-relative pose와 hand closure는 바꾸지 않는다.</td><td>후보 수와 계산은 3배가 됐지만 병목 phase와 pair는 변하지 않았다.</td></tr>
+<tr><td>모든 후보의 robust collision slack이 음수였다.</td><td>최대 object effective margin은 1.129459 mm인데 open-loop pose inflation은 6.195-6.390 mm였다.</td><td>임계값 완화가 아니라 다른 grasp/contact geometry와 최신 tracking update 기반 commit bound가 필요하다.</td></tr>
+<tr><td>Pose uncertainty가 workcell margin에도 적용됐다.</td><td><code>min(environment, object) - uncertainty</code>가 서로 다른 불확실성 원인을 하나로 합쳤다.</td><td>물체 pose가 달라도 변하지 않는 belt/table clearance가 부당하게 감소했다.</td></tr>
+<tr><td>cuRobo를 쓰면 자동으로 실시간이 된다는 해석 위험이 있었다.</td><td>정적 batch kernel과 동적 full-lifecycle 진단의 shape, parity, graph 조건이 다르다.</td><td>정적 qualification만으로 동적 runtime authority를 주장할 수 없다.</td></tr>
+</table>
+
+<h2>측정 결과</h2>
+<table class="table">
+<tr><th>Grasp</th><th>최소 object effective margin</th><th>병목 phase</th><th>병목 geometry</th></tr>
+<tr><td>1</td><td>0.843836 mm</td><td>close_above_object</td><td>left_ring_2_0</td></tr>
+<tr><td>2</td><td>1.129459 mm</td><td>contact</td><td>left_ring_1_0</td></tr>
+<tr><td>3</td><td>0.409212 mm</td><td>close_above_object</td><td>left_thumb_4_0</td></tr>
+<tr><td>4</td><td>0.668753 mm</td><td>contact</td><td>left_middle_1_0</td></tr>
+</table>
+<p>Workcell margin은 22-55 mm로 충분해 모든 경우 robot-object가 병목이었다. 같은 grasp/time의 세 offset은 모두 동일한 수치를 냈다. 따라서 offset portfolio를 production contract에 유지할 근거가 없다.</p>
+
+<h2>해결</h2>
+<ol>
+<li>실험성 approach-offset grid와 schema 변경을 production code에서 제거하고 단일 명시적 approach offset 계약으로 복귀했다.</li>
+<li>Correction portfolio는 coarse search가 robot-object gate를 통과하지 못하면 <code>coarse_robot_object_invalid</code>로 fail closed한다.</li>
+<li>Intercept report schema 8의 collision slack을 <code>min(environment margin, robot-object margin - pose inflation)</code>으로 정의했다.</li>
+<li>Schema 3-7은 기존 수식으로 계속 읽고 검증하며, report schema와 수식 scope가 다르면 거부한다.</li>
+<li>다음 grasp producer는 approach 시작 거리 대신 object-relative precontact/contact pose, hand closure와 allowed-contact identity를 함께 바꿔야 한다.</li>
+</ol>
+
+<h2>cuRobo 재검토</h2>
+<ul>
+<li>서버 환경: RTX 3090 24 GiB, driver 535.309.01, PyTorch 2.5.1+cu121, cuRobo source <code>8e734f3</code>.</li>
+<li>독립 정적 batch-8 kernel: synchronized-host p99 1.449 ms, 1,000 trials, deadline miss 0.</li>
+<li>현재 동적 cylinder proxy: 402 samples, batch 64, p50 약 62.98 ms, CUDA graph replay 없음.</li>
+<li>동적 proxy는 conveyor/contacting 구간에서 최대 -4.435872 mm margin으로 후보를 거부했다. 이는 넓은 contact mask로 숨기지 않고 exact mesh oracle과 representation parity를 재검증한다.</li>
+</ul>
+
+<h2>검증과 다음 단계</h2>
+<ul>
+<li>Schema 8 회귀는 environment margin 12 mm, object margin 100 mm, pose inflation 5 mm에서 collision slack을 12 mm로 유지한다.</li>
+<li>Schema 7로 같은 새 수치를 표기하면 uncertainty scope mismatch로 거부된다.</li>
+<li>관련 contract/integration test 23개가 GPU 서버 격리 checkout에서 통과했다.</li>
+<li>전체 회귀는 896 tests, 21.804 s, OK, 14 skipped로 통과했다.</li>
+</ul>
+<p>다음 구현 순서는 contact/precontact geometry가 robust bound를 만족하는 grasp의 선택 또는 생성, correction family 재컴파일, attach-to-bin/drop·cutoff·abort suffix, 고정 shape CUDA graph collision lifecycle, observation-to-lease p99 측정이다. 물체 pose covariance는 최신 commit update의 측정 bound로 제한하고 calibration·controller·geometry error는 별도 evidence로 유지한다.</p>
+
+<p><a href="robust-approach-clearance-ranking.html">ISSUE-068 robust clearance ranking</a> · <a href="curobo-dynamic-collision-qualification.html">ISSUE-067 cuRobo qualification</a> · <a href="runtime-grasp-selection.html">runtime grasp selection</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>

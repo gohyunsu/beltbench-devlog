@@ -17,6 +17,7 @@
 <p class="lede">기존 timed approach backend는 robot-object 충돌을 hard gate로 검사했지만 최종 maximin 점수의 collision slack은 robot-workcell margin만 사용했다. Schema 7은 두 최소 여유를 독립 증거로 저장하고 더 작은 값에서 pose uncertainty를 뺀 결과를 후보 순위에 사용한다.</p>
 
 <div class="callout"><strong>현재 판정:</strong> 후보 prefilter와 순위 기준은 수정되었지만 실행 권한은 없다. 현재 Pepsi 경로는 exact precontact clearance 0.590922 mm, 정책 0.5 mm로 residual이 0.090922 mm뿐이므로 calibration, perception, controller, geometry uncertainty를 수용하지 못한다. 임계값을 낮추지 않고 다른 grasp, approach offset 또는 path family를 생성해야 한다.</div>
+<div class="callout warn"><strong>2026-08-13 후속:</strong> 세 approach offset을 실제 36-candidate portfolio로 평가했으나 모두 같은 close/contact 병목을 내어 offset grid는 폐기했다. 또한 schema 7 수식은 object pose uncertainty를 고정 workcell margin에도 차감하는 결함이 있어, 새 schema 8은 <code>min(environment, robot-object - pose inflation)</code>으로 분리한다. 상세 측정은 <a href="approach-offset-experiment-and-uncertainty-scope.html">ISSUE-069</a>에 기록했다.</div>
 
 <h2>발생한 문제</h2>
 <table class="table">
@@ -61,8 +62,8 @@
 
 <h2>남은 작업</h2>
 <ol>
-<li>검증된 grasp와 intercept time뿐 아니라 policy-approved approach offset을 포함한 bounded portfolio를 만든다.</li>
-<li>선택된 balanced 후보로 correction cells를 재생성하고 exact path-family oracle을 다시 수행한다.</li>
+<li>Offset 증가가 아니라 object-relative precontact/contact geometry를 바꾸거나 다른 grasp를 선택·생성한다.</li>
+<li>측정된 commit-time uncertainty envelope를 만족하는 후보로 correction cells를 재생성하고 exact path-family oracle을 다시 수행한다.</li>
 <li>Attach-to-bin/drop suffix, cutoff stop, abort route를 같은 source-bound command family에 연결한다.</li>
 <li>고정 shape CUDA graph workload와 observation-to-lease end-to-end deadline을 측정한다.</li>
 </ol>
