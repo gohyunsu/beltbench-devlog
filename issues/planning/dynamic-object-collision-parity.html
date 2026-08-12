@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dynamic object collision parity · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-066 · 2026-08-12 · dynamic object collision parity</div>
+<h1>cuRobo를 채택하되, 정적 collision용 sphere를 움직이는 물체 접촉 권한으로 재사용하지 않는다.</h1>
+<p class="lede">Pepsi moving-pick v6의 2초 prefix를 200 Hz exact event grid로 검사했다. 정적 self/workcell/joint collision은 통과했지만, 움직이는 Pepsi에 대한 두 GPU proxy가 독립 HPP-FCL 메시 oracle의 402개 clear state 중 각각 158개와 130개를 false positive로 거부했다. 문제를 숨기기 위해 contact mask를 넓히지 않고 robot-object representation parity와 robust clearance를 다음 release gate로 분리했다.</p>
+
+<div class="callout"><strong>현재 결과:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/e0b11bf"><code>e0b11bf</code></a>는 shared object timeline, semantic-first time grid, source-bound finite-cylinder contract와 CUDA reduction을 구현한다. HPP-FCL exact mesh는 402/402 sample을 통과했지만 최소 pre-contact policy slack은 0.090922 mm뿐이다. Cylinder GPU diagnostic은 130개 sample을 거부하고 p99 63.210 ms여서 <code>online_collision_authority=false</code>, <code>accepted=false</code>를 유지한다.</div>
+
+<h2>발생한 문제</h2>
+<table class="table">
+<tr><th>증상</th><th>원인 후보</th><th>잘못된 대응</th></tr>
+<tr><td>Static cuRobo는 clear인데 moving-object pass가 158개 sample을 거부했다.</td><td>실제 궤적 충돌, lifecycle 시간 불일치, object proxy 과보수, hand sphere 과보수 중 무엇인지 분리되지 않았다.</td><td>허용 finger link를 contact 전부터 끄거나 penetration threshold를 크게 만든다.</td></tr>
+<tr><td>기존 grid에 contact 시각 <code>1.7999999999999998</code>과 uniform <code>1.8</code>이 함께 있었다.</td><td>Python set은 수치적으로 거의 같은 두 float를 동일 event로 취급하지 않았다.</td><td>극소 시간 간격을 그대로 넣고 연속 collision coverage가 높아졌다고 해석한다.</td></tr>
+<tr><td>Viser 60 FPS playback과 cuRobo 200 Hz query가 서로 다른 time grid를 썼다.</td><td>Playback은 균일 FPS만 사용해 off-grid semantic event를 누락할 수 있었다.</td><td>보이는 animation이 collision command와 같다고 가정한다.</td></tr>
+<tr><td>GPU 전체 command check가 p99 90 ms 이상이었다.</td><td>5,882 robot spheres와 6 object spheres를 402 state에 대해 매 trial 반복하고 CUDA graph를 사용하지 않았다.</td><td>모든 camera update마다 이 full check를 실행하고 GPU라는 이유만으로 real-time이라고 부른다.</td></tr>
+</table>
+
+<h2>시간축 수정</h2>
+<ol>
+<li>Contact와 attach를 기준으로 source path clock과 exact event request를 정렬했다.</li>
+<li>전체 prefix에서 object rotation이 일정하고 translation velocity가 일정한지 fail-closed 검증했다. 물체는 알려지지 않은 초기 yaw를 유지한 채 belt 방향으로 평행이동한다.</li>
+<li>Uniform sample과 semantic event가 1 ps 이내면 uniform 값을 버리고 exact semantic timestamp를 보존했다.</li>
+<li>수정된 2초 grid는 402개 strict-increasing sample, 최대 5 ms 간격이며 극소 duplicate interval이 없다.</li>
+<li>Viser playback도 같은 semantic-first builder를 사용해 close start, contact와 attach를 반드시 포함한다.</li>
+</ol>
+
+<h2>원인 분리 절차</h2>
+<table class="table">
+<tr><th>단계</th><th>입력과 결과</th><th>판단</th></tr>
+<tr><td>GPU axial sphere v1</td><td>실제 Pepsi mesh를 완전히 덮는 6개 구, 402 sample, violation 158, p99 90.830 ms</td><td>팔·connector가 아니라 <code>left_thumb_4</code>, <code>left_index_2</code>만 제한했다.</td></tr>
+<tr><td>HPP-FCL 60 FPS</td><td>Actual xArm6, Inspire-left, paired connector, Pepsi, workcell 121/121 valid</td><td>Coarse mesh oracle에서는 궤적이 clear였다.</td></tr>
+<tr><td>HPP-FCL 200 Hz</td><td>GPU와 동일한 402 event-grid sample 전부 valid</td><td>GPU 위반은 실제 메시 충돌이 아니라 representation false positive다.</td></tr>
+<tr><td>Finite cylinder GPU</td><td>Mesh 최장 축 y, radius 35.119965 mm, half-length 62.000001 mm, padding 1 mm, violation 130, p99 63.210 ms</td><td>Object end-cap 과보수는 줄었지만 distal hand spheres가 close robot-object query에 여전히 과보수다.</td></tr>
+</table>
+
+<h2>HPP-FCL 수치의 비판적 해석</h2>
+<p>402개 exact mesh frame은 모두 현행 draft rule을 통과했다. 그러나 conveyor 상태의 최소 robot-object 거리는 0.590922 mm이고 요구 clearance는 0.5 mm다. 남는 policy slack은 0.090922 mm뿐이다. 이는 calibration, planar pose, yaw, tracking latency, controller tracking과 mesh-model error를 흡수할 수 있는 현실적인 robust margin이 아니다. 따라서 “메시가 통과했다”를 “실행 가능하다”로 승격하지 않는다. Grasp 또는 approach를 다시 생성·순위화해 훨씬 큰 pre-contact clearance를 확보해야 한다.</p>
+
+<p>Contacting/attached 상태의 메시 최소 거리는 1.280587 mm이고 네 개의 허용 finger geometry가 접촉했다. 반면 cylinder GPU는 <code>left_ring_2</code>를 limiting link로 약 1.962 mm 위반했다. 이는 object cylinder만의 문제가 아니라 정적 self/workcell holdout에서 맞춘 robot hand sphere가 close object contact를 표현하는 정확도가 별도로 검증되지 않았음을 보여준다.</p>
+
+<h2>채택한 collision 역할</h2>
+<ol>
+<li>Pinocchio/HPP-FCL은 offline exact-mesh false-negative oracle이다. Online fallback으로 호출하지 않는다.</li>
+<li>cuRobo는 online GPU planner와 self/static-world collision backend로 유지한다. 해당 v28 sphere model은 독립 1,522-state holdout에서 이 범위의 parity를 통과했다.</li>
+<li>Moving robot-object와 intended contact는 별도 corpus와 geometry backend를 가져야 한다. Static sphere parity를 자동 상속하지 않는다.</li>
+<li>Contact geometry는 semantic geometry에서 cuRobo link로 one-to-one mapping될 때만 mask한다. Broad <code>grasp_contact_link_names</code> disable은 사용하지 않는다.</li>
+<li>Finite cylinder는 near-cylindrical object에 사용할 수 있는 교체형 candidate backend다. Arbitrary object에는 checksummed mesh, voxel 또는 다른 qualified fixed-shape backend가 필요하다.</li>
+</ol>
+
+<h2>실시간 경로 수정</h2>
+<p>전체 402-state command를 매 perception frame마다 검사하는 구조는 폐기한다. Offline에서 grasp/path family와 exact mesh를 인증하고, runtime에는 resident family의 compact correction, intercept time, IK/trajopt warm start와 robust reduction만 평가한다. Full source-bound command gate는 latch/commit 시 한 번 수행한다. Deadline, freshness, cancellation, controller lease는 host I/O와 결합된 CPU state machine으로 남긴다.</p>
+
+<p>현재 cylinder p99 63.210 ms는 batch 64, synchronized host, no CUDA graph 조건의 전체 command diagnostic이다. 10 ms hot-path 증거가 아니다. 다음 측정은 resident FK/static-world와 object narrow phase를 분리하고, 실제 online correction shape를 fixed CUDA graph로 capture한 뒤 observation-to-lease p99를 측정해야 한다.</p>
+
+<h2>발생 원인과 해결 결과</h2>
+<table class="table">
+<tr><th>문제</th><th>근본 원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>극소 interval</td><td>event와 uniform float의 표현 차이</td><td>Semantic-first tolerance merge</td><td>403에서 402 sample, 최소 interval 1 ms 이상</td></tr>
+<tr><td>Viser/query 불일치</td><td>독립 timeline interpolation</td><td>공통 source-bound object timeline과 event grid</td><td>동일 command의 200 Hz mesh/GPU 비교 가능</td></tr>
+<tr><td>Axial sphere false positive</td><td>구 slab이 캔의 평평한 end cap을 크게 부풀림</td><td>Actual mesh finite-cylinder proxy 추가</td><td>Violation 158→130, p99 90.830→63.210 ms</td></tr>
+<tr><td>남은 false positive</td><td>Distal hand robot spheres와 close-contact parity 부재</td><td>통과 기준을 낮추지 않고 authority=false 유지</td><td>잘못된 실행 승격 차단</td></tr>
+<tr><td>좁은 mesh slack</td><td>선택된 grasp/approach가 clearance boundary에 가까움</td><td>현재 prefix 거부, 재생성·재순위화를 후속 gate로 지정</td><td>Calibration 불확실성을 숨기지 않음</td></tr>
+</table>
+
+<h2>검증</h2>
+<ul>
+<li>집중 테스트: object proxy, dynamic collision, moving prefix 15개 통과.</li>
+<li>GPU server planning suite: <code>Ran 873 tests in 21.816s</code>, <code>OK (skipped=14)</code>.</li>
+<li>HPP-FCL semantic-first 200 Hz: 402/402 valid.</li>
+<li>cuRobo static component: 두 dynamic diagnostic 모두 self/world/joint positive count 0.</li>
+<li>GPU dynamic cylinder: 130 violation sample, p99 63.210 ms, <code>diagnostic_pass=false</code>, <code>accepted=false</code>, execution unauthorized.</li>
+</ul>
+
+<h2>다음 순서</h2>
+<ol>
+<li>Pre-contact robust clearance가 uncertainty budget을 넘는 grasp/approach를 다시 생성하거나 재순위화한다.</li>
+<li>Safe, near-boundary, penetration, non-intentional link, intended contact와 attached perturbation을 포함한 HPP-FCL robot-object corpus를 만든다.</li>
+<li>Selected GPU geometry를 zero false negative와 false-positive budget으로 검증한다.</li>
+<li>Fixed CUDA graph hot path를 구현하고 observation-to-lease p99를 측정한다.</li>
+<li>Attach-to-bin, generous-bin release, cutoff stop, abort와 MuJoCo/Isaac exact-command rollout을 연결한다.</li>
+</ol>
+
+<p><a href="source-bound-moving-pick-prefix.html">ISSUE-065 moving prefix</a> · <a href="segmented-curobo-object-collision.html">ISSUE-047 segmented object collision</a> · <a href="curobo-v2-gpu-environment-qualification.html">ISSUE-059 GPU qualification</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
