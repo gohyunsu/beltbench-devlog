@@ -14,9 +14,9 @@
 <main class="wrap article">
 <div class="eyebrow">ISSUE-059 · 2026-08-12 · cuRobo V2 GPU qualification</div>
 <h1>RTX 3090에서 cuRobo V2 CUDA 12 kernel 경로를 재현하되 실행 권한과 분리한다.</h1>
-<p class="lede">새 GPU host가 cuRobo V2를 구동할 수 있는지 추측으로 판단하지 않고, private project root 아래 exact source와 별도 venv를 만들고 실패를 포함한 immutable run을 남겼다. v0.8.0 tag의 API 결함을 공식 <code>main@8e734f3</code>과 비교한 뒤 후자를 adapter 후보로 선택했다. 이후 actual xArm6·Inspire Left·paired connector의 결정론적 2,173-sphere model을 만들고 HPP-FCL parity와 1,000회 resident static-collision latency를 측정했다. 이 범위는 개발 gate를 통과했지만 moving object, attachment, continuous collision, arm-prefix optimization과 full-command validation은 아직 없어 controller 실행은 계속 차단한다.</p>
+<p class="lede">새 GPU host가 cuRobo V2를 구동할 수 있는지 추측으로 판단하지 않고, private project root 아래 exact source와 별도 venv를 만들고 실패를 포함한 immutable run을 남겼다. v0.8.0 tag의 API 결함을 공식 <code>main@8e734f3</code>과 비교한 뒤 후자를 adapter 후보로 선택했다. Actual xArm6·Inspire Left·paired connector model은 먼저 개발 corpus를 통과했지만 독립 holdout에서 false negative가 발견됐다. 이 실패를 보존하고 일반 surface coverage를 보강한 5,882-sphere model을 새 holdout과 resident latency로 다시 검증했다. Moving object, attachment, continuous collision, arm-prefix optimization과 full-command validation은 아직 없어 controller 실행은 계속 차단한다.</p>
 
-<div class="callout"><strong>2026-08-12 현재 판정:</strong> actual assembly의 static self/world collision 개발 corpus에서 false negative 0, false positive 1.92%를 확인했다. Batch 64의 resident hot path는 RTX 3090에서 GPU p99 0.998 ms, 단일 결과 회수를 포함한 host p99 1.015 ms였고 10 ms miss는 0/1,000이었다. 그러나 이 corpus는 모델 개발에도 사용됐으므로 독립 holdout이 아니며, output preallocation과 CUDA graph도 아직 false다. 따라서 static kernel 개발 gate만 통과했고 runtime activation은 승인하지 않는다.</div>
+<div class="callout"><strong>2026-08-12 현재 판정:</strong> 모델 수정에 사용하지 않은 v2 holdout 생성 상태 1,522개에서 false negative 0, false positive 42/916=4.585%를 확인했다. 이 상태들은 원 개발 corpus와 실패한 v1 holdout 양쪽 모두와 SHA-256 중복 0개다. Batch 8 host p99는 1.449 ms, batch 64 host p99는 8.527 ms였고 각 1,000회에서 10 ms miss는 0회였다. Static self/world collision gate만 통과했으며 output preallocation, CUDA graph, dynamic object와 source-closed full command가 없어 runtime activation은 승인하지 않는다.</div>
 
 <h2>관찰한 환경</h2>
 <table class="table">
@@ -96,49 +96,55 @@
 <tr><td>AutoDex seed conditioning이 일부 link에서 모든 sphere를 제거</td><td>Seed sphere가 새 outward-protrusion bound를 만족하지 못했다.</td><td>실패를 숨겨 원 seed를 재사용하지 않고 rejection evidence를 남긴 뒤 closed-volume interior anchor와 deterministic surface repair로 전환했다.</td></tr>
 <tr><td>Sphere model을 일괄 축소하면 false positive가 줄어듦</td><td>100~500 μm deflation이 mesh 경계 근처 보수성을 낮췄다.</td><td>100 μm에서도 false negative 2건이 발생해 모든 uniform deflation 후보를 거부했다. FP 감소를 이유로 FN 0 gate를 완화하지 않았다.</td></tr>
 <tr><td>Collision-only 판정이 joint-bound cost까지 계산</td><td>진단용 3-component helper를 parity hot path에서도 사용한 뒤 bound 성분을 버렸다.</td><td>Self/world 전용 helper를 분리해 parity와 benchmark에서 불필요한 bound kernel을 제거했고 1,673개 observation이 수정 전후 완전히 같음을 확인했다.</td></tr>
+<tr><td>독립 v1 holdout에서 mesh collision 한 건을 sphere가 clear로 판정</td><td><code>base_link_0</code>과 <code>left_thumb_2_0</code> mesh는 2.847 mm 관통했지만 가장 가까운 두 sphere 표면은 5.751 mm 떨어져 있었다. Ignore pair나 수치 경계가 아니라 surface coverage 공백이었다.</td><td>해당 pose 좌표를 sphere로 하드코딩하지 않았다. v1을 소비된 개발 증거로 보존하고 모든 link의 deterministic surface-repair budget을 120개에서 520개로 늘렸다. 새 v2 holdout은 원 개발/v1과 각각 중복 0개이며 FN 0을 기록했다.</td></tr>
+<tr><td>Acceptance policy가 실제 candidate를 configuration 불일치로 거부</td><td>Path-independent canonical sphere-model digest와 robot YAML·environment 5 mm를 함께 묶는 runtime collision-configuration digest를 혼동했다.</td><td>두 identity를 별도 evidence로 유지하고 acceptance에는 실제 query digest <code>614d3f51…</code>를 고정했다.</td></tr>
 </table>
 
 <h2>재현 가능한 collision model</h2>
 <ul>
 <li>조립 범위: xArm6, Inspire Left, 두 실제 connector CAD, collision link 22개</li>
 <li>Pair partition: checked 208개, ignored 23개</li>
-<li>Sphere count: 2,173개</li>
-<li>Canonical collision model SHA-256: <code>72ac81481f63df6ca4b8edd3b14727308b18df50e9f75bd5ef7bba70a8c4ea46</code></li>
+<li>Qualification sphere count: 5,882개</li>
+<li>Canonical collision model SHA-256: <code>e4c89b903ecd37db724507d06d182bf3df20e044e55cf16e103bee9ad9b49d73</code></li>
+<li>Raw robot config SHA-256: <code>18f0d0688829f4519544da523f9d0462920f27a60fe270b7932904187c662e1a</code></li>
+<li>Environment 5 mm를 포함한 runtime collision configuration SHA-256: <code>614d3f51b80a9946000d685eab76227ef245a5620535e8002359461dacf0273f</code></li>
 <li>Canonical identity는 run 경로를 제외하고 link/sphere 순서, IEEE-754 center·radius, global/self buffer와 ignore pair를 포함한다.</li>
 </ul>
-<p>경로를 제외한 이유는 서로 다른 immutable run directory가 같은 model을 생성했는지 비교하기 위해서다. 반대로 sphere 순서는 GPU 배열 배치와 성능에 영향을 줄 수 있으므로 정렬해 숨기지 않고 원 직렬화 순서를 digest에 포함했다. Raw <code>robot.yml</code> SHA도 별도로 보존한다.</p>
+<p>경로를 제외한 이유는 서로 다른 immutable run directory가 같은 model을 생성했는지 비교하기 위해서다. 반대로 sphere 순서는 GPU 배열 배치와 성능에 영향을 줄 수 있으므로 정렬해 숨기지 않고 원 직렬화 순서를 digest에 포함했다. Strict geometric build quality는 아직 false다. Palm base 최대 uncovered gap은 11.65 mm에서 5.16 mm로 줄었지만 2.5 mm policy를 통과하지 못했고, volume coverage metric도 여러 link에서 남았다. Holdout decision parity 통과를 mesh-envelope 품질 완료로 확대 해석하지 않는다.</p>
 
 <h2>HPP-FCL parity 결과</h2>
 <table class="table">
-<tr><th>항목</th><th>결과</th></tr>
-<tr><td>Corpus</td><td>Actual assembly state 1,673개</td></tr>
-<tr><td>HPP-FCL unsafe / clear</td><td>633 / 1,040</td></tr>
-<tr><td>cuRobo unsafe</td><td>653</td></tr>
-<tr><td>False negative</td><td>0 / 633</td></tr>
-<tr><td>False positive</td><td>20 / 1,040 = 1.923%</td></tr>
-<tr><td>개발 acceptance</td><td>FN 0, FP 5% 이하 기준 통과</td></tr>
+<tr><th>단계</th><th>Generated state</th><th>Oracle unsafe / clear</th><th>FN</th><th>FP</th><th>판정</th></tr>
+<tr><td>초기 개발 corpus</td><td>1,522</td><td>개발·parent 합계 633 / 1,040</td><td>0</td><td>20 / 1,040 = 1.923%</td><td>모델 튜닝에 사용해 holdout 아님</td></tr>
+<tr><td>v1 holdout, 2,173 spheres</td><td>1,522</td><td>582 / 940</td><td>1</td><td>21 / 940 = 2.234%</td><td>거부, 이후 모델 수정에 사용</td></tr>
+<tr><td>v1 diagnostic, 5,882 spheres</td><td>1,522</td><td>582 / 940</td><td>0</td><td>51 / 940 = 5.426%</td><td>소비된 holdout이며 FP 예산도 초과</td></tr>
+<tr><td>v2 final holdout, 5,882 spheres</td><td>1,522</td><td>606 / 916</td><td>0</td><td>42 / 916 = 4.585%</td><td>FN 0, FP 5% 이하 통과</td></tr>
 </table>
-<p>이 결과는 static self/world decision parity다. Signed minimum distance, continuous segment, moving target contact mask, attached object와 release envelope는 포함하지 않는다. 또한 같은 corpus를 sphere 정책 진단에도 사용했으므로 final generalization evidence가 아니다. 새 seed와 경계 perturbation으로 만든 독립 holdout에서 같은 gate를 다시 통과해야 한다.</p>
+<p>v2는 Halton start를 별도 구간으로 고정했고 원 개발 corpus 및 소비된 v1과 state digest 교집합을 각각 검사했다. 두 source-bound assessment report가 모두 <code>accepted=true</code>다. 이 결과는 static self/world decision parity이며 signed cuRobo margin, continuous segment, moving target contact mask, attached object와 release envelope는 포함하지 않는다.</p>
 
 <h2>Resident static kernel latency</h2>
 <table class="table">
 <tr><th>항목</th><th>결과</th></tr>
 <tr><td>GPU / driver</td><td>RTX 3090 / 535.309.01</td></tr>
-<tr><td>Query</td><td>Batch 64, horizon 1, 12 DOF, robot sphere 2,173개</td></tr>
+<tr><td>Query</td><td>Horizon 1, 12 DOF, robot sphere 5,882개</td></tr>
 <tr><td>Warmup / measured</td><td>100 / 1,000</td></tr>
 <tr><td>Measured operation</td><td>FK, self collision, activation-aware static-world collision, GPU unsafe reduction</td></tr>
-<tr><td>GPU event p50 / p95 / p99 / max</td><td>0.947 / 0.985 / 0.998 / 1.077 ms</td></tr>
-<tr><td>Host synchronized p50 / p95 / p99 / max</td><td>0.961 / 1.001 / 1.015 / 1.092 ms</td></tr>
-<tr><td>10 ms deadline miss</td><td>0 / 1,000</td></tr>
+<tr><td>Batch 8 GPU / host p99</td><td>1.429 / 1.449 ms</td></tr>
+<tr><td>Batch 64 GPU p50 / p95 / p99 / max</td><td>8.449 / 8.486 / 8.510 / 8.734 ms</td></tr>
+<tr><td>Batch 64 host p50 / p95 / p99 / max</td><td>8.466 / 8.504 / 8.527 / 8.754 ms</td></tr>
+<tr><td>10 ms deadline miss</td><td>Batch 8과 64 모두 0 / 1,000</td></tr>
 </table>
-<p>Joint query batches와 static world는 GPU에 resident하며 trial마다 compact unsafe count 한 번만 host로 회수했다. 하지만 output buffer는 아직 preallocated가 아니고 CUDA graph replay도 사용하지 않았다. 이 수치를 perception-to-command latency, dynamic object collision 또는 full planning p99로 확대 해석하면 안 된다.</p>
+<p>Joint query batches와 static world는 GPU에 resident하며 trial마다 compact unsafe count 한 번만 host로 회수했다. Batch 64는 10 ms 안에 들어오지만 전체 planner 여유가 1.47 ms뿐이므로 online 기본값으로 적절하지 않다. Coarse screening 뒤 batch 8 고정 shape를 사용하는 방향이 합리적이다. Output buffer는 아직 preallocated가 아니고 CUDA graph replay도 사용하지 않았으므로 이 수치를 perception-to-command latency, dynamic object collision 또는 full planning p99로 확대 해석하면 안 된다.</p>
 
 <h2>검증과 source revision</h2>
 <ul>
 <li><a href="https://github.com/gohyunsu/beltbench/commit/d2a2855"><code>d2a2855</code></a>: nearest-face normal 의존을 제거한 deterministic 26-direction sphere repair</li>
 <li><a href="https://github.com/gohyunsu/beltbench/commit/9693408"><code>9693408</code></a>: signed center와 nonnegative buffer를 구분하는 canonical model identity</li>
 <li><a href="https://github.com/gohyunsu/beltbench/commit/140d883"><code>140d883</code></a>: raw-trial resident collision benchmark와 collision-only hot path</li>
-<li>Planning 전체 회귀 792개 통과, optional dependency 14개 skip</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/1ea5d49"><code>1ea5d49</code></a>: parent/development/holdout lineage와 raw FN/FP를 보존하는 독립 holdout contract</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/b309b76"><code>b309b76</code></a>: 모든 link에 적용되는 520-sphere deterministic surface-repair budget과 v2 holdout</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/3b88473"><code>3b88473</code></a>: 실제 runtime collision configuration digest acceptance binding</li>
+<li>Planning 전체 회귀 797개 통과, optional dependency 14개 skip</li>
 <li>Exact cuRobo 환경 집중 회귀 23개 통과, skip 0</li>
 </ul>
 
@@ -146,16 +152,16 @@
 <ol>
 <li>Moving Pepsi pose update, phase-specific allowed contact, attachment, release envelope와 continuous swept collision을 검사하지 않았다.</li>
 <li>CUDA graph replay, preallocated output buffer와 concurrent perception load를 측정하지 않았다.</li>
-<li>Independent holdout corpus, signed clearance와 continuous path-tube false-negative 0을 확인하지 않았다.</li>
+<li>Static state holdout은 통과했지만 strict surface-envelope build quality, signed cuRobo clearance와 continuous path-tube false-negative 0은 확인하지 않았다.</li>
 <li>cuRobo arm-prefix optimizer가 immutable hand/suffix를 보존해 source-closed full command를 생성하지 않았다.</li>
 <li>독립 validator의 nominal·abort 전 구간 lease가 없어 같은 command의 MuJoCo rollout과 measured Viser replay를 아직 실행하지 못했다.</li>
 </ol>
 
 <h2>다음 실행 순서</h2>
 <ol>
-<li>새 random seed와 boundary perturbation으로 independent HPP-FCL holdout corpus를 생성한다.</li>
-<li>Time-indexed dynamic world, allowed contact, attached object와 release envelope를 separately warmed fixed-shape pass로 구현한다.</li>
 <li>Immutable hand/suffix write mask를 지키는 actual cuRobo arm-prefix producer와 별도 validator를 구현한다.</li>
+<li>Time-indexed dynamic world, allowed contact, attached object와 release envelope를 separately warmed fixed-shape pass로 구현한다.</li>
+<li>Strict palm-base surface gap을 줄이되 batch 8 latency 예산을 지키는 link-aware sphere pruning/repair를 offline HPP-FCL oracle로 검증한다.</li>
 <li>Preallocated output과 CUDA graph를 적용하고 concurrent perception 조건에서 full collision/planning p99를 다시 측정한다.</li>
 <li>같은 validated full command를 MuJoCo와 Viser에 넘겨 contact, retention, release와 bin containment를 비동기 검증한다.</li>
 </ol>
