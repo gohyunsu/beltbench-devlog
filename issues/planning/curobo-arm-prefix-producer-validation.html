@@ -16,7 +16,7 @@
 <h1>보수적 world proxy로 계획하고 같은 arm prefix를 고해상도 모델로 다시 검사한다.</h1>
 <p class="lede">Collision 계약과 holdout만 있던 상태에서 실제 cuRobo V2 <code>TrajectoryOptimizer</code>를 resident full-command의 arm-prefix 경계에 연결했다. Producer는 빠른 512-sphere proxy로 static world collision만 최적화한다. Hand schedule은 request 값으로 고정하고, self·connector·static world는 별도의 5,882-sphere validator가 같은 81-state tensor를 다시 검사한다. 이 분리는 “cuRobo를 사용한다”는 이름보다 어떤 모델이 어떤 판정 권한을 갖는지를 명확히 한다.</p>
 
-<div class="callout"><strong>현재 판정:</strong> RTX 3090에서 0.8초 nontrivial arm prefix를 30회 측정했다. World-only producer는 p99 29.708 ms, 고해상도 sampled collision validator는 p99 14.119 ms였고 81개 state의 self/world/joint-bound positive count는 모두 0이었다. 두 수치의 직렬 합은 약 43.827 ms다. 그러나 이 입력은 collision holdout에서 고른 두 clear endpoint를 잇는 arm-prefix 진단이며 Pepsi moving-object full command가 아니다. Dynamic object, contact, attachment, continuous collision, dynamics, abort, controller와 hardware 실행은 여전히 차단한다.</div>
+<div class="callout"><strong>현재 판정:</strong> RTX 3090에서 0.8초 nontrivial arm prefix를 30회 측정했다. World-only producer는 p99 29.789 ms, 고해상도 sampled collision validator는 p99 14.076 ms였고 81개 state의 self/world/joint-bound positive count는 모두 0이었다. 두 수치의 직렬 합은 약 43.865 ms다. 그러나 이 입력은 collision holdout에서 고른 두 clear endpoint를 잇는 arm-prefix 진단이며 Pepsi moving-object full command가 아니다. Dynamic object, contact, attachment, continuous collision, dynamics, abort, controller와 hardware 실행은 여전히 차단한다.</div>
 
 <h2>왜 하나의 collision model을 쓰지 않았는가</h2>
 <table class="table">
@@ -59,12 +59,12 @@
 <tr><td>Trajectory</td><td colspan="2">0.8초, 81 state, arm 6 DOF, hand 6 DOF locked open</td></tr>
 <tr><td>Warmup</td><td>첫 호출 약 1.71초, 이후 약 30 ms</td><td>Resident query 3회, model cold init은 timing 제외</td></tr>
 <tr><td>Measured trials</td><td>30 / 30 success</td><td>30회, 매회 81 state 전체</td></tr>
-<tr><td>Latency p50 / p95 / p99 / max</td><td>28.523 / 29.681 / 29.708 / 29.719 ms</td><td>13.438 / 14.011 / 14.119 / 14.164 ms</td></tr>
+<tr><td>Latency p99</td><td>29.789 ms</td><td>14.076 ms</td></tr>
 <tr><td>최대 endpoint 오류</td><td>goal q 1.427e-7 rad, qd·qdd 0</td><td>해당 없음</td></tr>
 <tr><td>Collision positive</td><td>cuRobo success, world-only</td><td>self 0 / world 0 / joint bound 0</td></tr>
 <tr><td>CUDA graph / output preallocation</td><td>cuRobo 내부 graph 사용</td><td>별도 graph replay 없음 / output 미리 할당하지 않음</td></tr>
 </table>
-<p>Producer와 validator를 직렬로 실행한 수치 경로의 p99 합은 약 43.827 ms다. 두 p99의 합은 end-to-end p99가 아니며 동시에 측정한 값도 아니다. 현재 결과는 static arm-prefix 계산이 50 ms 근처의 planning budget에 들어올 가능성을 보여줄 뿐이다. Multi-camera inference, pose fusion, candidate selection, moving-object collision, command handoff를 같은 부하에서 함께 측정해야 실제 control rate를 정할 수 있다.</p>
+<p>Producer와 validator를 직렬로 실행한 수치 경로의 p99 합은 약 43.865 ms다. 두 p99의 합은 end-to-end p99가 아니며 동시에 측정한 값도 아니다. 현재 결과는 static arm-prefix 계산이 50 ms 근처의 planning budget에 들어올 가능성을 보여줄 뿐이다. Multi-camera inference, pose fusion, candidate selection, moving-object collision, command handoff를 같은 부하에서 함께 측정해야 실제 control rate를 정할 수 있다.</p>
 
 <h2>Source와 검증</h2>
 <ul>
@@ -72,10 +72,11 @@
 <li><a href="https://github.com/gohyunsu/beltbench/commit/86a65c6"><code>86a65c6</code></a>: nontrivial resident producer benchmark</li>
 <li><a href="https://github.com/gohyunsu/beltbench/commit/41c2f74"><code>41c2f74</code></a>: exact solver trajectory와 고해상도 same-command validator</li>
 <li><a href="https://github.com/gohyunsu/beltbench/commit/0ef7d13"><code>0ef7d13</code></a>: full-prefix 고해상도 validator p99 측정</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/31a016e"><code>31a016e</code></a>: exact workcell hash와 solver runtime parameter source binding</li>
 <li>512-sphere raw robot SHA-256: <code>dc548b4fd44fc4524cb3592e6db64c08742078282ad1aebbda2ec34756f60d60</code></li>
 <li>512-sphere environment 5 mm configuration SHA-256: <code>fe8bcbbfe15bed74ce9a41bee2ffc85d20beacb1615a8f082127a450a2510d1c</code></li>
 <li>5,882-sphere validator configuration SHA-256: <code>614d3f51b80a9946000d685eab76227ef245a5620535e8002359461dacf0273f</code></li>
-<li>Producer·full-command 집중 회귀 12개 통과, 새 producer 집중 회귀 5개 통과</li>
+<li>Planning 전체 회귀 808개 통과, optional dependency 14개 skip</li>
 </ul>
 
 <h2>아직 주장할 수 없는 것</h2>
