@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RTX 3090 grasp-atlas-event chain · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-062 · 2026-08-12 · RTX 3090 candidate-to-event diagnostic chain</div>
+<h1>새 GPU worker에서 grasp 후보부터 event trajectory까지 다시 닫는다.</h1>
+<p class="lede">실제 로봇을 사용할 수 없는 동안에도 생성기 출력만 확인하고 멈추지 않는다. Pepsi Light upside-down stable pose와 Inspire left hand를 대상으로 BODex 후보를 새로 생성하고, 독립 intrinsic 평가, xArm6·connector 배치, full-path portfolio, full-yaw context atlas, synchronized event trajectory까지 checksummed source chain으로 연결했다. 결과는 진단 자료이며 measured stable pose, 승인 protocol, connector 계측과 correction path family가 없으므로 실행 권한은 부여하지 않았다.</p>
+
+<h2>환경과 목표</h2>
+<p>이전 연구 환경을 사용할 수 없게 되어 RTX 3090 24 GB worker를 별도 프로젝트 영역으로 구성했다. 시스템 driver가 지원하는 범위 안에서 Python 3.10, Torch 2.5.1+CUDA 12.1, CUDA toolkit 12.1.105, NumPy 1.26.4, SciPy 1.13.1, trimesh 4.8.3, Warp 1.6.2를 고정했다. BODex 환경과 planning·HPP-FCL 환경을 분리해 한쪽의 native dependency 변경이 다른 쪽을 암묵적으로 바꾸지 않게 했다.</p>
+<p>CUDA tensor 연산, Coal wrapper와 다섯 cuRobo extension import를 같은 환경에서 통과시켰다. 이 검증은 BODex 생성 runtime의 준비 상태를 뜻할 뿐, cuRobo moving full-command latency나 grasp 성공률을 증명하지 않는다.</p>
+
+<h2>후보 생성과 독립 선별</h2>
+<p>과거 후보 8개는 현행 독립 기준에서 모두 탈락했으므로 재사용하지 않았다. 새 immutable run은 64 seeds를 약 29.6초에 생성했다. Provider-native success는 0/64였지만 이를 acceptance로 사용하지 않고 모든 seed를 <code>unvalidated_proposal</code>로 import했다. 독립 geometry screen에서는 4개가 남았고 task-wrench quality는 약 0.0125~0.0944였다.</p>
+<table class="table">
+<tr><th>단계</th><th>결과</th><th>권한</th></tr>
+<tr><td>BODex generation</td><td>64 seeds, provider success 0/64</td><td>후보 provenance만 제공</td></tr>
+<tr><td>독립 intrinsic screen</td><td>geometry-clear 4/64</td><td>robot-independent diagnostic</td></tr>
+<tr><td>xArm6+Inspire endpoint deployment</td><td>4 grasps × 3 horizons = 12/12 feasible</td><td>nominal endpoint diagnostic</td></tr>
+<tr><td>Full-path portfolio</td><td>4 coarse search, 1 full-frame refinement</td><td>한 diagnostic path 선택</td></tr>
+<tr><td>Event compilation</td><td>71 waypoints, 6 physical events</td><td>execution blocked</td></tr>
+</table>
+<p>Intrinsic full evaluation에서 네 후보 모두 geometry는 통과했지만 stable pose, task protocol, runtime capability가 provisional이므로 <code>failure_free</code>는 0이었다. 이 상태를 우회해 library로 승격하거나 provider success가 false라는 이유만으로 geometry-clear 후보를 버리지 않았다.</p>
+
+<h2>로봇 배치와 full-path 선택</h2>
+<p>로봇 모델은 xArm6 arm, Inspire left hand와 두 CAD로 정의한 paired connector를 사용했다. Arm tip에서 hand root까지의 transform은 명시적 manifest로 결속했지만 z offset 47.5 mm는 아직 계측 전 값이다. 네 grasp를 3개 intercept horizon에 배치한 nominal endpoint 평가는 12/12를 통과했다.</p>
+<p>Shortlist는 hard gate를 모두 통과한 네 후보만 유지하고 normalized maximin으로 정렬했다. 이후 HPP-FCL reference planner로 네 candidate path를 비교하고 한 candidate를 full-frame refinement했다. 선택된 diagnostic은 4.6초 intercept에서 전체 71 frame을 통과했다. Coarse search는 약 304.0초, refinement는 약 71.6초가 걸렸으므로 이 CPU reference planner를 online loop에 둘 수는 없다.</p>
+<div class="callout"><strong>실시간 방향:</strong> HPP-FCL은 offline oracle과 회귀 검증에 남긴다. Online 경로는 full-yaw grasp atlas와 독립 재계획한 bounded path family를 조회하고, cuRobo GPU가 arm-prefix 최적화와 collision admission을 담당해야 한다. 모든 모듈을 GPU로 옮기는 것이 아니라 numerical hot path만 resident GPU에 둔다.</div>
+
+<h2>Full-yaw atlas</h2>
+<p>같은 4 grasps를 30° 간격 12 yaw와 3 horizons, 총 36 context에서 다시 평가했다. 0~120°와 330°는 12/12, 300°는 3/12가 feasible했다. 150~270°는 모두 pregrasp IK에서 탈락했다. 144 grasp-context 조합 중 75개가 허용되었지만, yaw uncertainty까지 요구하는 10,000회 query의 accepted 비율은 43.95%로 더 낮았다.</p>
+<table class="table">
+<tr><th>Atlas query</th><th>측정값</th></tr>
+<tr><td>평균</td><td>88.051 µs</td></tr>
+<tr><td>p50 / p95 / p99</td><td>77.253 / 110.970 / 116.440 µs</td></tr>
+<tr><td>최대</td><td>136.904 µs</td></tr>
+</table>
+<p>Lookup 자체는 충분히 빠르지만 coverage는 부족하다. 이 실패를 IK threshold 완화로 숨기지 않는다. 반대쪽 접근이나 다른 손 자세를 제공하는 추가 grasp를 생성하고 같은 intrinsic·deployment·path gate를 통과시켜야 한다. Runtime은 관측 yaw와 uncertainty가 atlas support 밖이면 fail-closed한다.</p>
+
+<h2>Event-native trajectory</h2>
+<p>선택 portfolio와 atlas를 직접 join하는 compiler를 추가했다. Compiler는 두 source set을 각각 checksum 검증한 뒤 grasp의 pose, joint order, pregrasp, closure와 object-relative semantics가 같은지 비교한다. 서로 다른 evaluation에서 만들어진 evidence 파일 경로와 digest까지 같다고 요구하지는 않는다. Operational semantics는 같아야 하고 provenance는 양쪽에서 독립적으로 닫혀야 한다.</p>
+<p>최종 event request는 71개 arm-hand waypoint와 6개 사건을 포함한다. <code>hand_close_start</code> 4.1초, <code>first_contact</code> 4.4초, <code>close_complete</code>와 <code>attach</code> 4.6초, <code>release_open</code> 7.2초, <code>detach</code> 7.233초다. Artifact SHA-256은 <code>8f3869ef3d01…137a4f1</code>이며 source revision <code>3f39e71</code>에서 재현했다.</p>
+
+<h2>실패 기록과 수정</h2>
+<table class="table">
+<tr><th>증상</th><th>원인</th><th>수정과 결과</th></tr>
+<tr><td>새 worker staging이 생성 전에 실패</td><td>과거 worker의 절대경로가 manifest에 남아 portable source가 아니었음</td><td>실행 시점의 project root에서 path를 해석하도록 adapter를 바꾸고 immutable staging을 재생성했다.</td></tr>
+<tr><td>Connector-object collision 결과를 validator가 거부</td><td>Checker는 <code>connector/*</code> pair를 만들지만 object-interaction contract는 arm·hand namespace만 허용했음</td><td>Connector namespace를 robot assembly로 명시하되 모든 connector-object penetration은 비의도 충돌로 fail-closed했다.</td></tr>
+<tr><td>Sampled path validator가 connector pair를 unclassified로 처리</td><td>Pair classifier가 arm과 end-effector만 robot group으로 간주했음</td><td>Arm·hand·connector 간 pair를 assembly, robot group과 환경 간 pair를 workcell로 분류하고 회귀 test를 추가했다.</td></tr>
+<tr><td>Portfolio와 atlas join에서 같은 grasp가 불일치</td><td>Operational grasp와 evaluation별 evidence 경로·digest를 한 equality로 비교했음</td><td>Operational semantics 비교와 independent provenance verification을 분리했다.</td></tr>
+<tr><td>Event compiler가 실제 dense trajectory를 거부</td><td><code>close_above_object</code> phase가 한 sample만 존재한다고 잘못 가정했음</td><td>Phase가 한 번의 contiguous interval이어야 한다고 정의하고 첫 sample을 phase boundary로 사용했다. Discontiguous 재등장은 계속 거부한다.</td></tr>
+</table>
+
+<h2>검증 범위와 남은 차단 조건</h2>
+<p>Connector collision 계약 관련 test 23개와 event·sampled path·path-family 관련 test 37개가 GPU worker에서 통과했다. Portfolio와 atlas source verifier도 event compiler가 전체 source chain을 다시 hash하며 통과했다. 이 결과는 actual asset 기반 offline diagnostic chain이 닫혔다는 뜻이지 실제 grasp 성공이나 controller-ready trajectory가 생겼다는 뜻은 아니다.</p>
+<ol>
+<li>Nominal 하나 외에 correction tube의 10개 axis-boundary cell을 각각 독립 재계획하고 HPP-FCL sampled validation을 통과시켜야 한다. Nominal path 복제는 금지한다.</li>
+<li>새 11-cell family를 실제 cuRobo arm-prefix producer와 고해상도 validator에 넣어 same-command full-task latency와 collision evidence를 측정해야 한다.</li>
+<li>그 exact command로만 MuJoCo measured rollout과 actual-asset Viser 1.0x 반복 재생을 만들어야 한다. 별도 animation을 실행 증거로 재분류하지 않는다.</li>
+<li>Upside-down stable pose, task protocol과 connector bolt-hole transform을 실물 계측·승인해야 한다.</li>
+<li>Hardware가 돌아오면 multi-camera pose·yaw, belt plane·axis·speed·latency, robot base calibration과 controller timing을 검증해야 한다.</li>
+</ol>
+<p>다음 구현 단위는 shared model과 collision backend를 한 번만 load해 11 correction cell을 batch planning하는 offline compiler다. 이 결과를 path-family gate에 넣은 뒤에만 resident cuRobo full command와 same-command MuJoCo·Viser를 진행한다.</p>
+<p><a href="sampled-path-family-production-evidence.html">Correction cell production gate</a>, <a href="resident-full-command-materialization-edge.html">Resident full-command materialization</a>, <a href="curobo-arm-prefix-producer-validation.html">cuRobo producer·validator 측정</a>에서 후속 경계를 관리한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
