@@ -14,11 +14,16 @@
 <main class="wrap article">
 <div class="eyebrow">ISSUE-062 · 2026-08-12 · RTX 3090 candidate-to-event diagnostic chain</div>
 <h1>새 GPU worker에서 grasp 후보부터 event trajectory까지 다시 닫는다.</h1>
-<p class="lede">실제 로봇을 사용할 수 없는 동안에도 생성기 출력만 확인하고 멈추지 않는다. Pepsi Light upside-down stable pose와 Inspire left hand를 대상으로 BODex 후보를 새로 생성하고, 독립 intrinsic 평가, xArm6·connector 배치, full-path portfolio, full-yaw context atlas, synchronized event trajectory까지 checksummed source chain으로 연결했다. 결과는 진단 자료이며 measured stable pose, 승인 protocol, connector 계측과 correction path family가 없으므로 실행 권한은 부여하지 않았다.</p>
+<p class="lede">실제 로봇을 사용할 수 없는 동안에도 생성기 출력만 확인하고 멈추지 않는다. Pepsi Light upside-down stable pose와 Inspire left hand를 대상으로 BODex 후보를 새로 생성하고, 독립 intrinsic 평가, xArm6·connector 배치, full-path portfolio, full-yaw context atlas, synchronized event trajectory까지 checksummed source chain으로 연결했다. 이후 “학습보다 실제 inference demo를 우선하라”는 연구 방향과 “충돌을 어떻게 걸렀고 cuRobo를 왜 사용하지 않는가”라는 검토 의견에 맞춰, full-command dynamics와 resident GPU collision 경계를 다시 감사했다. 결과는 진단 자료이며 measured stable pose, 승인 protocol, connector 계측과 실제 dynamic lifecycle CUDA kernel이 없으므로 실행 권한은 부여하지 않았다.</p>
 
 <h2>환경과 목표</h2>
 <p>이전 연구 환경을 사용할 수 없게 되어 RTX 3090 24 GB worker를 별도 프로젝트 영역으로 구성했다. 시스템 driver가 지원하는 범위 안에서 Python 3.10, Torch 2.5.1+CUDA 12.1, CUDA toolkit 12.1.105, NumPy 1.26.4, SciPy 1.13.1, trimesh 4.8.3, Warp 1.6.2를 고정했다. BODex 환경과 planning·HPP-FCL 환경을 분리해 한쪽의 native dependency 변경이 다른 쪽을 암묵적으로 바꾸지 않게 했다.</p>
 <p>CUDA tensor 연산, Coal wrapper와 다섯 cuRobo extension import를 같은 환경에서 통과시켰다. 이 검증은 BODex 생성 runtime의 준비 상태를 뜻할 뿐, cuRobo moving full-command latency나 grasp 성공률을 증명하지 않는다.</p>
+
+<h2>연구 방향을 inference demo 중심으로 재정의</h2>
+<p>교수님 의견에 따라 AutoDex training과 데이터 수집은 주 경로에서 분리했다. Runtime은 이미 검증된 grasp library, AutoDex 계열 산출물, 또는 별도 grasp generator 중 어느 공급자에서든 object-relative grasp를 받을 수 있다. 현재 object·stable tabletop pose·planar 위치·초기 yaw가 주어지면 compatible grasp와 resident path family를 조회하고, coverage가 없을 때만 offline synthesis request를 발행한다. 온라인 제어 주기에서 grasp 생성이나 재학습을 시작하지 않는다.</p>
+<p>사수님 의견은 두 개의 독립 질문으로 처리했다. 첫째, planner collision은 GPU에서 빠르게 판정하되 exact mesh HPP-FCL을 offline oracle로 유지한다. 둘째, MuJoCo와 Isaac Sim은 같은 source-bound command의 tracking, contact, attachment, release, bin containment를 검증하는 backend이며 planner 승인 boolean을 대신하지 않는다. Isaac Gym Preview 계열은 신규 목표로 두지 않는다.</p>
+<div class="callout"><strong>결정:</strong> 모든 코드를 기계적으로 CUDA로 옮기지 않는다. Batched IK, trajectory optimization, self/static-world collision, time-indexed object collision과 candidate reduction은 resident GPU worker에 둔다. Timestamp causality, encoder join, atlas lookup, deadline·cancel state machine과 robot transport는 CPU에 남긴다. 작은 분기 작업을 GPU로 옮기면 kernel launch와 synchronization이 오히려 latency를 늘린다.</div>
 
 <h2>후보 생성과 독립 선별</h2>
 <p>과거 후보 8개는 현행 독립 기준에서 모두 탈락했으므로 재사용하지 않았다. 새 immutable run은 64 seeds를 약 29.6초에 생성했다. Provider-native success는 0/64였지만 이를 acceptance로 사용하지 않고 모든 seed를 <code>unvalidated_proposal</code>로 import했다. 독립 geometry screen에서는 4개가 남았고 task-wrench quality는 약 0.0125~0.0944였다.</p>
@@ -35,7 +40,7 @@
 <h2>로봇 배치와 full-path 선택</h2>
 <p>로봇 모델은 xArm6 arm, Inspire left hand와 두 CAD로 정의한 paired connector를 사용했다. Arm tip에서 hand root까지의 transform은 명시적 manifest로 결속했지만 z offset 47.5 mm는 아직 계측 전 값이다. 네 grasp를 3개 intercept horizon에 배치한 nominal endpoint 평가는 12/12를 통과했다.</p>
 <p>Shortlist는 hard gate를 모두 통과한 네 후보만 유지하고 normalized maximin으로 정렬했다. 이후 HPP-FCL reference planner로 네 candidate path를 비교하고 한 candidate를 full-frame refinement했다. 선택된 diagnostic은 4.6초 intercept에서 전체 71 frame을 통과했다. Coarse search는 약 304.0초, refinement는 약 71.6초가 걸렸으므로 이 CPU reference planner를 online loop에 둘 수는 없다.</p>
-<div class="callout"><strong>실시간 방향:</strong> HPP-FCL은 offline oracle과 회귀 검증에 남긴다. Online 경로는 full-yaw grasp atlas와 독립 재계획한 bounded path family를 조회하고, cuRobo GPU가 arm-prefix 최적화와 collision admission을 담당해야 한다. 모든 모듈을 GPU로 옮기는 것이 아니라 numerical hot path만 resident GPU에 둔다.</div>
+<div class="callout"><strong>실시간 방향:</strong> HPP-FCL은 offline oracle과 회귀 검증에 남긴다. 첫 demo는 full-yaw grasp atlas와 bounded path family를 조회하고, cuRobo GPU가 same-command collision admission을 담당한다. Atlas 밖이지만 지원 가능한 context에 대해서만 이후 한 번의 bounded arm-prefix warm start를 추가한다. CPU reference planner나 무제한 online fallback은 두지 않는다.</div>
 
 <h2>Full-yaw atlas</h2>
 <p>같은 4 grasps를 30° 간격 12 yaw와 3 horizons, 총 36 context에서 다시 평가했다. 0~120°와 330°는 12/12, 300°는 3/12가 feasible했다. 150~270°는 모두 pregrasp IK에서 탈락했다. 144 grasp-context 조합 중 75개가 허용되었지만, yaw uncertainty까지 요구하는 10,000회 query의 accepted 비율은 43.95%로 더 낮았다.</p>
@@ -51,6 +56,26 @@
 <p>선택 portfolio와 atlas를 직접 join하는 compiler를 추가했다. Compiler는 두 source set을 각각 checksum 검증한 뒤 grasp의 pose, joint order, pregrasp, closure와 object-relative semantics가 같은지 비교한다. 서로 다른 evaluation에서 만들어진 evidence 파일 경로와 digest까지 같다고 요구하지는 않는다. Operational semantics는 같아야 하고 provenance는 양쪽에서 독립적으로 닫혀야 한다.</p>
 <p>최종 event request는 71개 arm-hand waypoint와 6개 사건을 포함한다. <code>hand_close_start</code> 4.1초, <code>first_contact</code> 4.4초, <code>close_complete</code>와 <code>attach</code> 4.6초, <code>release_open</code> 7.2초, <code>detach</code> 7.233초다. Artifact SHA-256은 <code>8f3869ef3d01…137a4f1</code>이며 source revision <code>3f39e71</code>에서 재현했다.</p>
 
+<h2>cuRobo를 사용하지 않은 것이 아니라 역할을 분리했다</h2>
+<p>현재 arm-prefix producer는 cuRobo를 사용하지만 self collision을 끈 world-only optimizer다. 이유는 self collision이 중요하지 않아서가 아니다. Producer와 동일한 conservative b512 proxy를 1,673개 holdout state에 적용하면 모든 state에서 self cost가 양수여서, 그 모델을 그대로 켠 optimizer는 모든 solve를 infeasible로 만든다. 이를 broad ignore pair로 숨기지 않고 model-qualification failure로 기록했다.</p>
+<p>Self/static-world admission은 별도의 v28 xArm6·Inspire validator가 담당한다. 독립 1,522-state holdout에서 mesh oracle false negative는 0, oracle-clear 937개 중 false positive는 37개(3.95%)였다. World-only b512 proxy도 별도 1,673-state corpus에서 false negative 0, clear 1,113개 중 false positive 51개(4.58%)였다. 두 결과의 scope를 합쳐 하나의 “완전한 collision checker”라고 부르지 않는다.</p>
+<table class="table">
+<tr><th>RTX 3090 workload</th><th>측정</th><th>판정</th></tr>
+<tr><td>Resident static collision, batch 8</td><td>1,000 trials, host p99 1.449 ms, 10 ms miss 0</td><td>정적 gate에는 유효</td></tr>
+<tr><td>81-sample high-resolution self/world check</td><td>30 trials, host p99 14.119 ms</td><td>100 ms 진단 budget 통과, CUDA graph·output preallocation 없음</td></tr>
+<tr><td>Arm-prefix solver trajectory</td><td>30 trials, p99 29.708 ms; 첫 warm-up 1,633.5 ms</td><td>steady-state 자료만 유효, full lifecycle 아님</td></tr>
+</table>
+<p>따라서 1.449 ms 결과를 moving grasp 전체의 10 ms 보장으로 확대 해석할 수 없다. 실제 온라인 권한에는 translating object, named contact transition, attached object, release envelope, dynamics, abort와 controller handoff가 같은 command와 lifecycle digest로 연결되어야 한다.</p>
+
+<h2>Full-command 재검증에서 발견한 dynamics 오류</h2>
+<p>Nominal과 10개 correction boundary cell은 HPP-FCL geometry/contact 검사에서 11/11을 통과했다. 그러나 같은 command를 dynamics까지 다시 평가하자 11개 모두 실패했다. Position margin은 약 +0.270으로 통과했지만 velocity, acceleration, jerk margin은 각각 약 -6.998, -15.371, -17.693이었다.</p>
+<p>원인은 로봇 성능 자체가 아니라 trajectory 표현이었다. 30 Hz dense IK waypoint를 playback request에 넣었고, playback은 인접한 모든 점을 서로 독립적인 rest-to-rest minimum-jerk segment로 해석했다. 연속적인 geometry sample을 실행 가능한 <code>q/qd/qdd</code> command로 잘못 취급한 것이다.</p>
+<p>이를 보정 계수나 fallback으로 덮지 않았다. Intercept candidate가 playback과 collision 검증으로 넘어가기 전에 full-request dynamics backend가 전체 request를 source-bound 방식으로 평가하도록 변경했다. 실패한 candidate는 <code>joint_dynamics</code>로 즉시 거절되고 request/playback evidence를 생성하지 않는다. 다음 compiler는 cuRobo가 만든 derivative-aware arm prefix를 event-bound hand suffix와 결합해야 한다.</p>
+
+<h2>Source-bound cuRobo runtime gate</h2>
+<p>이미 warm-up된 resident backend를 위한 production boundary를 추가했다. Compact result는 generation, path family, exact event trajectory digest, collision lifecycle digest, 검사 interval, collision configuration, backend family/version/source revision, kernel, required operations, device residency, CUDA graph, preallocated buffer, host-device transfer와 deadline을 모두 결속한다. Backend exception, 오래된 lifecycle, operation 누락, source mismatch, filesystem transport나 deadline miss는 모두 fail-closed하며 HPP-FCL CPU fallback을 호출하지 않는다.</p>
+<p>다만 이것은 backend adapter와 정책 경계이지 time-indexed lifecycle CUDA kernel 자체는 아니다. 현재 lifecycle artifact는 world-object geometry, attached sphere set, release swept volume의 SHA-256만 보유하고 실제 mesh/primitive/sphere tensor payload를 포함하지 않는다. 이 payload bundle과 lifecycle hash를 먼저 결속해야 graph replay가 무엇을 검사했는지 증명할 수 있다. Placeholder geometry로 kernel을 통과시키는 구현은 하지 않는다.</p>
+
 <h2>실패 기록과 수정</h2>
 <table class="table">
 <tr><th>증상</th><th>원인</th><th>수정과 결과</th></tr>
@@ -59,18 +84,21 @@
 <tr><td>Sampled path validator가 connector pair를 unclassified로 처리</td><td>Pair classifier가 arm과 end-effector만 robot group으로 간주했음</td><td>Arm·hand·connector 간 pair를 assembly, robot group과 환경 간 pair를 workcell로 분류하고 회귀 test를 추가했다.</td></tr>
 <tr><td>Portfolio와 atlas join에서 같은 grasp가 불일치</td><td>Operational grasp와 evaluation별 evidence 경로·digest를 한 equality로 비교했음</td><td>Operational semantics 비교와 independent provenance verification을 분리했다.</td></tr>
 <tr><td>Event compiler가 실제 dense trajectory를 거부</td><td><code>close_above_object</code> phase가 한 sample만 존재한다고 잘못 가정했음</td><td>Phase가 한 번의 contiguous interval이어야 한다고 정의하고 첫 sample을 phase boundary로 사용했다. Discontiguous 재등장은 계속 거부한다.</td></tr>
+<tr><td>11개 correction path가 geometry는 통과하지만 dynamics에서 전부 실패</td><td>Dense IK samples를 인접 rest-to-rest quintic command로 잘못 해석했음</td><td>Full-request dynamics gate를 intercept search 앞에 추가해 <code>joint_dynamics</code>로 fail-closed했다. Derivative-aware compiler가 생길 때까지 resident family 승격을 금지했다.</td></tr>
+<tr><td>cuRobo self collision을 producer에 켜면 모든 solve가 infeasible</td><td>Producer의 b512 proxy가 holdout 1,673/1,673 state에 positive self cost를 보고함</td><td>World-only producer와 독립 v28 self/static validator를 분리했다. Self collision을 생략하거나 ignore pair를 넓히지 않았다.</td></tr>
+<tr><td>Runtime 문서가 unavailable gate만 존재한다고 설명</td><td>Source-bound adapter 구현 뒤 README가 갱신되지 않았음</td><td>Unavailable diagnostic CLI와 injectable cuRobo production adapter를 구분하고 concrete lifecycle kernel 부재를 명시했다.</td></tr>
 </table>
 
 <h2>검증 범위와 남은 차단 조건</h2>
-<p>Connector collision 계약 관련 test 23개와 event·sampled path·path-family 관련 test 37개가 GPU worker에서 통과했다. Portfolio와 atlas source verifier도 event compiler가 전체 source chain을 다시 hash하며 통과했다. 이 결과는 actual asset 기반 offline diagnostic chain이 닫혔다는 뜻이지 실제 grasp 성공이나 controller-ready trajectory가 생겼다는 뜻은 아니다.</p>
+<p>Connector collision 계약 관련 test 23개와 event·sampled path·path-family 관련 test 37개가 GPU worker에서 통과했다. Dynamics gate와 source-bound cuRobo runtime gate를 포함한 최신 관련 suite도 GPU worker에서 55개가 통과했다. Portfolio와 atlas source verifier는 전체 source chain을 다시 hash한다. 이 결과는 actual asset 기반 offline diagnostic과 fail-closed runtime edge가 닫혔다는 뜻이지 실제 grasp 성공이나 controller-ready trajectory가 생겼다는 뜻은 아니다.</p>
 <ol>
-<li>Nominal 하나 외에 correction tube의 10개 axis-boundary cell을 각각 독립 재계획하고 HPP-FCL sampled validation을 통과시켜야 한다. Nominal path 복제는 금지한다.</li>
-<li>새 11-cell family를 실제 cuRobo arm-prefix producer와 고해상도 validator에 넣어 same-command full-task latency와 collision evidence를 측정해야 한다.</li>
+<li>현재 11-cell geometry samples를 폐기하는 대신 참고 자료로만 남기고, nonzero derivative를 보존하는 cuRobo <code>q/qd/qdd</code> command로 다시 compile해야 한다.</li>
+<li>World object mesh/primitive, object-frame attached spheres, conservative release envelope의 실제 payload bundle을 만들고 lifecycle component digest와 검증해야 한다.</li>
+<li>세 collision phase를 fixed-shape buffer와 CUDA graph로 구현하고, graph replay·preallocation을 켠 same-command full-task benchmark에서 deadline miss 0을 입증해야 한다.</li>
 <li>그 exact command로만 MuJoCo measured rollout과 actual-asset Viser 1.0x 반복 재생을 만들어야 한다. 별도 animation을 실행 증거로 재분류하지 않는다.</li>
-<li>Upside-down stable pose, task protocol과 connector bolt-hole transform을 실물 계측·승인해야 한다.</li>
-<li>Hardware가 돌아오면 multi-camera pose·yaw, belt plane·axis·speed·latency, robot base calibration과 controller timing을 검증해야 한다.</li>
+<li>Upside-down stable pose, task protocol과 connector bolt-hole transform을 실물 계측·승인하고, hardware가 돌아오면 multi-camera pose·yaw, belt plane·axis·speed·latency, robot-base와 controller timing을 검증해야 한다.</li>
 </ol>
-<p>다음 구현 단위는 shared model과 collision backend를 한 번만 load해 11 correction cell을 batch planning하는 offline compiler다. 이 결과를 path-family gate에 넣은 뒤에만 resident cuRobo full command와 same-command MuJoCo·Viser를 진행한다.</p>
+<p>다음 구현 단위는 arbitrary hash 인자를 제거한 typed resident collision-geometry bundle, 그 bundle을 소비하는 세 fixed-shape cuRobo lifecycle pass, 그리고 derivative-aware arm-prefix compiler다. 첫 demo는 atlas hit만 허용하고 이 gate를 매 observation generation마다 실행한다. Full warm start는 이 경로가 target GPU에서 안정된 뒤 별도 50 ms policy로 추가한다.</p>
 <p><a href="sampled-path-family-production-evidence.html">Correction cell production gate</a>, <a href="resident-full-command-materialization-edge.html">Resident full-command materialization</a>, <a href="curobo-arm-prefix-producer-validation.html">cuRobo producer·validator 측정</a>에서 후속 경계를 관리한다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
