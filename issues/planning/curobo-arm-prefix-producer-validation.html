@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>cuRobo arm-prefix producer 검증 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-060 · 2026-08-12 · source-bound cuRobo arm-prefix producer</div>
+<h1>보수적 world proxy로 계획하고 같은 arm prefix를 고해상도 모델로 다시 검사한다.</h1>
+<p class="lede">Collision 계약과 holdout만 있던 상태에서 실제 cuRobo V2 <code>TrajectoryOptimizer</code>를 resident full-command의 arm-prefix 경계에 연결했다. Producer는 빠른 512-sphere proxy로 static world collision만 최적화한다. Hand schedule은 request 값으로 고정하고, self·connector·static world는 별도의 5,882-sphere validator가 같은 81-state tensor를 다시 검사한다. 이 분리는 “cuRobo를 사용한다”는 이름보다 어떤 모델이 어떤 판정 권한을 갖는지를 명확히 한다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> RTX 3090에서 0.8초 nontrivial arm prefix를 30회 측정했다. World-only producer는 p99 29.708 ms, 고해상도 sampled collision validator는 p99 14.119 ms였고 81개 state의 self/world/joint-bound positive count는 모두 0이었다. 두 수치의 직렬 합은 약 43.827 ms다. 그러나 이 입력은 collision holdout에서 고른 두 clear endpoint를 잇는 arm-prefix 진단이며 Pepsi moving-object full command가 아니다. Dynamic object, contact, attachment, continuous collision, dynamics, abort, controller와 hardware 실행은 여전히 차단한다.</div>
+
+<h2>왜 하나의 collision model을 쓰지 않았는가</h2>
+<table class="table">
+<tr><th>역할</th><th>모델과 연산</th><th>채택 이유</th></tr>
+<tr><td>Online producer</td><td>512-sphere conservative proxy, static world cost, 25-iteration cuRobo trajopt</td><td>고해상도 sphere union을 포함하면서 warm solve를 수십 ms로 제한한다.</td></tr>
+<tr><td>Independent validator</td><td>5,882-sphere model, self·connector·static world·joint bound</td><td>개발에 사용하지 않은 holdout에서 HPP-FCL false negative 0을 확인한 모델로 producer output을 다시 검사한다.</td></tr>
+<tr><td>Offline reference</td><td>HPP-FCL actual mesh</td><td>Sphere approximation 자체의 누락을 찾는다. Online fallback으로 사용하지 않는다.</td></tr>
+</table>
+<p>고해상도 모델을 <code>TrajectoryOptimizer</code>에 직접 넣은 실험은 초기화 약 114초, 첫 solve 약 4.15초, warm solve 약 2.21초가 걸렸다. 이는 online producer로 사용할 수 없다. 반대로 512-sphere proxy는 각 sphere가 원 고해상도 sphere union을 포함하도록 만들었기 때문에 static world false negative를 막지만, 팽창한 sphere끼리의 self collision은 모든 holdout state를 unsafe로 만들었다. 따라서 proxy의 self cost를 임의로 신뢰하지 않고 self 판정 권한을 고해상도 validator에만 남겼다.</p>
+
+<h2>발생한 문제, 원인, 해결과 결과</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>과거 예제의 <code>curobo.wrap</code> 경로가 없음</td><td>고정한 2026 official source는 공개 API를 <code>curobo.trajectory_optimizer</code>로 재구성했다.</td><td>Full Git revision을 policy에 묶고 현행 <code>TrajectoryOptimizer.solve_cspace</code>만 adapter에서 import했다.</td><td>과거 API fallback 없이 exact source에서 초기화·solve가 재현됐다.</td></tr>
+<tr><td>Seed와 output shape를 모두 81로 가정할 위험</td><td>B-spline action horizon과 full C2 state horizon은 서로 다르다.</td><td>Policy와 backend protocol에 <code>solver_seed_state_count=16</code>, <code>solver_output_state_count=81</code>을 분리했다.</td><td>잘못된 seed tensor shape를 source contract에서 거부한다.</td></tr>
+<tr><td><code>self_collision_check=false</code>인데 solve가 계속 실패</td><td>Optimizer self cost는 꺼졌지만 기본 <code>metrics_base.yml</code>의 self constraint weight 5000은 남아 있었다.</td><td>World-only metrics config를 복제해 optimizer self cost와 metrics self constraint를 모두 0으로 강제했다.</td><td>Self 권한이 producer에 조용히 재진입하지 않는다.</td></tr>
+<tr><td>Hand까지 12 DOF 최적화됨</td><td>Proxy robot 원본은 xArm6와 Inspire Left joint를 모두 active로 노출했다.</td><td>Request의 resident initial hand position 6개를 <code>kinematics.lock_joints</code>에 주입하고 backend가 잠근 이름·값을 다시 노출하게 했다.</td><td>Active solver joint는 일반 named arm 6개와 정확히 일치하며 hand command는 immutable full schedule에 남는다.</td></tr>
+<tr><td>Seed batch 8개가 모두 같은 nominal path</td><td>Nominal seed를 seed count만큼 단순 복제했다.</td><td>Nominal seed는 1개만 제공하고 나머지는 cuRobo seed manager가 goal interpolation으로 생성하게 했다.</td><td>중복 계산을 줄이면서 request의 fixed seed capacity 8을 유지했다.</td></tr>
+<tr><td>첫 solve가 약 1.7초</td><td>CUDA kernel과 graph cache가 첫 호출에서 준비됐다.</td><td>Backend가 실제 선행 solve 횟수로 <code>warmup_completed</code>를 계산하고 planner가 cold backend를 거부한다.</td><td>첫 warmup 뒤 measured producer p99는 29.708 ms였다.</td></tr>
+<tr><td>Float32 goal position이 약간 다름</td><td>반환 grid의 goal 오차가 최대 1.427e-7 rad였다.</td><td>Raw endpoint <code>q/qd/qdd</code>를 tolerance로 먼저 검사한 뒤 exact request start·latch boundary만 고정하고 이를 result schema에 명시했다.</td><td>Full-command C2 splice는 exact source 값이며 raw solver tensor digest도 별도로 보존된다.</td></tr>
+<tr><td>보기에 같은 trajectory를 다른 validator가 검사할 위험</td><td>Latency report가 처음에는 digest만 저장하고 state grid를 저장하지 않았다.</td><td>대표 <code>q/qd/qdd</code> 81-state grid와 digest를 producer report에 넣고 validator가 digest를 재계산했다.</td><td>Producer와 validator가 동일한 수치 tensor를 소비했음을 source-closed하게 확인한다.</td></tr>
+</table>
+
+<h2>구현한 모듈 경계</h2>
+<ol>
+<li><strong>Contract:</strong> cuRobo revision, proxy robot/configuration, accepted proxy assessment, solver shape, latency·endpoint·joint trust-tube 한계와 collision 책임을 불변 policy/result로 보존한다.</li>
+<li><strong>Planning:</strong> Vendor를 import하지 않고 nominal prefix seed 생성, raw C2 state 검증, exact request time 재표본화, start·latch boundary anchoring과 기존 full-command write mask 조립만 수행한다.</li>
+<li><strong>Vendor adapter:</strong> 이미 초기화된 cuRobo solver만 감싸고 Torch/CUDA tensor, zero internal jerk boundary, one nominal seed, fixed <code>dt</code>와 raw result 추출을 담당한다.</li>
+<li><strong>Benchmark:</strong> HPP-FCL과 proxy 양쪽에서 clear인 독립 v3 endpoint를 선택하고 cold warmup과 30회 steady-state latency를 분리한다.</li>
+<li><strong>Validator:</strong> Producer report의 exact state grid를 8-state resident batch 11개로 나눠 고해상도 self/world/bound cost를 계산한다.</li>
+</ol>
+<p>Arm과 hand 이름은 example policy에 xArm6/Inspire Left 기본값이 있지만 planner core는 request와 policy의 ordered named joints가 일치하는지만 확인한다. 다른 arm/hand는 새 robot config, lock state, collision proxy·validator qualification과 policy를 제공하면 같은 core를 사용한다.</p>
+
+<h2>실측 결과</h2>
+<table class="table">
+<tr><th>항목</th><th>Producer</th><th>고해상도 validator</th></tr>
+<tr><td>GPU / driver</td><td colspan="2">RTX 3090 / 535.309.01</td></tr>
+<tr><td>cuRobo source</td><td colspan="2"><code>8e734f3ced1df898990bcd92de40abce475907db</code></td></tr>
+<tr><td>Robot sphere</td><td>512</td><td>5,882</td></tr>
+<tr><td>Trajectory</td><td colspan="2">0.8초, 81 state, arm 6 DOF, hand 6 DOF locked open</td></tr>
+<tr><td>Warmup</td><td>첫 호출 약 1.71초, 이후 약 30 ms</td><td>Resident query 3회, model cold init은 timing 제외</td></tr>
+<tr><td>Measured trials</td><td>30 / 30 success</td><td>30회, 매회 81 state 전체</td></tr>
+<tr><td>Latency p50 / p95 / p99 / max</td><td>28.523 / 29.681 / 29.708 / 29.719 ms</td><td>13.438 / 14.011 / 14.119 / 14.164 ms</td></tr>
+<tr><td>최대 endpoint 오류</td><td>goal q 1.427e-7 rad, qd·qdd 0</td><td>해당 없음</td></tr>
+<tr><td>Collision positive</td><td>cuRobo success, world-only</td><td>self 0 / world 0 / joint bound 0</td></tr>
+<tr><td>CUDA graph / output preallocation</td><td>cuRobo 내부 graph 사용</td><td>별도 graph replay 없음 / output 미리 할당하지 않음</td></tr>
+</table>
+<p>Producer와 validator를 직렬로 실행한 수치 경로의 p99 합은 약 43.827 ms다. 두 p99의 합은 end-to-end p99가 아니며 동시에 측정한 값도 아니다. 현재 결과는 static arm-prefix 계산이 50 ms 근처의 planning budget에 들어올 가능성을 보여줄 뿐이다. Multi-camera inference, pose fusion, candidate selection, moving-object collision, command handoff를 같은 부하에서 함께 측정해야 실제 control rate를 정할 수 있다.</p>
+
+<h2>Source와 검증</h2>
+<ul>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/90507d2"><code>90507d2</code></a>: source-bound policy/result, vendor-neutral C2 assembly와 actual cuRobo adapter</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/86a65c6"><code>86a65c6</code></a>: nontrivial resident producer benchmark</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/41c2f74"><code>41c2f74</code></a>: exact solver trajectory와 고해상도 same-command validator</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/0ef7d13"><code>0ef7d13</code></a>: full-prefix 고해상도 validator p99 측정</li>
+<li>512-sphere raw robot SHA-256: <code>dc548b4fd44fc4524cb3592e6db64c08742078282ad1aebbda2ec34756f60d60</code></li>
+<li>512-sphere environment 5 mm configuration SHA-256: <code>fe8bcbbfe15bed74ce9a41bee2ffc85d20beacb1615a8f082127a450a2510d1c</code></li>
+<li>5,882-sphere validator configuration SHA-256: <code>614d3f51b80a9946000d685eab76227ef245a5620535e8002359461dacf0273f</code></li>
+<li>Producer·full-command 집중 회귀 12개 통과, 새 producer 집중 회귀 5개 통과</li>
+</ul>
+
+<h2>아직 주장할 수 없는 것</h2>
+<ol>
+<li>이번 producer 입력은 실제 Pepsi grasp request/template/lifecycle에서 materialize한 command가 아니다.</li>
+<li>Hand closure, first contact, moving target의 time-indexed collision, attachment, lift, transfer, drop과 return suffix를 실제 cuRobo output으로 검증하지 않았다.</li>
+<li>81개 sampled state 사이의 continuous collision, robot dynamics, stop·abort route와 controller deadline을 승인하지 않았다.</li>
+<li>고해상도 validator의 cold model init은 약 100초 수준이므로 process 상주와 restart 운영 정책이 필수다.</li>
+<li>MuJoCo와 Viser가 이번 exact producer output을 소비하지 않았다. 기존 animation을 새 command의 실행 결과로 표시하지 않는다.</li>
+</ol>
+
+<h2>다음 단계</h2>
+<ol>
+<li>실제 Pepsi path-family에서 full-command request, resident template과 object collision lifecycle을 하나의 source bundle로 materialize한다.</li>
+<li>현재 producer가 arm prefix 내부만 쓰고 hand·latch·suffix를 보존하는 actual full command를 생성한다.</li>
+<li>같은 full command에 moving target, self/connector/static world, post-attach object, release envelope, continuous collision과 dynamics validator를 순서대로 연결한다.</li>
+<li>검증된 exact command만 기존 MuJoCo measured rollout과 Viser 1.0x auto-loop에 전달한다.</li>
+<li>Perception과 candidate batch를 포함한 end-to-end concurrent load에서 p99, deadline miss와 stale-generation 폐기를 측정한다.</li>
+</ol>
+
+<p><a href="curobo-v2-gpu-environment-qualification.html">cuRobo V2 GPU 환경과 collision holdout</a>, <a href="resident-full-command-template.html">Resident full-command template</a>, <a href="full-task-resident-validation.html">Full-task resident validation</a>을 함께 참고한다.</p>
+</main>
+<footer class="footer"><div class="wrap">공개 기록에는 재현 가능한 기술적 근거만 남기고 계정·주소·내부 경로는 기록하지 않는다.</div></footer>
+</body>
+</html>
