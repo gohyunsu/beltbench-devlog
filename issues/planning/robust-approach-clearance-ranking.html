@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>robust approach clearance ranking · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-068 · 2026-08-12 · robust approach clearance ranking</div>
+<h1>Workcell 여유가 robot-object 접근 여유를 가리지 않도록 후보 선택 기준을 수정했다.</h1>
+<p class="lede">기존 timed approach backend는 robot-object 충돌을 hard gate로 검사했지만 최종 maximin 점수의 collision slack은 robot-workcell margin만 사용했다. Schema 7은 두 최소 여유를 독립 증거로 저장하고 더 작은 값에서 pose uncertainty를 뺀 결과를 후보 순위에 사용한다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> 후보 prefilter와 순위 기준은 수정되었지만 실행 권한은 없다. 현재 Pepsi 경로는 exact precontact clearance 0.590922 mm, 정책 0.5 mm로 residual이 0.090922 mm뿐이므로 calibration, perception, controller, geometry uncertainty를 수용하지 못한다. 임계값을 낮추지 않고 다른 grasp, approach offset 또는 path family를 생성해야 한다.</div>
+
+<h2>발생한 문제</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>영향</th></tr>
+<tr><td>Robust collision slack이 environment margin만 사용했다.</td><td>초기 intercept search와 후속 full-frame object validator가 분리되면서 object distance가 boolean gate로만 남았다.</td><td>Belt/table에서 멀지만 object를 스치는 후보가 bounded refinement budget을 먼저 소비할 수 있었다.</td></tr>
+<tr><td>Trajectory backend의 robot-object pass가 최종 report에 수치로 남지 않았다.</td><td>성공/실패 capability evidence만 저장했다.</td><td>선택 이유와 실제 bottleneck pair를 재현할 수 없었다.</td></tr>
+<tr><td>첫 수정에서 workcell/object margin 계약을 복제했다.</td><td>의미별 타입을 빠르게 추가하면서 공통 구조를 별도로 작성했다.</td><td>검증과 직렬화 로직이 중복되어 유지보수 위험이 생겼다.</td></tr>
+</table>
+
+<h2>원인 분석</h2>
+<p>최신 권위 경로는 <code>intercept portfolio → correction cells → sampled task/stop family → moving prefix</code>다. Sampled path-family oracle은 이미 nonintentional robot-object minimum을 계산하지만, 그 검사는 선택된 seed의 correction tube를 검증하는 후단이다. 앞단이 environment margin만 최적화하면 후단 validator가 나쁜 seed를 정직하게 거절할 뿐, 더 나은 접근을 선택하지는 못한다.</p>
+
+<h2>해결</h2>
+<ol>
+<li><code>SampledCollisionFailure</code>와 <code>SampledCollisionMargin</code> 공통 계약을 만들고 workcell/object 의미 타입이 이를 상속하도록 중복을 제거했다.</li>
+<li>후보 playback의 동일한 sampled frame grid에서 combined checker의 <code>object_distances</code>를 호출한다.</li>
+<li><code>contacting/attached/releasing</code> 상태의 허용된 hand geometry만 intentional contact로 제외한다. Conveyor 상태의 같은 geometry는 계속 hard failure다.</li>
+<li>Environment와 nonintentional object의 최소 pair, 시간, phase, signed distance, required clearance를 각각 기록한다.</li>
+<li><code>collision_slack = min(environment, robot-object) - pose uncertainty inflation</code>으로 계산한다.</li>
+<li>Workcell 또는 robot-object hard gate가 실패한 후보는 maximin 후보 집합에 넣지 않는다.</li>
+<li>기존 schema 3~6은 읽기 호환을 유지하고 새 검색만 schema 7을 생성한다.</li>
+</ol>
+
+<h2>신뢰 경계</h2>
+<table class="table">
+<tr><th>계층</th><th>역할</th><th>권한</th></tr>
+<tr><td>Intercept sampled gate</td><td>취약 seed 제거와 balanced maximin ranking</td><td>검색 heuristic, 실행 권한 없음</td></tr>
+<tr><td>Sampled HPP-FCL path-family oracle</td><td>전체 task/stop과 correction axis-bound cells 검증</td><td>Offline exact reference, continuous authority 없음</td></tr>
+<tr><td>Qualified resident cuRobo gate</td><td>Exact command generation의 bounded runtime collision pass</td><td>Parity와 deadline receipt가 있어야 활성화</td></tr>
+</table>
+
+<p>GPU를 모든 모듈에 일괄 적용하지 않았다. Intercept와 correction-tube 검증은 offline compilation 경로이고 exact CPU mesh oracle이 독립 기준 역할을 한다. 실시간 경로는 accepted family를 resident tensor로 보관하고 fixed-shape GPU IK/correction/collision만 가속해야 한다. Freshness, generation cancel, lease와 controller 상태는 CPU 결정 로직으로 남는다.</p>
+
+<h2>검증</h2>
+<ul>
+<li>Workcell margin 100 mm, object margin 16 mm 후보보다 두 margin이 40 mm인 balanced 후보가 선택된다.</li>
+<li>Schema 7에서 collision gate가 끝났는데 robot-object evidence가 없으면 report가 거부된다.</li>
+<li>Conveyor 상태의 1 mm finger-object 거리는 실패하고, contacting 상태의 허용된 finger penetration은 ranking margin에서 제외된다.</li>
+<li>기존 schema 3~6 round-trip 테스트가 유지된다.</li>
+<li>GPU 서버 planning environment 전체 결과: 895 tests, 22.066 s, OK, 14 skipped.</li>
+</ul>
+
+<h2>남은 작업</h2>
+<ol>
+<li>검증된 grasp와 intercept time뿐 아니라 policy-approved approach offset을 포함한 bounded portfolio를 만든다.</li>
+<li>선택된 balanced 후보로 correction cells를 재생성하고 exact path-family oracle을 다시 수행한다.</li>
+<li>Attach-to-bin/drop suffix, cutoff stop, abort route를 같은 source-bound command family에 연결한다.</li>
+<li>고정 shape CUDA graph workload와 observation-to-lease end-to-end deadline을 측정한다.</li>
+</ol>
+
+<p><a href="curobo-dynamic-collision-qualification.html">ISSUE-067 cuRobo qualification</a> · <a href="source-bound-moving-pick-prefix.html">moving-pick prefix</a> · <a href="sampled-path-family-reference-oracle.html">sampled path-family oracle</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
