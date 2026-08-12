@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>connector and precommand timeline audit · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-071 · 2026-08-13 · connector and precommand timeline audit</div>
+<h1>Connector hole을 수치로 다시 맞추고 command 앞에 upstream inference budget을 분리했다.</h1>
+<p class="lede">기존 Viser는 <code>tmp/xarm_base.obj</code>와 <code>tmp/inspire_base.obj</code>를 흰색으로 표시했지만, 두 부품의 나사 구멍이 실제로 이어지는지와 물체가 왜 arm 바로 앞에서 시작하는지를 설명하지 못했다. 원본 OBJ의 disconnected cylindrical shell을 직접 fitting해 네 radial bore가 identity assembly에서 이어짐을 확인했다. 별도로 26.288853초 exact command를 바꾸지 않고, 물체가 belt 상류에서 들어오는 3.3초 precommand timeline을 source-bound evidence로 추가했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> 두 connector CAD 사이 radial bore 정렬은 tessellated mesh 좌표에서 4/4 통과한다. 그러나 flange datum, thread, tolerance와 실물 조립 계측은 없으므로 connector는 계속 <code>provisional</code>이다. 새 acquisition·tracking·planning 구간도 실제 perception 실행이 아니라 <code>provisional_timing_budget</code>이며 real-time 성능 증거가 아니다.</div>
+
+<h2>발생한 문제와 원인</h2>
+<table class="table">
+<tr><th>관찰</th><th>원인</th><th>잘못된 대응의 위험</th></tr>
+<tr><td>두 base의 hole 중심이 서로 다른 반경에 보였다.</td><td>xArm 측 bore는 반경 약 9.86-15.00 mm, Inspire 측 bore는 약 14.91-20.00 mm를 차지하는 연속 구간이다. 같은 hole의 두 segment이므로 component centroid는 달라야 한다.</td><td>Centroid를 억지로 겹치면 두 부품을 약 5 mm 이동시켜 실제 bore axis와 press-fit 경계를 깨뜨린다.</td></tr>
+<tr><td>Manifest의 두 mesh pose가 identity여서 근거 없는 fallback처럼 보였다.</td><td>두 OBJ는 같은 assembly frame으로 export됐지만 그 사실을 checksum과 renderer 배치만으로 표현했다.</td><td>눈으로만 판단하면 renderer bug와 실제 CAD 불일치를 구분할 수 없다.</td></tr>
+<tr><td>v3 물체가 <code>Y=-0.176 m</code>에서 시작했다.</td><td>Playback이 perception 완료 뒤 command 시작을 frame zero로 사용했다. Belt 속도는 +Y 0.08 m/s이고 contact까지 1.8초만 표시했다.</td><td>Camera acquisition, initial yaw, track initialization과 planning latency가 이미 검증된 것처럼 오해된다.</td></tr>
+<tr><td>Perception 시간을 command JSON에 직접 앞붙일 수 있었다.</td><td>시각화 시간과 controller command 시간을 한 artifact로 섞기 쉽다.</td><td>기존 q/qd/qdd, event time, collision frame index와 source digest를 모두 다시 해석하게 된다.</td></tr>
+</table>
+
+<h2>Connector 재검증</h2>
+<p>서버 private asset과 workspace <code>tmp</code> 원본의 SHA-256은 각각 정확히 일치했다. xArm OBJ는 39개, Inspire OBJ는 21개의 non-watertight component로 export됐다. PCA 기반 open-cylinder fitting은 축 방향 길이가 직경보다 길고 normalized radius residual이 0.03 이하인 radial shell을 찾는다. 그 다음 두 mesh의 축 collinearity, 직경 차이와 axial interval gap을 비교한다.</p>
+<table class="table">
+<tr><th>항목</th><th>최대값</th><th>결과</th></tr>
+<tr><td>대응 component</td><td>xArm 29-32 ↔ Inspire 12-15</td><td>4/4</td></tr>
+<tr><td>Centerline 오차</td><td>0.002407 mm</td><td>통과</td></tr>
+<tr><td>축 각도 오차</td><td>0.009629°</td><td>통과</td></tr>
+<tr><td>직경 차이</td><td>0.000026 mm</td><td>통과</td></tr>
+<tr><td>Axial gap</td><td>0 mm</td><td>통과</td></tr>
+</table>
+<p>두 부품 모두 bore 중심 높이는 약 <code>z=10 mm</code>이고 fitting 직경은 약 3.3014 mm다. 따라서 현재 두 connector mesh 사이 identity transform은 유지했다. 이 결과는 OBJ tessellation의 내부 일관성만 말한다. xArm flange와 connector, connector와 hand root의 mating datum, fastener preload, thread와 제조 공차는 STEP 또는 실측 없이 승인할 수 없다.</p>
+
+<h2>선택한 시간축 경계</h2>
+<p><code>PrecommandTimelinePolicy</code>는 belt velocity와 단계별 budget만 소유한다. 생성된 evidence는 exact source playback ID와 canonical SHA-256, policy SHA-256, 유도된 entry pose와 belt 중심 여유를 보존한다. Viewer는 lead-in 동안 첫 robot command를 hold하고 object만 평행이동시킨다. 3.3초 이후에는 source playback time을 0초부터 그대로 사용하므로 event request와 기존 HPP-FCL frame index는 바뀌지 않는다.</p>
+<table class="table">
+<tr><th>전체 시간</th><th>단계</th><th>근거</th></tr>
+<tr><td>0.0-0.4 s</td><td>camera acquisition</td><td>provisional budget, camera trace 없음</td></tr>
+<tr><td>0.4-0.8 s</td><td>pose/yaw/track initialization</td><td>provisional budget, perception backend 미실행</td></tr>
+<tr><td>0.8-0.9 s</td><td>runtime planning</td><td>100 ms observation-to-terminal 요구사항, 달성 수치 아님</td></tr>
+<tr><td>0.9-3.3 s</td><td>committed wait</td><td>기존 1.8초 approach를 contact 시각에 맞춤</td></tr>
+<tr><td>3.3 s 이후</td><td>exact source command</td><td>v3 q/qd/qdd와 event/validation 유지</td></tr>
+</table>
+
+<h2>수치 결과</h2>
+<ul>
+<li>Entry object pose: <code>[0.620, -0.440, 0.141052] m</code></li>
+<li>Source command 시작 pose: <code>[0.620, -0.176, 0.141052] m</code></li>
+<li>Lead-in translation: 0.264 m at 0.08 m/s = 3.3 s</li>
+<li>Entry 중심의 가장 가까운 conveyor edge 여유: 0.060 m</li>
+<li>주의: 0.060 m는 object footprint와 pose covariance를 제외한 center-only 값이다.</li>
+<li>전체 auto-loop: 29.588853 s, moving contact: 5.1 s, attach: 5.3 s</li>
+<li>새 viewer: server port 8096, local SSH forward HTTP 200</li>
+<li>관련 회귀: connector/precommand/playback/assets 30 tests + Viser runtime input 4 tests 통과</li>
+</ul>
+
+<h2>구현 중 발생한 문제</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>서버 <code>git pull</code> 실패</td><td>GPU 서버 checkout에 GitHub HTTPS credential이 없음</td><td>로컬에서 증분 bundle을 만들고 server checkout을 두 차례 fast-forward</td><td>서버 HEAD 1d1d9ed</td></tr>
+<tr><td>SCP subsystem 실패</td><td>서버 SSH가 SCP subsystem을 제공하지 않음</td><td>SSH stdin으로 bundle을 <code>.agile/projects/transfers</code>에 전달</td><td>Source checkout 외 경로 원칙 유지</td></tr>
+<tr><td>첫 timeline builder가 local package를 import</td><td>절대 script 경로만 실행해 checkout이 <code>sys.path</code>에 없었음</td><td>Exact checkout을 <code>PYTHONPATH</code>로 고정</td><td>Source-bound v4 evidence 생성</td></tr>
+<tr><td>기존 8095와 새 8096가 동시에 존재</td><td>비교를 위해 v3를 유지한 상태에서 v4를 시작</td><td>8096 HTTP 검증 후 8095 server와 forward 종료</td><td>최신 viewer만 노출</td></tr>
+</table>
+
+<h2>코드와 evidence</h2>
+<ul>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/502826c"><code>502826c</code></a>: source-bound precommand contract, viewer adapter, connector geometry diagnostic</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/1d1d9ed"><code>1d1d9ed</code></a>: provisional timing budget임을 CLI 출력에도 명시</li>
+<li>Server evidence: <code>evidence/bodex-generation-pepsi-20260812-v2/actual-time-protocol-v4/</code></li>
+<li>Connector report: <code>connector-alignment.json</code></li>
+<li>Timeline evidence: <code>precommand-timeline.json</code></li>
+<li>Viewer log: <code>viser.log</code></li>
+</ul>
+
+<h2>남은 gate</h2>
+<ol>
+<li>Saved multi-camera frames 또는 live sensor에서 acquisition, FoundPose/FoundationPose, yaw와 fused tracking trace를 기록해 provisional stage를 measured p50/p95/p99로 교체한다.</li>
+<li>Entry admission에 object footprint, yaw support와 pose covariance를 포함해 belt edge chance constraint를 검사한다.</li>
+<li>100 ms planning budget은 요구사항이다. Resident atlas/curobo adapter의 end-to-end observation-to-terminal benchmark와 deadline miss를 별도로 측정해야 한다.</li>
+<li>Connector는 STEP datum 또는 CMM/assembled metrology로 flange, mating surface와 fastener axis를 측정하기 전까지 execution gate를 열지 않는다.</li>
+<li>Source command의 HPP-FCL 1-frame release 실패는 그대로 남아 있다. Lead-in을 추가해 이를 숨기지 않는다.</li>
+</ol>
+
+<p><a href="actual-time-full-task-protocol.html">ISSUE-070 actual-time command</a> · <a href="runtime-event-session.html">runtime event session</a> · <a href="explicit-paired-connector-manifest.html">ISSUE-041 connector manifest</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
