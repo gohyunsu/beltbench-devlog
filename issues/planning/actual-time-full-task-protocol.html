@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>actual-time full-task protocol · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-070 · 2026-08-13 · actual-time full-task protocol</div>
+<h1>기하 경로 재생을 실제 제한으로 재타이밍한 명령과 단계별 시간 증거로 교체했다.</h1>
+<p class="lede">구형 13.03초 Viser animation은 실제 arm 속도·가속도 제한과 source time mapping을 증명하지 못했다. 이번 단계에서는 움직이는 접촉 prefix의 도함수를 보존하고 lift·transfer·release·return suffix를 정지 경계별로 재타이밍해 26.288853초의 exact <code>q/qd/qdd</code> 명령을 만들었다. Viser는 1.0배속 자동 반복하며 현재 단계, 단계 진행률, event 시각, 전체·현재 프레임 검증을 분리해 보여준다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> 최신 v3는 planned-command actual-time diagnostic이며 measured physics simulation이 아니다. 연속 운동학은 통과하지만 60 FPS HPP-FCL은 release 직전 1/1,590 frame을 거부한다. 따라서 execution은 계속 차단한다.</div>
+
+<h2>발생한 문제</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>잘못된 처리의 위험</th></tr>
+<tr><td>구형 재생 시간이 13.03초였고 명령 도함수가 없었다.</td><td>308-frame sampled path를 시각화 시간축으로만 재생했다.</td><td>보기에는 자연스럽지만 robot limit과 controller가 소비할 command를 증명하지 못한다.</td></tr>
+<tr><td>전체 dense derivative recovery가 boundary velocity 2.509 rad/s로 실패했다.</td><td>Moving-contact prefix는 비영속 속도를 갖지만 suffix는 phase별 rest-to-rest geometry였다.</td><td>전체 경로를 한 spline으로 억지로 평활화하면 contact timing과 source 의미가 변한다.</td></tr>
+<tr><td>첫 full-task playback에서 source timing이 어긋났다.</td><td>26.29초 retimed command를 10.23초 source frame index로 직접 조회했다.</td><td>로봇과 물체가 서로 다른 시간축을 따라가고도 같은 재생으로 보일 수 있다.</td></tr>
+<tr><td>v2 HPP-FCL이 53 frame을 거부했다.</td><td>Attach 이후 object pose는 source 보간, arm pose는 retimed command를 사용해 rigid attachment가 분리됐다.</td><td>충돌 임계값을 완화하면 실제 계보 오류를 숨기게 된다.</td></tr>
+<tr><td>v3에도 release 1 frame이 남았다.</td><td>기존 release-contact schedule은 30 FPS dense frame에서 유도돼 60 FPS 중간 시각의 접촉 손실을 놓쳤다.</td><td>Object state만 일찍 <code>releasing</code>으로 바꾸면 schedule provenance와 물리 의미가 사라진다.</td></tr>
+</table>
+
+<h2>선택한 구현</h2>
+<ol>
+<li>Contact까지는 source에서 복원한 derivative-aware moving prefix를 그대로 보존했다.</li>
+<li>Attach 이후 arm은 phase 시작, 정지 뒤 재운동, terminal을 semantic boundary로 찾아 robot motion limit의 80% utilization에서 rest-to-rest 재타이밍했다.</li>
+<li>Source-relative time과 compiled time의 piecewise mapping을 generation evidence에 저장하고 object lifecycle과 phase가 같은 mapping을 사용하게 했다.</li>
+<li>Attach부터 detach 직전까지 object pose를 <code>arm FK × connector × inverse(object-from-tool)</code>로 계산했다. Detach 이후에는 그 실제 detach pose에서 source drop 변위만 이어간다.</li>
+<li>Grasp SHA, connector transform SHA, robot joint identity와 source path SHA가 모두 맞아야 playback을 생성하도록 fail closed했다.</li>
+<li>Viser는 run-level validation을 항상 표시하고 현재 frame validation을 별도로 표시한다. 정상 frame을 보고 전체 성공으로 오해할 수 없게 했다.</li>
+</ol>
+
+<h2>실제 시간축</h2>
+<table class="table">
+<tr><th>단계</th><th>구간</th><th>의미</th></tr>
+<tr><td>approach</td><td>0.000-1.016 s</td><td>pregrasp 접근</td></tr>
+<tr><td>chase</td><td>1.016-1.516 s</td><td>belt translation 동기화</td></tr>
+<tr><td>close</td><td>1.516-2.000 s</td><td>moving contact와 hand closure</td></tr>
+<tr><td>attach</td><td>2.000-3.074 s</td><td>rigid grasp 전환과 초기 이송</td></tr>
+<tr><td>lift</td><td>3.074-9.761 s</td><td>belt·table clearance 확보</td></tr>
+<tr><td>transfer</td><td>9.761-10.872 s</td><td>drop bin 상부 이동</td></tr>
+<tr><td>release</td><td>10.872-13.939 s</td><td>hand open, retention end, detach</td></tr>
+<tr><td>contain</td><td>13.939-15.262 s</td><td>bin 내부 낙하·정착 표시</td></tr>
+<tr><td>return</td><td>15.262-26.289 s</td><td>arm 복귀</td></tr>
+</table>
+<p>Event는 close start 1.031001초, contact 1.8초, attach 2.0초, release start 10.872210초, retention end 11.372210초, detach 11.438876초, hand-open complete 13.938876초다. 이 값은 UI에 하드코딩하지 않고 exact request와 playback phase transition에서 읽는다.</p>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Continuous quintic kinematics: 모든 arm·hand position/velocity/acceleration/jerk limit 통과</li>
+<li>관련 server regression: 29 tests, 모두 통과</li>
+<li>v2 exact mesh: 53/1,590 invalid frames, attach 52 + release 1</li>
+<li>v3 FK-bound exact mesh: 1/1,590 invalid frame, release 11.361849초</li>
+<li>남은 원인: minimum admissible hand contact 3개 중 2개만 남았지만 retention-end는 10.36 ms 뒤로 선언됨</li>
+<li>v3 HPP-FCL wall time: 335.25초, command 대비 약 0.078x realtime</li>
+</ul>
+<p>HPP-FCL 수치는 online loop에 넣을 수 없음을 직접 보여준다. Exact mesh 검사는 offline false-negative oracle로 유지하고, runtime은 parity와 p99가 검증된 fixed-shape cuRobo batch를 사용해야 한다.</p>
+
+<h2>증거와 코드</h2>
+<ul>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/626fc08"><code>626fc08</code></a>: sampled full-task command compiler</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/5ffd356"><code>5ffd356</code></a>: semantic rest-boundary retiming</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/0d53e39"><code>0d53e39</code></a>: source-to-compiled time mapping</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/5daed65"><code>5daed65</code></a>: command-FK-bound attached object</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/e61bedd"><code>e61bedd</code></a>: stage progress와 run-level validation UI</li>
+<li>Server evidence: <code>evidence/bodex-generation-pepsi-20260812-v2/actual-time-protocol-v3/</code></li>
+</ul>
+
+<h2>남은 gate</h2>
+<ol>
+<li>Grasp-specific release schedule을 30 FPS frame 선택이 아니라 고해상도 또는 연속 collision threshold로 다시 산출하고 checksummed source로 결속한다.</li>
+<li>같은 command를 resident full-command output·producer lease·validated lease·lifecycle scenario로 materialize해야 기존 MuJoCo measured backend가 받을 수 있다. 가짜 controller receipt는 만들지 않는다.</li>
+<li>MuJoCo에서는 measured q/qd, object SE(3), contact, retention, detach, containment와 end-to-end realtime factor를 기록한다. 성공 animation이 아니라 실패 trace도 그대로 공개한다.</li>
+<li>Runtime collision은 cuRobo fixed-shape batch의 dynamic object parity와 p99를 통과한 뒤에만 활성화한다.</li>
+</ol>
+
+<p><a href="source-bound-moving-pick-prefix.html">ISSUE-065 moving prefix</a> · <a href="resident-mujoco-measured-rollout.html">ISSUE-054 measured MuJoCo</a> · <a href="curobo-dynamic-collision-qualification.html">ISSUE-067 cuRobo qualification</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
