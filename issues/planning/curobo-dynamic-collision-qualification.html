@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>cuRobo dynamic collision qualification · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-067 · 2026-08-12 · cuRobo dynamic collision qualification</div>
+<h1>Parity와 latency 증거가 실제 runtime gate까지 이어질 때만 cuRobo backend를 활성화한다.</h1>
+<p class="lede">기존 resident gate는 lifecycle과 geometry bundle digest를 확인했지만, 그 geometry가 HPP-FCL mesh oracle과 parity를 통과했고 해당 GPU workload가 deadline을 만족했다는 사실까지 catalog에 결속하지 않았다. 동적 corpus, candidate representation, target-GPU benchmark를 하나의 qualification receipt로 묶고 catalog, backend result, runtime assessment가 같은 SHA-256을 왕복하도록 수정했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> 구조적 우회 경로는 닫혔지만 실제 Pepsi cylinder backend는 qualification을 받지 못한다. 독립 unsafe case가 없고, 402개 mesh-clear state 중 130개를 false positive로 거부하며, CUDA graph 없이 측정한 p99 63.210 ms가 10 ms sampled-gate deadline을 초과한다. 따라서 hardware authority는 계속 false다.</div>
+
+<h2>발생한 문제</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>위험</th></tr>
+<tr><td>Catalog가 lifecycle과 geometry digest만 보유했다.</td><td>Offline parity report와 runtime catalog가 서로 다른 계약으로 끝났다.</td><td>동일 digest 형식만 맞춘 미검증 backend를 테스트 double처럼 주입할 수 있었다.</td></tr>
+<tr><td>정적 sphere policy가 candidate 표현을 <code>spheres</code>로 고정했다.</td><td>Static self/workcell parity 계약을 moving object에도 재사용했다.</td><td>Cylinder 또는 mesh candidate를 명시적으로 선택하고 비교할 수 없었다.</td></tr>
+<tr><td>기존 corpus state hash는 robot joint만 포함했다.</td><td>동적 object pose와 lifecycle state가 corpus 정체성에 없었다.</td><td>같은 robot state와 다른 object 위치가 중복으로 오판될 수 있었다.</td></tr>
+<tr><td>초기 수정에서 sampled gate 정책에 <code>continuous_collision</code>을 추가했다.</td><td>궁극적 안전 요구와 현재 구현된 workload를 한 정책으로 혼동했다.</td><td>실행하지 않은 swept kernel을 benchmark했다고 허위 주장하게 된다.</td></tr>
+</table>
+
+<h2>채택한 신뢰 경계</h2>
+<ol>
+<li>Schema 3 corpus는 각 robot state와 함께 object pose, <code>conveyor/contacting/attached/releasing/released/contained/placed</code> lifecycle state를 저장한다.</li>
+<li>Acceptance policy schema 1.2는 candidate collision representation을 명시한다. Static 기본값을 묵시적으로 상속하지 않는다.</li>
+<li>Startup qualification은 capability, runtime policy, 1,000-trial benchmark, corpus, HPP-FCL oracle, candidate report와 parity comparison을 모두 재계산한다.</li>
+<li>Receipt는 backend source, configuration, workcell, object, lifecycle과 geometry bundle digest를 한 번에 결속한다.</li>
+<li>Process-local verified wrapper만 runtime gate를 구성할 수 있다. 저장된 receipt를 읽는 것만으로는 활성화되지 않는다.</li>
+<li>Catalog, backend call, compact result와 runtime assessment가 동일 qualification SHA를 반환해야 한다.</li>
+</ol>
+
+<h2>수용 기준</h2>
+<table class="table">
+<tr><th>영역</th><th>필수 조건</th><th>현재 Pepsi</th></tr>
+<tr><td>Corpus</td><td>Clear, unsafe, boundary, non-intentional collision, intended contact, attached state 포함</td><td>402개가 모두 mesh-clear라 unsafe false-negative 검증 불가</td></tr>
+<tr><td>Parity</td><td>False negative 0, 명시된 false-positive budget 충족</td><td>Cylinder false positive 130/402</td></tr>
+<tr><td>GPU hot path</td><td>Resident world/path/buffer, CUDA graph replay, 1 host round trip, sync write 0, 1,000 trial deadline 충족</td><td>No graph, p99 63.210 ms, 10 ms 초과</td></tr>
+<tr><td>Runtime binding</td><td>Policy/config/lifecycle/bundle/qualification digest exact match</td><td>코드와 합성 검증은 통과</td></tr>
+<tr><td>Execution</td><td>별도 continuous swept collision, controller와 hardware validation</td><td>미구현, authority false</td></tr>
+</table>
+
+<h2>잘못된 continuous claim 수정</h2>
+<p>첫 구현은 moving object 안전을 이유로 resident sampled-gate policy에 <code>continuous_collision</code>을 추가했다. GPU 서버 전체 테스트의 <code>test_resident_collision_gate_is_a_distinct_gpu_workload</code>가 즉시 실패했다. 이 테스트는 sampled gate가 IK, trajectory optimization과 continuous collision을 수행했다고 주장하지 않도록 보호한다.</p>
+
+<p>수정은 테스트 기대값을 낮추는 방식이 아니었다. 정책과 qualification의 필수 operation에서 <code>continuous_collision</code>을 제거하고, receipt와 assessment가 diagnostic이며 <code>execution_authorized=false</code>임을 유지했다. Continuous swept collision은 실제 kernel, 독립 evidence와 deadline benchmark를 가진 별도 gate로 구현해야 한다.</p>
+
+<h2>검증 결과</h2>
+<ul>
+<li>동적 corpus round-trip에서 같은 robot joint와 다른 object pose가 서로 다른 state SHA를 가진다.</li>
+<li>Candidate representation이 policy와 다르면 comparison이 거부된다.</li>
+<li>동적 unsafe state 하나를 candidate가 clear로 판단하면 qualification이 거부된다.</li>
+<li>Benchmark robot configuration이 candidate configuration과 다르면 qualification이 거부된다.</li>
+<li>Verified process object가 없거나 backend result의 qualification SHA가 다르면 runtime gate가 거부된다.</li>
+<li>기존 schema 2.0 diagnostic assessment는 qualification field 없이 동일 payload로 유지되고, qualified path만 schema 2.1을 쓴다.</li>
+</ul>
+
+<h2>남은 작업</h2>
+<ol>
+<li>HPP-FCL mesh에서 pose, yaw, joint와 contact를 경계 안팎으로 perturb해 독립 clear/unsafe/boundary corpus를 생성한다.</li>
+<li>Hand distal link의 close robot-object proxy를 다시 만들고 zero false negative와 운영 가능한 false-positive rate를 달성한다.</li>
+<li>Sampled resident workload를 fixed CUDA graph로 구현해 실제 1,000-trial p99를 10 ms 아래로 낮춘다.</li>
+<li>별도 continuous swept collision gate를 구현하고 sampled qualification과 혼합하지 않는다.</li>
+<li>Robust clearance가 uncertainty budget을 넘는 approach로 교체한 뒤 attach, bin release, abort와 MuJoCo/Isaac replay를 연결한다.</li>
+</ol>
+
+<p><a href="dynamic-object-collision-parity.html">ISSUE-066 dynamic parity</a> · <a href="runtime-gpu-collision-admission.html">ISSUE-058 runtime admission</a> · <a href="curobo-resident-collision-gate-direction.html">ISSUE-056 cuRobo direction</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
