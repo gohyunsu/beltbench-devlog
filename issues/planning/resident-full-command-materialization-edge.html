@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Resident full-command materialization edge · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-061 · 2026-08-12 · resident full-command materialization edge</div>
+<h1>승인된 path-family만 actual cuRobo full command로 materialize한다.</h1>
+<p class="lede">Static holdout arm prefix로 cuRobo producer와 고해상도 validator의 수치 경로는 검증했지만, runtime이 선택한 Pepsi path-family를 complete arm-hand command로 만드는 운영 경로가 없었다. 이번 단계는 새 planner를 기존 animation에 바로 붙이지 않고, warm-start admission, resident template, moving-contact, object lifecycle와 exact cuRobo output 사이에 write-once compiler 경계를 추가했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> Source-bound request, segmented object collision lifecycle와 actual cuRobo arm-prefix output을 파일 산출물로 조립하는 CLI는 구현했다. 고정 GPU 환경에서도 새 planner CLI가 정상 로드된다. 그러나 현재 저장된 Pepsi portfolio에는 execution-selected path-family와 그에 대응하는 admission/template/lifecycle가 없다. 따라서 기존 reference animation이나 nominal one-cell 자료를 복제해 actual command로 표시하지 않았고, GPU solve·MuJoCo·Viser same-command 검증도 아직 실행하지 않았다.</div>
+
+<h2>발생한 문제, 원인, 해결과 결과</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>Runtime diagnostic 이후 cuRobo request가 없음</td><td>Recorded runner는 selection과 diagnostic handoff까지만 기록하고 resident full-command catalog를 만들지 않는다.</td><td>Warm-start admission, interaction semantics, warmed runtime session과 exact resident template을 소비하는 별도 request compiler를 추가했다.</td><td>Measured initial state, selected latch, pre-contact target batch, arm write mask와 immutable hand/suffix가 하나의 request digest로 닫힌다.</td></tr>
+<tr><td>계약은 payload를 만들지만 다시 읽을 수 없음</td><td>Request, lifecycle, planner result와 output은 주로 단위 테스트 안에서 직접 조립돼 load/write 경계가 빠져 있었다. Runtime GPU session에는 <code>from_payload</code>도 없었다.</td><td>각 계약에 strict round-trip loader와 기존 파일을 덮어쓰지 않는 writer를 추가하고 runtime session 역직렬화를 대칭화했다.</td><td>CLI 단계 사이에서 typed artifact를 전달하며 파일 이름이나 in-memory fixture에 의존하지 않는다.</td></tr>
+<tr><td>Object collision lifecycle가 특정 arm에 묶일 위험</td><td>Attach 이후 object pose에는 arm-tip FK가 필요해 xArm 전용 경로를 직접 넣기 쉬웠다.</td><td>일반 <code>RobotAssetManifest</code>에서 arm URDF, tool frame과 connector transform을 읽고 template의 arm, hand, connector digest와 일치하는지 검사한다.</td><td>xArm6/Inspire Left는 현재 asset 조합일 뿐이며 다른 scalar-joint fixed-base arm도 같은 compiler core를 사용한다.</td></tr>
+<tr><td>Cold solve를 realtime latency로 오해할 수 있음</td><td>첫 cuRobo 호출은 kernel과 graph 준비 때문에 steady-state solve보다 훨씬 느리다.</td><td>동일 request shape, seed horizon, output horizon과 hand lock으로 수행하는 explicit warmup API를 hot solve와 분리했다. Warmup은 구조·성공·shape를 검사하지만 steady-state latency 한도에는 포함하지 않는다.</td><td>Planner는 warmup이 완료되지 않은 backend를 거부하고 실제 output solve에만 latency, raw endpoint와 trust-tube gate를 적용한다.</td></tr>
+<tr><td>Reference animation을 actual command로 재사용할 위험</td><td>기존 Pepsi playback은 시각 진단용이며 현행 collision gate에서 다수 frame이 실패한다. Production path-family도 nominal one cell만 남아 있다.</td><td>Planner CLI는 request, template, lifecycle, exact workcell, accepted world-proxy assessment와 pinned cuRobo revision을 모두 요구하고 fallback을 두지 않았다.</td><td>승인 입력이 없으면 output directory 자체가 생성되지 않는다. 현재 Pepsi actual solve가 없는 상태를 그대로 보존한다.</td></tr>
+</table>
+
+<h2>추가한 실행 경계</h2>
+<ol>
+<li><strong>Request compiler:</strong> accepted warm-start admission과 warmed GPU session을 exact resident catalog slot에 결속한다.</li>
+<li><strong>Lifecycle compiler:</strong> moving contact 전에는 conveyor translation, contact 후에는 attachment FK, detach 후에는 static place 또는 conservative ballistic drop 상태를 고정한다.</li>
+<li><strong>cuRobo planner:</strong> pinned source revision, accepted 512-sphere world proxy, exact static workcell과 locked hand state로 backend를 한 번 초기화한다.</li>
+<li><strong>Exact-shape warmup:</strong> 실제 request와 동일한 horizon·seed·joint inventory로 cold 준비를 수행한 뒤에만 hot solve를 허용한다.</li>
+<li><strong>Write mask assembly:</strong> measured start에서 certified latch까지 arm 내부 sample만 덮어쓰고 hand schedule, latch와 full suffix는 resident template 값으로 보존한다.</li>
+<li><strong>Blocked output:</strong> producer result와 complete command는 별도 write-once 파일로 남지만 independent full-task validation과 controller 권한 전에는 실행 승인되지 않는다.</li>
+</ol>
+
+<h2>실시간 경로에서의 위치</h2>
+<table class="table">
+<tr><th>Startup / offline</th><th>Generation hot path</th><th>비동기 evidence</th></tr>
+<tr><td>Path-family compile, grasp·connector·workcell source verification, GPU model load, fixed buffers, exact-shape warmup</td><td>Fresh observation admission, bounded family selection, arm-prefix solve, same tensor collision reduction, deadline·generation gate</td><td>JSON persistence, 고해상도·HPP-FCL oracle, MuJoCo rollout, Viser 1.0x auto-loop, devlog</td></tr>
+</table>
+<p>Viser와 MuJoCo는 planner thread에 넣지 않는다. 같은 command digest를 소비하는 독립 consumer로 유지해야 화면 렌더링이나 physics step이 control deadline을 늘리지 않는다. 현재 producer p99와 validator p99의 과거 직렬 합도 end-to-end 수치가 아니므로 perception, selection, moving-object update와 concurrent GPU load를 포함한 별도 benchmark가 필요하다.</p>
+
+<h2>검증</h2>
+<ul>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/a7c7768"><code>a7c7768</code></a>: write-once contract I/O, request compiler와 robot-neutral lifecycle compiler</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/22a897d"><code>22a897d</code></a>: exact-shape warmup, lifecycle lineage gate와 pinned cuRobo full-command planner CLI</li>
+<li>Request/session/lifecycle와 planner result/output round-trip, overwrite rejection, cold warmup 분리와 unwarmed rejection을 포함한 집중 회귀 18개 통과</li>
+<li>Planning 환경의 전체 <code>unittest discover</code> 무오류 종료</li>
+<li>GPU 서버 체크아웃을 최신 commit으로 fast-forward하고 고정 cuRobo 환경에서 planner CLI import와 argument boundary 확인</li>
+</ul>
+
+<h2>남은 source blocker와 다음 순서</h2>
+<ol>
+<li>Pepsi stable pose와 yaw/lateral/speed correction cell마다 독립 생성·검증된 path-family를 채운다. Nominal path를 누락 cell에 복제하지 않는다.</li>
+<li>Fresh track, encoder와 robot state에서 실제 execution candidate를 선택하고 accepted warm-start admission을 기록한다.</li>
+<li>선택 family의 event trajectory와 resident template, moving-contact와 segmented object lifecycle을 이번 compiler로 materialize한다.</li>
+<li>그 exact request를 resident cuRobo producer에 넣고 동일 output tensor를 고해상도 static collision, dynamic object, attached object와 release envelope validator에 전달한다.</li>
+<li>Continuous collision, dynamics, complete abort routes와 controller deadline까지 통과한 command만 validated lease로 승격한다.</li>
+<li>그 뒤 동일 command digest를 MuJoCo measured rollout과 actual-asset Viser auto-loop에 전달한다.</li>
+</ol>
+
+<p><a href="sampled-path-family-production-evidence.html">Production path-family source blocker</a>, <a href="resident-full-command-template.html">Resident full-command template</a>, <a href="segmented-curobo-object-collision.html">Segmented object collision</a>, <a href="curobo-arm-prefix-producer-validation.html">cuRobo producer 검증</a>을 함께 참고한다.</p>
+</main>
+<footer class="footer"><div class="wrap">공개 기록에는 재현 가능한 기술적 근거만 남기고 계정·주소·내부 경로는 기록하지 않는다.</div></footer>
+</body>
+</html>
