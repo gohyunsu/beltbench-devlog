@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Real-time full-task inference 재감사 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-064 · 2026-08-12 · real-time full-task inference re-audit</div>
+<h1>Reference animation과 실행용 full command를 다시 분리한다.</h1>
+<p class="lede">계약과 validator 수가 많다는 사실이 실제 demo가 작동한다는 뜻은 아니다. 최신 AutoDex·ParaDex upstream, CTMP와 cuRobo의 역할, RTX 3090 evidence, Pepsi 71-waypoint event request를 다시 대조했다. 가장 큰 단절은 30 Hz IK display sample을 매 frame rest-to-rest controller waypoint로 해석한 것이며, 이를 resident catalog로 승격하지 못하도록 먼저 차단했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/2200243"><code>2200243</code></a>는 resident template materialization 전에 exact piecewise-quintic joint position·velocity·acceleration·jerk extrema를 다시 계산하고 실패 source를 거부한다. RTX 3090 고정 planning venv에서 전체 858 tests가 통과했고 14 tests는 optional dependency 조건으로 skip됐다. 이 변경은 잘못된 command 승격을 막을 뿐, Pepsi 실행 command를 새로 만들지는 않는다.</div>
+
+<h2>저장소와 환경 재감사</h2>
+<table class="table">
+<tr><th>대상</th><th>확인 결과</th><th>해석</th></tr>
+<tr><td><code>autodex</code></td><td>로컬 <code>origin/main</code>은 project-site fork이며 upstream website main과 서로 고유 commit이 있다.</td><td>실행 코드를 찾을 기본 저장소가 아니다. 다만 fork의 <code>tracking-session-progress</code> branch에는 별도 FoundPose/GoTrack 작업이 남아 있다.</td></tr>
+<tr><td><code>autodex-code</code></td><td>실제 implementation fork다. 최신 upstream <code>main</code>을 <code>154af6c</code>로 fetch했고 기존 local upstream ref보다 170 commit 앞서 있었다.</td><td>Grasp filter, FoundPose init, GoTrack, cuRobo planner, execution을 감사할 기준 저장소다.</td></tr>
+<tr><td><code>paradex</code></td><td>모든 upstream branch를 fetch했다. Fork <code>origin/main</code>은 최신 upstream보다 25 commit 뒤다.</td><td>카메라·로봇 daemon과 asset source는 branch를 명시해야 하며 local docs branch를 upstream main으로 오인하면 안 된다.</td></tr>
+<tr><td><code>object_processing</code></td><td>object/tabletop/symmetry data fork를 최신 origin으로 fetch했다.</td><td>Object identity와 stable-pose source용이며 runtime planner가 아니다.</td></tr>
+<tr><td>GPU worker</td><td>RTX 3090 24,576 MiB, driver 535.309.01, compute capability 8.6. 작업 경로는 <code>/home/hyunsu/.agile/projects</code>다.</td><td>cuRobo fixed-shape GPU qualification과 full-task benchmark를 수행할 수 있다.</td></tr>
+<tr><td>GitHub CLI</td><td><code>gohyunsu</code>와 <code>hyunsu-go</code> token이 모두 invalid였다.</td><td>HTTPS Git push는 동작했지만 <code>gh</code> API authority는 없다. Device re-login을 별도로 진행해야 한다.</td></tr>
+</table>
+
+<h2>AutoDex에서 채택할 것과 채택하지 않을 것</h2>
+<p>AutoDex 논문은 generator를 교체 가능하게 두고, collision-monitored execution과 lift/hold physical label을 거친 database를 downstream retrieval·feasibility filtering에 제공한다. 따라서 BeltBench는 exact object·stable pose·hand에 맞는 validated grasp를 우선 retrieval하고, 없으면 BODex 등으로 생성한 뒤 같은 독립 gate를 적용한다. AutoDex 자체를 moving conveyor planner로 취급하지 않는다. 근거는 <a href="https://arxiv.org/abs/2606.23689">AutoDex paper</a>와 최신 implementation source다.</p>
+
+<table class="table">
+<tr><th>AutoDex 기준</th><th>BeltBench 채택 범위</th><th>추가 요구</th></tr>
+<tr><td>Hand/world 및 self collision</td><td>Static grasp prefilter로 채택</td><td>Actual arm-hand-connector, belt/table/bin, moving/attached object의 complete-path collision</td></tr>
+<tr><td>Pregrasp·grasp IK와 small lift IK</td><td>Reachability prefilter로 채택</td><td>Measured latch <code>q/qd/qdd</code>, singularity, timing, stop/abort, full trajectory</td></tr>
+<tr><td>MuJoCo six-direction hold</td><td>Intrinsic retention evidence로만 채택</td><td>Gravity/contact/controller calibration과 physical reliability; disabled-gravity test는 execution authority가 아님</td></tr>
+<tr><td>Set-cover 또는 candidate order</td><td>Offline coverage용</td><td>Online은 complete-path·uncertainty·deadline normalized slack의 deterministic maximin</td></tr>
+<tr><td>Static object endpoint</td><td>Grasp transform source</td><td>First-contact pose/twist, contact-to-attach chase, constant-yaw belt translation</td></tr>
+</table>
+
+<h2>실제 Pepsi artifact에서 발견한 실행 단절</h2>
+<ul>
+<li>Event request는 71 waypoints, 10.0초이며 hand close start 4.1초, first contact 4.4초, attach 4.6초, release open 7.2초, detach 7.233초를 선언한다.</li>
+<li>Arm velocity는 71/71 waypoint가 전부 0, arm acceleration도 71/71 전부 0, hand velocity도 71/71 전부 0이다.</li>
+<li>Contact waypoint 56과 57의 timestamp는 출력상 모두 4.4초지만 실제 차이는 <code>8.881784197e-16 s</code>다. Strictly increasing check를 통과하면서 interpolation derivative를 폭발시키는 numerical duplicate다.</li>
+<li>Root cause는 <code>compile_playback_event_trajectory()</code>가 source waypoint마다 <code>_zero_motion_target()</code>을 사용하고 “preserve rest-to-rest quintics”를 명시한 데 있다. 이 compiler는 reference playback용이지 execution retimer가 아니다.</li>
+<li>중복 contact 하나를 제거하고 clamped C2 cubic spline으로 derivative를 복원해도 arm velocity ratio 최대 5.764, acceleration 12.706, jerk 63.429, hand velocity 39.532, acceleration 97.617, jerk 497.114였다.</li>
+<li>따라서 zero derivative만 중앙차분이나 spline으로 채우는 수선은 타당하지 않다. Semantic event timing, continuous arm path, hand closure schedule을 함께 최적화해야 한다.</li>
+<li>현재 reference는 contact 전에는 robot이 object와 같은 twist를 가져야 한다는 moving-contact gate도 통과하지 않는다. Zero arm velocity contact를 시각적으로 그럴듯한 grasp로 승격하면 안 된다.</li>
+</ul>
+
+<h2>수정한 fail-closed 경계</h2>
+<p><code>compile_resident_event_command_template()</code>가 source identity를 확인한 직후 <code>assess_piecewise_quintic_kinematics()</code>를 실행한다. Continuous polynomial extrema에서 joint position, velocity, acceleration 또는 jerk failure가 하나라도 나오면 template sample을 만들기 전에 exact failure ID와 함께 중단한다. Load-time semantic verification도 같은 compiler를 재실행하므로, 과거에 생성된 template이 source mutation이나 새 limit에서 조용히 통과하지 않는다.</p>
+
+<p>이 gate는 경로를 고치지 않는다. 자동 time scaling, failed sample 삭제, limit 확대, cuRobo 실패 시 CPU fallback도 하지 않는다. 실행용 producer가 별도로 accepted <code>q/qd/qdd</code>를 만들어야 한다.</p>
+
+<h2>개발 중 실패와 원인</h2>
+<table class="table">
+<tr><th>증상</th><th>원인</th><th>조치와 결과</th></tr>
+<tr><td>처음 추가한 gate로 resident-template test 5건이 실패했다.</td><td>기존 synthetic fixture의 hand rest-to-rest trajectory 자체가 acceleration·jerk limit을 넘었지만 compiler가 검사하지 않아 정상 fixture처럼 쓰였다.</td><td>Fixture의 test-only acceleration/jerk ceiling을 명시적으로 높이고 정상 sample을 실제 pass 상태로 만들었다.</td></tr>
+<tr><td>Invalid test가 kinematic gate 전에 event-window validation에서 실패했다.</td><td>Hand-close event waypoint 시간을 0.5초에서 0.01초로 바꿔 event의 declared window와 source time이 달라졌다.</td><td>기존 event는 유지하고 0.01초의 별도 급격한 interior arm waypoint를 삽입해 dynamics failure를 고립시켰다.</td></tr>
+<tr><td>Local test Python에서 NumPy import가 실패했다.</td><td>WSL 기본 Python 3.13 환경에 project dependency가 설치돼 있지 않았다.</td><td>임의 local 설치를 하지 않고 GPU worker의 고정 planning venv에서 targeted 및 full suite를 실행했다.</td></tr>
+<tr><td>첫 C2 audit에서 jerk ratio가 <code>1e16</code>까지 폭발했다.</td><td>4.3999999999999995와 4.4초의 numerical duplicate 구간을 spline이 실제 interval로 처리했다.</td><td>원인을 확인하기 위해 duplicate만 제거해 재실험했다. 여전히 큰 dynamics failure가 남아 timestamp 버그와 timing 설계 실패가 별개임을 확인했다.</td></tr>
+</table>
+
+<h2>현실적인 실시간 구조</h2>
+<p>새 ADR은 offline catalog compiler, bounded online inference, independent validation, controller lease, same-command MuJoCo/Viser의 다섯 경계를 고정한다. FoundPose는 초기 pose 후보, GoTrack 또는 대체 tracker는 temporal update로 둔다. Object는 calibration된 belt frame에서 initial yaw를 유지하고 <code>+x</code> 평행이동만 한다. Online hot path는 analytic prediction, resident maximin query, optional fixed-shape cuRobo arm-prefix solve, three lifecycle collision passes와 immutable handoff다.</p>
+
+<p>RTX 3090에서 현재 확인한 atlas query p99 116.440 µs, static collision batch-8 p99 1.449 ms, world-only prefix p99 29.789 ms, high-resolution validator p99 14.076 ms는 component evidence다. Perception, all collision passes, host/device synchronization, cancellation, selection, controller serialization을 한 deadline trace로 측정하지 않았으므로 “실시간 pipeline”이라고 결론내릴 수 없다.</p>
+
+<p>Conveyor CTMP 연구는 먼 거리의 noisy estimate를 기다린 뒤 home에서 전 경로를 시작하는 대신, bounded 초기 경로를 먼저 실행하고 perception update로 제한된 replanning을 수행한다. BeltBench도 trial 시작 전에 certified ready/staging pose로 이동하고 hand-close cutoff 이전에만 prefix를 갱신한다. 근거: <a href="https://arxiv.org/abs/2101.07148">Provably Constant-time Planning and Replanning for Conveyor Grasping</a>. cuRobo는 GPU FK/IK, seeded trajectory optimization과 sphere trajectory collision에 사용한다. 근거: <a href="https://curobo.org/get_started/7_api.html">cuRobo API</a>, <a href="https://curobo.org/_api/curobo.wrap.reacher.trajopt.html">trajectory optimization</a>, <a href="https://curobo.org/get_started/2c_world_collision.html">collision representation</a>.</p>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Targeted resident-template tests: 6/6 통과.</li>
+<li>전체 suite: <code>Ran 858 tests in 21.382s</code>, <code>OK (skipped=14)</code>.</li>
+<li>Gate 적용 전 실제 Pepsi event request는 analytic dynamics assessment에서 모든 arm joint와 모든 hand command joint가 velocity·acceleration·jerk failure를 보였다.</li>
+<li>Actual command, cuRobo full-task solve, segmented collision lease, MuJoCo measured replay와 hardware 실행은 생성하거나 성공했다고 표시하지 않았다.</li>
+</ul>
+
+<h2>다음 구현 순서</h2>
+<ol>
+<li>Dense IK frame을 stop으로 쓰지 않는 derivative-aware moving-pick producer를 만든다. First contact의 object-relative pose와 linear/angular twist, contact-to-attach chase를 hard gate로 둔다.</li>
+<li>Attach 이후 transfer-above-bin, stationary release/open, ballistic detach, retreat/home suffix를 actual cuRobo output으로 생성한다. Hand closure는 arm prefix와 분리해 end-effector limits 아래 동기화한다.</li>
+<li>Exact combined tensor에 world/self/connector, pre-attach moving object, post-attach object, release-envelope collision과 full dynamics를 적용한다.</li>
+<li>Nominal뿐 아니라 correction cell을 같은 source와 acceptance gate로 생성하고 p50/p95/p99, deadline miss, cancellation을 한 trace에서 측정한다.</li>
+<li>통과한 exact tensor 하나를 MuJoCo에 실행해 measured state/contact를 기록하고, 그 measured replay를 Viser 1.0x auto-loop에 표시한다.</li>
+</ol>
+
+<p><a href="resident-full-command-materialization-edge.html">ISSUE-061 materialization</a> · <a href="rtx3090-grasp-atlas-event-chain.html">ISSUE-062 RTX 3090 chain</a> · <a href="source-bound-release-envelope.html">ISSUE-063 release envelope</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">&larr; 이슈 목록</a></div></footer>
+</body>
+</html>
