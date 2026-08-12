@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Source-bound release envelope · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-063 · 2026-08-12 · source-bound analytic release envelope</div>
+<h1>Drop collision box를 사람이 정하지 않고 exact detach source에서 유도한다.</h1>
+<p class="lede">Drop 이후 로봇이 피해야 할 영역을 임의 크기의 box로 넘기면 시각적으로는 그럴듯해도 실제 detach pose, grasp, connector, robot FK와 ballistic motion을 보존하지 못한다. Offline compiler가 object-frame sphere와 exact detach FK, constant-acceleration release의 모든 축별 극값으로 보수적 AABB를 유도하고, lifecycle이 같은 task source인지 다시 확인하도록 경계를 바꿨다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/c85435b"><code>c85435b</code></a>는 분석적 release-envelope compiler와 recursive source verification을 구현한다. RTX 3090 planning 환경에서 전체 857 tests가 통과했고 14 tests는 optional dependency 조건으로 skip됐다. 이 결과는 source closure와 CPU-side contract 회귀이며, cuRobo full-task collision 또는 hardware execution authority가 아니다.</div>
+
+<h2>발생한 문제</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>방치 시 결과</th></tr>
+<tr><td>Release envelope가 일반 <code>PrimitiveObstacle</code>였다.</td><td>Caller가 box pose와 크기를 직접 정해도 task source와 연결할 필드가 없었다.</td><td>Detach pose나 낙하 속도가 바뀌어도 예전 box가 정상 입력처럼 재사용될 수 있다.</td></tr>
+<tr><td>Endpoint만 보면 포물선의 내부 극값을 놓친다.</td><td>초기 속도와 가속도 부호가 반대이면 <code>t=-v/a</code>에서 최대 또는 최소 변위가 생긴다.</td><td>낙하 초기에 위로 솟거나 횡방향으로 감속하는 motion의 swept volume을 과소평가한다.</td></tr>
+<tr><td>Robot manifest hash만으로 detach FK source가 닫히지 않았다.</td><td>Manifest가 가리키는 arm URDF 바이트와 FK adapter의 tool frame·source identity를 별도로 확인하지 않았다.</td><td>같은 manifest path를 두고 URDF 또는 FK model이 바뀌어도 envelope pose가 달라질 수 있다.</td></tr>
+<tr><td>Path와 이미 로드한 객체를 함께 받는 library API가 있었다.</td><td>CLI는 같은 파일에서 읽지만 직접 호출자는 다른 template, grasp 또는 release 객체를 전달할 수 있었다.</td><td>기록한 source checksum과 실제 계산 입력이 달라지는 provenance 단절이 생긴다.</td></tr>
+<tr><td>Pepsi evidence가 많아 실제 envelope도 만들 수 있어 보였다.</td><td>Candidate grasp, screening, event request와 attached sphere는 있었지만 resident task source chain은 완성되지 않았다.</td><td>Fixture 또는 추정값을 실제 Pepsi artifact로 잘못 표기할 위험이 있다.</td></tr>
+</table>
+
+<h2>분석과 방법</h2>
+<p>Detach sample의 arm configuration으로 <code>arm_base_from_tool</code>을 계산하고, 선택 grasp의 <code>object_from_hand_root</code>와 connector transform을 결합해 <code>arm_base_from_object_at_detach</code>를 얻는다. Object sphere 중심은 이 transform으로 arm-base frame에 배치한다. Release 동안 orientation은 고정하고 translation만 다음 식으로 진행한다고 명시한다.</p>
+
+<pre><code>d(t) = v0 * t + 0.5 * a * t^2,  0 &lt;= t &lt;= duration</code></pre>
+
+<p>각 축에서 <code>t=0</code>, <code>t=duration</code>, 구간 내부에 존재하는 <code>t=-v0/a</code>를 평가한다. 모든 sphere 중심의 최소·최대에 sphere radius와 추가 collision padding을 더해 하나의 arm-base axis-aligned box를 만든다. 이는 fixed-orientation sphere proxy에 대한 분석적 AABB이며, 실제 물체 mesh의 자유회전이나 bin contact dynamics를 증명하지 않는다.</p>
+
+<h2>구현한 경계</h2>
+<ul>
+<li><code>ResidentReleaseEnvelope</code>가 template, grasp, connector, sphere set, release motion digest와 exact detach object pose, 유도된 swept box를 함께 보존한다.</li>
+<li>필수 source는 resident template, grasp library, robot manifest, arm URDF, attached sphere set, release motion의 여섯 파일이다.</li>
+<li>Builder는 여섯 파일을 disk에서 다시 읽고 전달 객체와 semantic equality를 검사한다. 선택 grasp ID는 library에서 정확히 한 항목으로 해석돼야 한다.</li>
+<li>Pinocchio adapter는 사용한 URDF SHA-256과 tool frame을 노출한다. Builder는 manifest의 arm URDF와 arm-tip link에 일치하지 않는 FK adapter를 거부한다.</li>
+<li>Collision bundle은 embedded envelope와 source artifact가 같은지 검사한 뒤 nested source checksum도 재검증한다.</li>
+<li>Object lifecycle은 현재 template, grasp, connector, sphere set, release motion과 재계산한 detach pose가 envelope에 일치하지 않으면 fail-closed한다.</li>
+<li>cuRobo adapter에는 envelope 내부의 derived <code>swept_volume</code>만 전달한다. 생성 방법과 provenance는 host-side gate에서 유지한다.</li>
+</ul>
+
+<h2>개발 중 실패와 수정</h2>
+<table class="table">
+<tr><th>증상</th><th>직접 원인</th><th>수정과 결과</th></tr>
+<tr><td>Visualization fixture 3건이 <code>tuple has no resident_splice</code>로 실패했다.</td><td>공용 <code>_admission()</code> helper가 admission 하나가 아니라 다섯 항목 tuple을 반환했다.</td><td>첫 항목을 명시적으로 사용해 fixture source를 현행 grasp와 다시 결속했다.</td></tr>
+<tr><td>Foreign sphere-set test의 예상 오류 문구가 달라졌다.</td><td>새 검증은 generic bundle identity보다 analytic envelope geometry 불일치를 먼저 발견한다.</td><td>더 이른 fail-closed 사유를 assertion으로 고정했다.</td></tr>
+<tr><td>첫 구현은 robot manifest만 source로 기록했다.</td><td>Manifest가 참조하는 URDF가 FK 결과를 결정한다는 dependency가 빠졌다.</td><td>Arm URDF를 여섯 번째 필수 source로 추가하고 FK adapter identity도 검사했다.</td></tr>
+<tr><td>Builder가 path와 전달 객체의 동일성을 가정했다.</td><td>CLI 사용 방식만 보고 library direct call의 공격면을 누락했다.</td><td>모든 structured source를 재로드하고 stale release 객체를 거부하는 회귀를 추가했다.</td></tr>
+</table>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Targeted 45 tests: analytic internal extremum coverage, box tamper, arm-URDF·release source mutation, builder source reload, stale lifecycle release, visualization semantic join을 통과했다.</li>
+<li>전체 suite: <code>Ran 857 tests in 21.104s</code>, <code>OK (skipped=14)</code>.</li>
+<li>새 CLI의 import와 required argument surface를 같은 planning environment에서 확인했다.</li>
+<li>실제 Pepsi release envelope는 생성하지 않았다. Resident template, exact selected grasp-library artifact, task-specific release-motion JSON이 아직 없기 때문이다.</li>
+</ul>
+
+<h2>남은 한계와 다음 단계</h2>
+<p>분석적 AABB는 online robot collision에서 release object를 매 sample mesh update하지 않기 위한 보수적 표현이다. Object 회전, air drag, bin rim impact, bounce, hand-opening dynamics와 calibration 오차는 포함하지 않는다. 다음 단계는 execution-selected Pepsi path-family에서 full resident template과 release motion을 materialize하고, 같은 source chain으로 envelope와 collision bundle을 만든 뒤 graph-captured cuRobo의 세 collision pass가 한 full-task lease를 생성하는지 측정하는 일이다. 이후 같은 exact command를 MuJoCo measured rollout과 Viser에 연결하되, simulation 결과를 cuRobo 또는 hardware authority로 승격하지 않는다.</p>
+
+<p><a href="segmented-curobo-object-collision.html">ISSUE-047 segmented object collision</a> · <a href="resident-full-command-materialization-edge.html">ISSUE-061 full-command materialization</a> · <a href="curobo-arm-prefix-producer-validation.html">ISSUE-060 cuRobo producer/validator</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">&larr; 이슈 목록</a></div></footer>
+</body>
+</html>
