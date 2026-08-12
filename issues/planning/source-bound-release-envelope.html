@@ -42,6 +42,7 @@
 <li>Builder는 여섯 파일을 disk에서 다시 읽고 전달 객체와 semantic equality를 검사한다. 선택 grasp ID는 library에서 정확히 한 항목으로 해석돼야 한다.</li>
 <li>Pinocchio adapter는 사용한 URDF SHA-256과 tool frame을 노출한다. Builder는 manifest의 arm URDF와 arm-tip link에 일치하지 않는 FK adapter를 거부한다.</li>
 <li>Collision bundle은 embedded envelope와 source artifact가 같은지 검사한 뒤 nested source checksum도 재검증한다.</li>
+<li>Bundle 생성과 runtime load는 nested source를 다시 parse해 template, grasp, connector, robot, sphere, release semantics를 envelope metadata와 재대조한다.</li>
 <li>Object lifecycle은 현재 template, grasp, connector, sphere set, release motion과 재계산한 detach pose가 envelope에 일치하지 않으면 fail-closed한다.</li>
 <li>cuRobo adapter에는 envelope 내부의 derived <code>swept_volume</code>만 전달한다. 생성 방법과 provenance는 host-side gate에서 유지한다.</li>
 </ul>
@@ -57,7 +58,7 @@
 
 <h2>검증 결과</h2>
 <ul>
-<li>Targeted 45 tests: analytic internal extremum coverage, box tamper, arm-URDF·release source mutation, builder source reload, stale lifecycle release, visualization semantic join을 통과했다.</li>
+<li>Targeted 51 tests: analytic internal extremum coverage, box tamper, arm-URDF·release source mutation, builder와 load-time source rejoin, stale lifecycle release, visualization semantic join, Pinocchio adapter 회귀를 통과했다.</li>
 <li>전체 suite: <code>Ran 857 tests in 21.104s</code>, <code>OK (skipped=14)</code>.</li>
 <li>새 CLI의 import와 required argument surface를 같은 planning environment에서 확인했다.</li>
 <li>실제 Pepsi release envelope는 생성하지 않았다. Resident template, exact selected grasp-library artifact, task-specific release-motion JSON이 아직 없기 때문이다.</li>
