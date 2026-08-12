@@ -31,6 +31,7 @@
 <h2>추가한 실행 경계</h2>
 <ol>
 <li><strong>Request compiler:</strong> accepted warm-start admission과 warmed GPU session을 exact resident catalog slot에 결속한다.</li>
+<li><strong>Moving-contact compiler:</strong> request의 마지막 pre-contact target sample과 직전 sample에서 first-contact pose와 constant translation velocity를 복원하고, grasp와 connector transform으로 object-from-tool을 결정한다.</li>
 <li><strong>Lifecycle compiler:</strong> moving contact 전에는 conveyor translation, contact 후에는 attachment FK, detach 후에는 static place 또는 conservative ballistic drop 상태를 고정한다.</li>
 <li><strong>cuRobo planner:</strong> pinned source revision, accepted 512-sphere world proxy, exact static workcell과 locked hand state로 backend를 한 번 초기화한다.</li>
 <li><strong>Exact-shape warmup:</strong> 실제 request와 동일한 horizon·seed·joint inventory로 cold 준비를 수행한 뒤에만 hot solve를 허용한다.</li>
@@ -49,7 +50,8 @@
 <ul>
 <li><a href="https://github.com/gohyunsu/beltbench/commit/a7c7768"><code>a7c7768</code></a>: write-once contract I/O, request compiler와 robot-neutral lifecycle compiler</li>
 <li><a href="https://github.com/gohyunsu/beltbench/commit/22a897d"><code>22a897d</code></a>: exact-shape warmup, lifecycle lineage gate와 pinned cuRobo full-command planner CLI</li>
-<li>Request/session/lifecycle와 planner result/output round-trip, overwrite rejection, cold warmup 분리와 unwarmed rejection을 포함한 집중 회귀 18개 통과</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/0219626"><code>0219626</code></a>: resident target batch 기반 moving-contact 복원과 robot manifest connector gate</li>
+<li>Request/session/contact/lifecycle와 planner result/output round-trip, overwrite rejection, connector drift, cold warmup 분리와 unwarmed rejection을 포함한 집중 회귀 19개 통과</li>
 <li>Planning 환경의 전체 <code>unittest discover</code> 무오류 종료</li>
 <li>GPU 서버 체크아웃을 최신 commit으로 fast-forward하고 고정 cuRobo 환경에서 planner CLI import와 argument boundary 확인</li>
 </ul>
