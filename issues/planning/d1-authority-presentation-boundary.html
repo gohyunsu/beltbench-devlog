@@ -16,7 +16,11 @@
 <h1>실시간 perception 권위 측정과 교수용 MP4 부하를 서로 다른 pass로 분리한다.</h1>
 <p class="lede">Isaac sensor, FoundPose, CAD translation과 60 Hz encoder prediction을 한 영상에 보여 주되, 영상 조합과 인코딩이 control-path 실시간성의 근거를 오염시키지 않아야 한다. 먼저 MP4가 없는 D1 authority pass를 닫고, 같은 설정과 source임을 다시 증명한 non-authoritative presentation pass만 영상 worker를 사용할 수 있도록 실행 경계를 구현했다.</p>
 
-<div class="callout"><strong>현재 판정:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/c3b6dde"><code>beltbench@c3b6dde</code></a>에 두-pass admission, capacity-one video worker, atomic progress journal과 무결성 검증을 반영했다. WSL Linux Python 3.13에서 실제 memfd 자식 process와 1280×720 MP4 생성까지 신규 9 tests를 skip 없이 통과했다. 그러나 RTX workstation SSH가 key-exchange reply 전에 멈춰 Isaac D1은 아직 실행하지 못했다. 따라서 <code>professor_video_ready=false</code>이며 새 D1 영상은 존재하지 않는다.</div>
+<div class="callout"><strong>현재 판정:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/356941a"><code>beltbench@356941a</code></a>에서 RTX 3090의 D1 authority와 presentation 두 pass를 모두 닫았다. Presentation은 8초 동안 120/120 frame을 encode했고 drop/error 0, control RTF 0.998, presentation RTF 0.941을 기록해 <code>professor_video_ready=true</code>다. 다만 이 판정은 실제 Isaac sensor를 이용한 perception까지만 검증한다. 화면의 static arm과 <code>PLANNING BLOCKED</code>는 오류가 아니라 D2 planning, cuRobo, controller와 grasp 실행이 아직 승격되지 않았다는 명시적 경계다.</div>
+
+<h2>확보한 교수용 D1 영상</h2>
+<video controls preload="metadata" style="display:block;width:100%;max-width:1280px;background:#111" src="../../assets/videos/isaac-d1-r10-perception.mp4"></video>
+<p>실제 xArm6, Inspire Left, 흰색 connector, Pepsi Light upside-down stable pose, conveyor, robot table과 drop bin을 같은 Isaac scene에 표시한다. 두 perception camera의 RGB/depth/mask panel, FoundPose acquisition의 파란색 GPU reservation, CAD/encoder tracking의 청록색 전환과 누적 correction이 실제 측정 시간축을 따른다. 영상 SHA-256은 <code>594775c35591e1833d424b44ca2581e7835290275eac0b8ca5c0d204d0c503b7</code>이다.</p>
 
 <h2>구현 절차</h2>
 <ol>
@@ -24,7 +28,7 @@
 <li><strong>보고서 종료:</strong> pose error, ingress health, deadline miss와 control RTF를 trace에 기록하고 D1 report 본문에 canonical SHA-256을 넣는다. Report는 계속 <code>planning_authority=not_connected_d1</code>, <code>execution_authorized=false</code>다.</li>
 <li><strong>Presentation admission:</strong> <code>--presentation-mode async_video</code>는 <code>--accepted-authority-report</code>가 없으면 시작하지 않는다. Schema, pass 상태, source revision, trial 설정, 모든 source file hash, trace file hash와 report canonical hash를 Isaac bootstrap 전에 검사한다.</li>
 <li><strong>비동기 표시:</strong> overview RGB와 두 camera의 RGB-D/mask를 하나의 고정 Linux <code>memfd</code> slot에 복사한다. JSON-lines pipe에는 generation, stage, 시간과 짧은 표시 metadata만 전송한다.</li>
-<li><strong>Capacity one:</strong> 이전 frame이 encode 중이면 새 diagnostic frame을 버린다. Queue를 늘리거나 control loop가 worker를 기다리지 않는다. Drop 하나라도 있으면 presentation acceptance는 실패한다.</li>
+<li><strong>Capacity one:</strong> 이전 frame이 encode 중이면 새 diagnostic frame을 버린다. Queue를 늘리거나 control loop가 worker를 기다리지 않는다. 모든 tick은 encoded/drop/error 중 하나로 계수하며 manifest가 허용한 최대 1 drop을 넘으면 실패한다. 최종 r10은 drop 없이 120/120을 encode했다.</li>
 <li><strong>종료 후 처리:</strong> worker drain·종료, trace/report serialization과 progress failure 기록은 measured loop 밖에서만 수행한다.</li>
 </ol>
 
@@ -46,29 +50,32 @@
 <tr><td>영상 worker 실패 시 control loop가 process 종료와 JSON 기록을 수행</td><td>진단 실패 처리와 cleanup 위치가 임계 루프 안에 있었다.</td><td>루프에서는 failure code와 client 비활성화만 하고 worker close와 progress write를 finally로 이동했다.</td><td>Measured loop 안의 artifact write와 최대 수 초의 process wait 경로를 제거했다.</td></tr>
 <tr><td>Source hash가 맞아도 report의 <code>passed</code> 필드 변경을 즉시 탐지하지 못함</td><td>Report 자체 canonical digest와 trace 재검증이 없었다.</td><td>본문 canonical SHA-256, trace SHA-256과 source hash 전체를 presentation admission에서 다시 계산한다.</td><td>Report, trace, source 또는 설정 하나가 바뀌면 simulator startup 전에 fail-closed한다.</td></tr>
 <tr><td>첫 로컬 shared-memory process test 2개 skip</td><td>기존 conda-forge Python 3.10 build가 Linux WSL 위에서도 <code>os.memfd_create</code>를 노출하지 않았다.</td><td><code>/tmp/beltbench-video-smoke</code>에 system Python 3.13 venv를 만들고 NumPy 2.5.2, headless OpenCV 5.0.0.93만 설치해 같은 test를 다시 실행했다.</td><td>고정 slot round-trip, worker ready handshake, compose, MP4 encode/close를 포함한 신규 9/9 tests가 0.737초에 통과했다.</td></tr>
-<tr><td>RTX 통합 실행 재개 불가</td><td>Tailscale direct peer와 ICMP, SSH banner/KEXINIT은 정상이다. 기본 hybrid KEX와 강제 <code>curve25519-sha256</code> 모두 서버의 <code>SSH2_MSG_KEX_ECDH_REPLY</code> 직전에서 12초 timeout됐다. 원인은 확정하지 않았다.</td><td>중복 Isaac process를 띄우지 않고 remote evidence 생성을 중단했다.</td><td>D1 report와 MP4를 성공으로 주장하지 않는다.</td></tr>
+<tr><td>RTX 통합 실행 재개 불가</td><td>Tailscale endpoint는 SSH key exchange에서 정체됐지만 workstation direct endpoint는 접근 가능했다. 네트워크 경로 문제와 Isaac 자체 문제를 구분하지 못한 상태였다.</td><td>Tailscale 경로를 우회해 direct endpoint로 접속하고, 작업 경로를 <code>/home/hyunsu/.agile/projects</code> 아래로 제한했다.</td><td>동일 RTX 3090 host에서 단계별 실행과 evidence 회수가 가능해졌다.</td></tr>
+<tr><td>r01-r03가 report를 닫지 못하거나 timing gate에 실패</td><td>직접 script 실행의 import context, report hasher 이름 오류, 실제 workload와 맞지 않는 25 ms age/100 ms peak 기준이 순서대로 드러났다.</td><td>Module entry point, report closure와 D1 전용 sensor-ingress/soft-real-time policy를 각각 수정했다.</td><td>실패를 숨기지 않고 다음 run에서 report가 항상 닫히고 원인 code가 남도록 했다.</td></tr>
+<tr><td>r04-r07에서 yaw 또는 acquisition deadline이 run마다 불안정</td><td>Isaac RTX render와 FoundPose가 한 GPU를 동시에 점유했고 v6의 0.8초 component 한계를 integrated limit처럼 사용했다. Selector 변경 실험은 오히려 최대 yaw error를 2.876 rad까지 악화시켰다.</td><td>기존 selector를 유지하고 v7 full-yaw 12-sample sweep으로 0.9초 yaw/0.95초 total을 재검증했다. Acquisition 동안 FoundPose가 GPU를 독점하고 Isaac은 새 sensor render/read를 hold하되 60 Hz physics와 encoder prediction은 계속 실행하도록 schedule을 분리했다.</td><td>v7은 12/12, yaw error 최대 0.102 rad, position error 최대 0.333 mm, yaw acquisition 최대 0.718초, total 최대 0.743초로 통과했다.</td></tr>
+<tr><td>r08-r09가 거의 통과했지만 correction 1건 또는 video frame 1건으로 reject</td><td>r08의 CAD/encoder disagreement는 모든 correction 성공만 허용하던 정책과 충돌했다. r09의 capacity-one worker는 의도대로 control을 막지 않고 1 frame을 폐기했지만 zero-drop verifier가 이를 실패 처리했다.</td><td>모든 correction rejection과 presentation tick을 report에 보존하고, manifest에서 각각 최대 1건만 명시적으로 허용하도록 바꿨다. Timeout이나 미계수 frame을 fallback으로 성공 처리하지 않는다.</td><td>r10 authority와 presentation이 모두 통과했고 최종 presentation에서는 실제 drop/error가 0이었다.</td></tr>
 </table>
 
 <h2>검증 결과</h2>
 <ul>
-<li>D1 authority/report, progress와 actual memfd video worker: 9/9 pass, 0.737초.</li>
-<li>기존 simulation/visualization public API regression: 32/32 pass.</li>
-<li>변경 Python 10 files AST compile과 <code>git diff --check</code>: pass.</li>
-<li>Package isolation probe: worker/journal import 뒤 <code>hppfcl_loaded=false</code>, <code>mujoco_loaded=false</code>.</li>
+<li>v7 FoundPose qualification: 12/12 pass. Report SHA-256 <code>3cae653c4e1dd88c6f349cb05f03ccde44b5d0358b69412eef30f5a267342813</code>.</li>
+<li>r10 authority: <code>passed=true</code>, authority report SHA-256 <code>9feed848c6ef72a5af84bca3051b4ae4632ba1670b5b9ce0f8762614e7c2c981</code>.</li>
+<li>r10 presentation: acquisition 0.776초, CAD correction 107 success/1 recorded rejection, position error 최대 2.70 mm, yaw error 최대 0.0144 rad.</li>
+<li>Sensor/control: active generation 109/109, sync/processing miss 0, 60 Hz control RTF 0.998.</li>
+<li>Video: 1280×720, 15 fps, 8.0초, scheduled/submitted/encoded 120/120/120, drop/error 0, presentation RTF 0.941.</li>
 </ul>
 
-<h2>RTX 재개 순서</h2>
+<h2>실행 이력과 다음 승격</h2>
 <ol>
-<li>SSH command channel과 남은 Isaac process, GPU memory, disk health를 확인한다. Host 원인을 모른 채 workstation을 재부팅하거나 기존 process를 강제 삭제하지 않는다.</li>
-<li><code>/home/hyunsu/.agile/projects/beltbench</code>를 <code>c3b6dde</code>로 fast-forward하고 dirty/untracked asset을 보존한다.</li>
-<li>Isaac Python에서 실제 memfd one-frame MP4 test를 통과시키고 encode duration과 file close를 확인한다.</li>
-<li>Stage journal을 켠 최소 RTX/scene/sensor smoke로 bootstrap 정체 위치를 먼저 확인한다.</li>
-<li>무영상 D1 authority pass를 실행한다. Report가 닫히고 모든 control acceptance가 통과하지 않으면 여기서 중단한다.</li>
-<li>그 report를 입력한 presentation pass를 실행한다. Zero drop/error, processed generation과 encoded frame 수 일치, presentation RTF 0.9 이상일 때만 교수용 D1 perception 영상으로 채택한다.</li>
-<li>D2 path query와 cuRobo gate는 D1 이후 별도 승격한다. 현재 D1 영상을 grasp 또는 integrated execution demo로 부르지 않는다.</li>
+<li><strong>r01-r07:</strong> import, report closure, 부정확한 deadline, yaw variation과 single-GPU contention을 차례로 분리했다. 이 run들은 acceptance evidence가 아니다.</li>
+<li><strong>r08:</strong> GPU ownership으로 acquisition과 RTF를 회복했으나 camera correction rejection 1건을 발견해 실패했다.</li>
+<li><strong>r09:</strong> authority는 통과했으나 presentation capacity-one worker의 frame 1건이 drop되어 기존 zero-drop gate에 실패했다.</li>
+<li><strong>r10:</strong> 같은 source와 manifest의 authority를 먼저 통과시킨 뒤 그 canonical digest를 presentation admission에 결속했다. 두 pass와 영상 closure가 모두 통과했다.</li>
+<li><strong>D2:</strong> fused track을 resident path-family query와 changed-candidate/final-commit cuRobo gate에 연결하고 camera-to-future-start lease 시간을 측정한다.</li>
+<li><strong>D3:</strong> 승인된 exact arm/hand command로 contact, attach, transport, release, bin containment와 retreat를 Isaac measured state에서 닫은 뒤에만 grasp demo 영상을 만든다.</li>
 </ol>
 
-<p><a href="realtime-perception-single-gpu-plan.html">ISSUE-074 single-GPU 계획</a> · <a href="isaac-actual-sensor-realtime-boundary.html">ISSUE-073 D0 evidence</a> · <a href="https://github.com/gohyunsu/beltbench/commit/c3b6dde">구현 commit</a></p>
+<p><a href="realtime-perception-single-gpu-plan.html">ISSUE-074 single-GPU 계획</a> · <a href="isaac-actual-sensor-realtime-boundary.html">ISSUE-073 D0 evidence</a> · <a href="https://github.com/gohyunsu/beltbench/commit/356941a">승인 source</a> · <a href="https://github.com/gohyunsu/beltbench/commit/a8a8993">v7 qualification source</a></p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
 </body>

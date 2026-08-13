@@ -16,7 +16,7 @@
 <h1>모든 단계를 빠르게 돌리는 대신, 임계 경로를 작게 만들고 GPU 소유권을 시간축으로 분리한다.</h1>
 <p class="lede">교수 시연에 필요한 것은 1.0x로 보이는 애니메이션이 아니라 실제 Isaac RGB-D generation이 pose acquisition, tracking, bounded decision, collision gate와 controller로 인과적으로 이어지는 실행이다. 첫 D1을 위해 FoundPose를 상주 process로 만들고 initial yaw, CAD translation, encoder prediction의 권한을 분리했다. 한편 RTX rendering과 FoundPose를 합친 실행에서 workstation 응답 정체가 발생해, dependency process 분리만으로는 단일 GPU contention이 해결되지 않는다는 운영 문제도 드러났다.</p>
 
-<div class="callout"><strong>현재 판정:</strong> FoundPose full-yaw component qualification과 resident IPC, 15/60 Hz tracking core는 통과했다. NVIDIA 공식 우회 옵션을 사용한 Isaac 4.5 최소 RTX smoke도 통과했다. 그러나 actual Isaac sensor와 FoundPose를 합친 D1은 report를 닫지 못했고 SSH command channel도 timeout되었으므로 <code>integrated D1 = not accepted</code>다. 원인은 추가 격리 실험 전에는 확정하지 않는다.</div>
+<div class="callout"><strong>2026-08-13 후속 판정:</strong> 이 문서의 SSH/D1 blocker는 direct endpoint와 명시적 GPU ownership schedule로 해소됐다. v7 full-yaw 12/12 qualification 후 <a href="d1-authority-presentation-boundary.html">ISSUE-075</a>의 r10이 actual Isaac sensor D1과 8초 presentation을 통과했다. 이 페이지의 아래 실패 분석은 당시 관찰 기록이며, 최신 권한은 perception-only D1이다.</div>
 
 <h2>실시간 task를 제한한 가정</h2>
 <ul>
@@ -89,7 +89,7 @@
 </ul>
 
 <h2>현재 교수님께 보여 줄 수 있는 범위</h2>
-<p>현재 확실히 보여 줄 수 있는 영상은 ISSUE-073의 D0 actual-asset sensor diagnostic과 기존 source-bound Viser planning diagnostic이다. FoundPose component 수치와 architecture diagram은 설명 자료로 사용할 수 있지만, 오늘 실패한 D1 시도는 영상이나 integrated demo로 제시하지 않는다. 다음 교수용 영상은 D1-C raw trace가 통과한 뒤 만든 perception 단계 영상이며, grasp 성공 영상이라는 표현은 D3 measured execution 이후에만 사용한다.</p>
+<p><a href="d1-authority-presentation-boundary.html">ISSUE-075의 r10 영상</a>은 actual Isaac RGB-D, FoundPose yaw acquisition, CAD translation과 encoder prediction이 실제 시간축에서 연결된 perception-only D1으로 제시할 수 있다. 영상의 static arm과 <code>PLANNING BLOCKED</code> 표시는 현재 권한을 정확히 반영한다. 이를 integrated grasp demo로 부르지 않으며, grasp 성공 영상이라는 표현은 D3 measured execution 이후에만 사용한다.</p>
 
 <p><a href="https://docs.omniverse.nvidia.com/dsx/latest/common/technical-requirements.html">NVIDIA Omniverse driver known issue</a> · <a href="isaac-actual-sensor-realtime-boundary.html">ISSUE-073 Isaac sensor evidence</a> · <a href="perception-runtime-evidence-boundary.html">ISSUE-072 runtime evidence boundary</a></p>
 </main>
