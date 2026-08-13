@@ -83,7 +83,7 @@
 <li>D1-A: Isaac scene+sensors만 원 cadence에서 다시 통과하고 host health, VRAM, CPU RSS와 stage heartbeat를 기록한다.</li>
 <li>D1-B: 같은 sensor generation을 raw bundle로 기록한 뒤 Isaac 없이 resident FoundPose+CAD+tracker를 replay한다.</li>
 <li>D1-C: live Isaac와 worker를 결합하되 video writer를 제거하고 authority trace만 기록한다. 15 Hz generation, 60 Hz prediction, pose error와 deadline miss가 모두 통과해야 한다.</li>
-<li>D1-D: 통과한 immutable trace에서 교수용 perception video를 후처리한다.</li>
+<li>D1-D: 통과한 authority report의 canonical digest, trace와 source hash를 먼저 재검증한 뒤, 같은 설정의 non-authoritative actual-sensor presentation pass에서 교수용 perception video를 기록한다.</li>
 <li>D2: verified path-family를 track에 연결하고 changed candidate/final commit에서만 cuRobo exact-command gate와 future-start lease를 측정한다.</li>
 <li>D3: 같은 lease로 Isaac arm/hand를 제어하고 contact, attach, transport, release, bin containment와 retreat를 measured simulator state에서 닫는다.</li>
 </ul>

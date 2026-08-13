@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>D1 authority and presentation boundary · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-075 · 2026-08-13 · D1 authority and presentation boundary</div>
+<h1>실시간 perception 권위 측정과 교수용 MP4 부하를 서로 다른 pass로 분리한다.</h1>
+<p class="lede">Isaac sensor, FoundPose, CAD translation과 60 Hz encoder prediction을 한 영상에 보여 주되, 영상 조합과 인코딩이 control-path 실시간성의 근거를 오염시키지 않아야 한다. 먼저 MP4가 없는 D1 authority pass를 닫고, 같은 설정과 source임을 다시 증명한 non-authoritative presentation pass만 영상 worker를 사용할 수 있도록 실행 경계를 구현했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/c3b6dde"><code>beltbench@c3b6dde</code></a>에 두-pass admission, capacity-one video worker, atomic progress journal과 무결성 검증을 반영했다. 로컬 계약·회귀 테스트는 통과했지만 RTX workstation SSH가 TCP 연결 뒤 응답하지 않고, 로컬 conda Python에는 <code>os.memfd_create</code>가 없어 실제 Linux worker와 Isaac D1을 아직 실행하지 못했다. 따라서 <code>professor_video_ready=false</code>이며 새 D1 영상은 존재하지 않는다.</div>
+
+<h2>구현 절차</h2>
+<ol>
+<li><strong>Authority pass:</strong> <code>--presentation-mode none</code>으로 실제 60 Hz physics, 15 Hz synchronized RGB-D, one-time FoundPose yaw, 15 Hz CAD x/y와 60 Hz encoder prediction만 측정한다.</li>
+<li><strong>보고서 종료:</strong> pose error, ingress health, deadline miss와 control RTF를 trace에 기록하고 D1 report 본문에 canonical SHA-256을 넣는다. Report는 계속 <code>planning_authority=not_connected_d1</code>, <code>execution_authorized=false</code>다.</li>
+<li><strong>Presentation admission:</strong> <code>--presentation-mode async_video</code>는 <code>--accepted-authority-report</code>가 없으면 시작하지 않는다. Schema, pass 상태, source revision, trial 설정, 모든 source file hash, trace file hash와 report canonical hash를 Isaac bootstrap 전에 검사한다.</li>
+<li><strong>비동기 표시:</strong> overview RGB와 두 camera의 RGB-D/mask를 하나의 고정 Linux <code>memfd</code> slot에 복사한다. JSON-lines pipe에는 generation, stage, 시간과 짧은 표시 metadata만 전송한다.</li>
+<li><strong>Capacity one:</strong> 이전 frame이 encode 중이면 새 diagnostic frame을 버린다. Queue를 늘리거나 control loop가 worker를 기다리지 않는다. Drop 하나라도 있으면 presentation acceptance는 실패한다.</li>
+<li><strong>종료 후 처리:</strong> worker drain·종료, trace/report serialization과 progress failure 기록은 measured loop 밖에서만 수행한다.</li>
+</ol>
+
+<h2>화면과 권한</h2>
+<table class="table">
+<tr><th>표시</th><th>실제 입력</th><th>권한</th></tr>
+<tr><td>Overview와 두 RGB-D panel</td><td>Isaac render product와 synchronized generation</td><td>D1 simulation-sensor diagnostic</td></tr>
+<tr><td>Acquisition blue</td><td>Resident FoundPose request가 pending인 실제 state</td><td>Initial yaw acquisition만</td></tr>
+<tr><td>Tracking cyan</td><td>Admitted yaw, CAD correction, encoder prediction</td><td>Fused planar track</td></tr>
+<tr><td>Evaluator error</td><td>Simulator truth와 track 차이</td><td>평가 전용, perception 입력 금지</td></tr>
+<tr><td>Planning/control gray</td><td>연결하지 않음</td><td>명시적으로 차단</td></tr>
+</table>
+<p>D1 영상은 processed sensor와 같은 15 fps로 기록한다. 15 Hz frame을 복제해 30 Hz sensor처럼 표시하지 않는다. 각 frame에는 presentation trial ID와 먼저 통과한 authority trial ID를 함께 표시한다.</p>
+
+<h2>발생한 문제와 수정</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>수정</th><th>결과</th></tr>
+<tr><td>경량 video worker import가 HPP-FCL 누락으로 실패</td><td><code>beltbench.visualization</code>과 <code>beltbench.simulation</code> package initializer가 모든 planning, MuJoCo, Viser module을 eager import했다.</td><td>기존 public export 이름을 유지하는 PEP 562 lazy loader로 교체했다.</td><td>OpenCV worker와 progress journal import 시 HPP-FCL·MuJoCo가 load되지 않음을 확인했고 기존 public API 32 tests가 통과했다.</td></tr>
+<tr><td>영상 worker 실패 시 control loop가 process 종료와 JSON 기록을 수행</td><td>진단 실패 처리와 cleanup 위치가 임계 루프 안에 있었다.</td><td>루프에서는 failure code와 client 비활성화만 하고 worker close와 progress write를 finally로 이동했다.</td><td>Measured loop 안의 artifact write와 최대 수 초의 process wait 경로를 제거했다.</td></tr>
+<tr><td>Source hash가 맞아도 report의 <code>passed</code> 필드 변경을 즉시 탐지하지 못함</td><td>Report 자체 canonical digest와 trace 재검증이 없었다.</td><td>본문 canonical SHA-256, trace SHA-256과 source hash 전체를 presentation admission에서 다시 계산한다.</td><td>Report, trace, source 또는 설정 하나가 바뀌면 simulator startup 전에 fail-closed한다.</td></tr>
+<tr><td>로컬 실제 shared-memory process test 2개 skip</td><td>현재 conda-forge Python 3.10 build가 Linux WSL 위에서도 <code>os.memfd_create</code>를 노출하지 않는다.</td><td>계약 test는 유지하고 실제 process test를 Linux capability 조건으로 명시했다.</td><td>신규 9 tests 중 7 pass, memfd 2 skip. RTX의 Isaac Python에서 반드시 재실행해야 한다.</td></tr>
+<tr><td>RTX 통합 실행 재개 불가</td><td>Host는 이전에 ICMP에 응답했지만 현재 SSH는 TCP 연결 후 command channel 응답 없이 멈춘다. 원인은 확정하지 않았다.</td><td>중복 Isaac process를 띄우지 않고 remote evidence 생성을 중단했다.</td><td>D1 report와 MP4를 성공으로 주장하지 않는다.</td></tr>
+</table>
+
+<h2>검증 결과</h2>
+<ul>
+<li>D1 authority/report, progress와 video contracts: 9 tests, 7 pass, Linux memfd 2 skip.</li>
+<li>기존 simulation/visualization public API regression: 32/32 pass.</li>
+<li>변경 Python 10 files AST compile과 <code>git diff --check</code>: pass.</li>
+<li>Package isolation probe: worker/journal import 뒤 <code>hppfcl_loaded=false</code>, <code>mujoco_loaded=false</code>.</li>
+</ul>
+
+<h2>RTX 재개 순서</h2>
+<ol>
+<li>SSH command channel과 남은 Isaac process, GPU memory, disk health를 확인한다. Host 원인을 모른 채 workstation을 재부팅하거나 기존 process를 강제 삭제하지 않는다.</li>
+<li><code>/home/hyunsu/.agile/projects/beltbench</code>를 <code>c3b6dde</code>로 fast-forward하고 dirty/untracked asset을 보존한다.</li>
+<li>Isaac Python에서 실제 memfd one-frame MP4 test를 통과시키고 encode duration과 file close를 확인한다.</li>
+<li>Stage journal을 켠 최소 RTX/scene/sensor smoke로 bootstrap 정체 위치를 먼저 확인한다.</li>
+<li>무영상 D1 authority pass를 실행한다. Report가 닫히고 모든 control acceptance가 통과하지 않으면 여기서 중단한다.</li>
+<li>그 report를 입력한 presentation pass를 실행한다. Zero drop/error, processed generation과 encoded frame 수 일치, presentation RTF 0.9 이상일 때만 교수용 D1 perception 영상으로 채택한다.</li>
+<li>D2 path query와 cuRobo gate는 D1 이후 별도 승격한다. 현재 D1 영상을 grasp 또는 integrated execution demo로 부르지 않는다.</li>
+</ol>
+
+<p><a href="realtime-perception-single-gpu-plan.html">ISSUE-074 single-GPU 계획</a> · <a href="isaac-actual-sensor-realtime-boundary.html">ISSUE-073 D0 evidence</a> · <a href="https://github.com/gohyunsu/beltbench/commit/c3b6dde">구현 commit</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
