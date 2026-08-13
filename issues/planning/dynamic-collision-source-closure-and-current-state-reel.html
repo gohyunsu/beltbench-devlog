@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dynamic collision source closure와 current-state 영상 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-077 · 2026-08-14 · dynamic collision source closure and current-state reel</div>
+<h1>교수님용 영상을 확보하고, 다음 D2 승격은 같은 full command의 exact-mesh 근거에서 시작한다.</h1>
+<p class="lede">검증된 D1 Isaac perception과 D2 planning-blocked Viser capture를 authority 경계 title card와 함께 하나의 18.6초 current-state reel로 합쳤다. 동시에 기존 402-sample collision 진단을 full-command qualification으로 과장하지 않도록, playback·object lifecycle·collision geometry를 같은 source closure로 컴파일하는 schema-3 경로와 HPP-FCL exact-mesh oracle을 구현했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> 교수님께 바로 보여 줄 private MP4는 1920×1080, 15 fps, 18.6초, 279 frame으로 확보했다. SHA-256은 <code>7a02a55f86d0b4ada7c3d7dd1682f17a7dd944298158e170666d3a51a0d765f0</code>이다. 첫 구간은 accepted D1 perception, 둘째 구간은 accepted D2 planning diagnostic이며 마지막 화면은 <code>D1 perception passes | D2 planning remains blocked</code>를 명시한다. 이 합성본은 presentation artifact이지 causal closed-loop timing evidence가 아니다.</div>
+
+<h2>문제</h2>
+<ul>
+<li>기존 D1과 D2 영상은 각각 유효하지만 별도 trial이다. 단순 연결만 하면 perception이 실제 planning command를 만든 것처럼 오해할 수 있다.</li>
+<li>기존 402-sample HPP-FCL/cylinder 비교는 prefix time grid 진단이다. 같은 run에서 생성된 resident lifecycle과 geometry bundle이 없어 schema-3 full-command qualification이 아니다.</li>
+<li>GPU cylinder는 exact mesh가 clear인 130 sample을 거부했고 p99 63.210 ms로 10 ms draft deadline도 넘었다. Contact mask를 넓혀 통과시키면 representation error를 숨기게 된다.</li>
+<li>최신 robust planner는 nominal nonintentional margin 0.844 mm에서 6.195 mm pose uncertainty를 차감해 -5.351 mm slack을 반환한다. 성공 trajectory가 없는 상태가 정상적인 fail-closed 결과다.</li>
+</ul>
+
+<h2>원인</h2>
+<p>Static robot corpus는 robot joint state만으로 충분하지만 moving grasp collision은 그렇지 않다. 각 sample에 object pose와 lifecycle state가 있어야 contact 허용 구간, attachment, release와 support obstacle을 같은 명령에 대해 비교할 수 있다. 이전 schema-3 계약에는 이 필드가 있었지만 실제 compiler와 HPP-FCL evaluator가 없었다. cuRobo cylinder 진단과 HPP-FCL playback 검사가 서로 다른 artifact 경로에 있어 parity corpus를 재현할 수도 없었다.</p>
+<p>서버 조사에서도 historical prefix playback과 HPP-FCL report는 남아 있었지만 resident template, runtime admission/session, collision lifecycle과 geometry bundle의 co-generated set은 없었다. Historical nominal animation을 lifecycle로 재포장하는 방식은 source closure가 아니므로 사용하지 않았다.</p>
+
+<h2>구현</h2>
+<ol>
+<li><strong>8-source compiler:</strong> playback, robot/object manifest, arm/assembly collision semantics, object interaction semantics, resident collision lifecycle, resident collision geometry bundle을 모두 명시적으로 요구한다.</li>
+<li><strong>전이적 source closure:</strong> geometry bundle의 object mesh, attached spheres, release envelope와 그 envelope의 robot manifest, arm URDF, sphere source가 상위 입력과 같은 실제 path인지 확인한다.</li>
+<li><strong>sample join:</strong> playback과 lifecycle의 sample 수, index, trajectory time, object pose와 object state를 frame마다 exact 비교한 뒤에만 combined robot/object state의 정확한 중복을 제거한다.</li>
+<li><strong>exact-mesh oracle:</strong> static robot/workcell, robot/object, object/workcell pair를 signed margin으로 통합한다. Contacting/attached/releasing 중 명시된 hand geometry만 bounded penetration을 허용하고, 현재 state의 declared support obstacle만 support penetration을 허용한다.</li>
+<li><strong>task gate 분리:</strong> 최소 hand contact 수, retention, required support contact, release 성공은 collision parity에 숨기지 않고 별도 task gate로 유지한다.</li>
+<li><strong>multiprocess HPP-FCL:</strong> schema 1/2 경로를 보존하면서 schema 3에서 각 worker가 독립 robot/object mesh model과 interaction semantics를 로드한다. 입력 누락 시 fallback하지 않는다.</li>
+<li><strong>presentation reel:</strong> D1 앞, D2 앞, 마지막에 authority title card를 삽입했다. Source 구간의 실제 frame rate는 보존하지만 합성본 전체를 control RTF 근거로 사용하지 않는다.</li>
+</ol>
+
+<h2>검증 결과</h2>
+<table class="table">
+<tr><th>검증</th><th>결과</th><th>의미</th></tr>
+<tr><td>동적 corpus/mesh oracle 단위·회귀</td><td>67/67 pass</td><td>Source closure, contact/support margin과 기존 resident 계약을 함께 검증했다.</td></tr>
+<tr><td>RTX 독립 worktree 회귀</td><td>67/67 pass</td><td>Pinocchio 3.4.0, HPP-FCL 3.0.1 환경에서 같은 결과를 재현했다.</td></tr>
+<tr><td>Current-state MP4</td><td>1920×1080, 15 fps, 18.6 s, 279 frames</td><td>Title, D1 sensor panel, D2 Viser, final boundary를 다섯 sample frame에서 직접 확인했다.</td></tr>
+<tr><td>실제 Pepsi schema-3 corpus</td><td>미생성</td><td>Co-generated resident template/lifecycle/geometry 입력이 없어 과장 없이 다음 gate로 남겼다.</td></tr>
+</table>
+<p>구현은 <a href="https://github.com/gohyunsu/beltbench/commit/656c821"><code>beltbench@656c821</code></a>에 push했다. MP4와 frame sample은 private evidence에만 보관하며 public devlog에는 연구 영상을 복사하지 않는다.</p>
+
+<h2>교수님께 보여 줄 설명</h2>
+<ol>
+<li>D1 구간에서 실제 Isaac RGB-D와 instance mask, FoundPose yaw acquisition, CAD correction과 encoder propagation을 설명한다.</li>
+<li>D2 구간에서 xArm6/Inspire/connector/Pepsi/belt/table/bin과 moving approach geometry를 설명하되 화면의 <code>Execution blocked</code>를 그대로 둔다.</li>
+<li>마지막 card에서 perception은 actual-time으로 닫혔지만 robust path와 dynamic exact-command collision qualification이 다음 병목이라고 설명한다.</li>
+</ol>
+
+<h2>다음 절차</h2>
+<ol>
+<li>Pose uncertainty 6.195 mm보다 충분히 큰 nonintentional clearance를 갖는 grasp/approach를 offline에서 재생성하거나 재선택한다.</li>
+<li>그 accepted path에서 resident template, future-start request, exact playback, lifecycle와 geometry bundle을 한 immutable run으로 생성한다.</li>
+<li>새 compiler로 schema-3 corpus를 만들고 safe, boundary, penetration, nonintentional contact와 attached-object holdout을 추가한다.</li>
+<li>HPP-FCL mesh oracle 대비 false negative 0을 만족하는 cuRobo representation을 고른 뒤 fixed-shape CUDA graph hot path의 p99를 다시 측정한다.</li>
+<li>그 다음에만 D1 fused generation → bounded selection → exact command gate → simulated controller/contact/drop을 한 Isaac trial과 성공 영상으로 닫는다.</li>
+</ol>
+
+<p><a href="wall-clock-viser-capture-and-planning-boundary.html">ISSUE-076 Viser capture</a> · <a href="d1-authority-presentation-boundary.html">ISSUE-075 D1 perception</a> · <a href="curobo-dynamic-collision-qualification.html">ISSUE-067 dynamic cuRobo gate</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
