@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>perception-runtime evidence boundary · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-072 · 2026-08-13 · perception-to-runtime evidence boundary</div>
+<h1>Camera capture부터 runtime command까지 하나의 검증된 시간축으로 연결한다.</h1>
+<p class="lede">기존 Viser의 3.3초 upstream 구간은 물체가 belt 상류에서 들어오는 모습을 설명하지만 실제 perception이 실행됐다는 증거는 아니었다. 반대로 runtime session은 exact fused track 이후의 planning과 handoff를 기록하지만 capture 이전 구간을 소유하지 않았다. 두 경로가 서로 배타적이어서 하나의 애니메이션으로 이어 붙여도 capture→planning→command 인과관계를 증명할 수 없었다. 이번 변경은 measured perception stage DAG, 입력·timing provenance, exact fused track, runtime receipt와 event trajectory의 semantic join을 분리된 계약으로 추가했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> source-closed replay를 만들 수 있는 계약과 Viser adapter는 구현됐다. 그러나 실제 multi-camera recording, FoundPose/pose-update timing, activated cuRobo gate와 동일 command의 MuJoCo feedback이 아직 없으므로 현재 8096은 계속 <code>execution-blocked actual-time desired animation</code>이다.</div>
+
+<h2>발생한 문제</h2>
+<table class="table">
+<tr><th>관찰</th><th>원인</th><th>그대로 둘 때의 위험</th></tr>
+<tr><td>Precommand lead-in과 runtime replay를 동시에 선택할 수 없었다.</td><td>전자는 legacy playback의 시각화 budget, 후자는 fused track 이후 causal session으로 서로 다른 clock과 source set을 사용했다.</td><td>임의 duration을 measured latency처럼 보이게 하거나 실제 runtime 증거를 버리고 예쁜 animation만 남긴다.</td></tr>
+<tr><td>Checksummed moving-contact trajectory면 runtime track과 무관해도 viewer가 열릴 수 있었다.</td><td>각 artifact의 무결성은 확인했지만 prediction의 command-start/contact object pose와 event reference를 교차 검증하지 않았다.</td><td>서로 다른 object trajectory를 splice해도 개별 checksum은 모두 통과하는 semantic mismatch가 생긴다.</td></tr>
+<tr><td>단계 시간을 단순 합산하기 쉬웠다.</td><td>두 camera의 capture·preprocess·pose backend는 병렬 실행될 수 있는데 선형 stage 목록만 생각했다.</td><td>실제 end-to-end latency보다 긴 값을 만들거나 병렬 구조의 dependency 오류를 숨긴다.</td></tr>
+<tr><td>Measured라는 문자열만으로 timing을 신뢰할 수 있었다.</td><td>Raw timer source, resolution, input manifest와 stage별 timing basis를 별도 source로 결속하지 않았다.</td><td>재현할 수 없는 숫자가 실시간성 승인에 사용된다.</td></tr>
+</table>
+
+<h2>선택한 구조</h2>
+<p>한 파일에 모든 책임을 넣지 않고 다음 세 경계로 나눴다. Planning core는 여전히 backend 종류를 모르며 오직 <code>FusedPlanarObjectTrack</code>을 소비한다.</p>
+<table class="table">
+<tr><th>모듈</th><th>책임</th><th>금지한 권한</th></tr>
+<tr><td><code>perception_timing.py</code></td><td>Raw stage timing, timer basis, replay/live input manifest schema</td><td>Track 생성, runtime 승인</td></tr>
+<tr><td><code>perception_trace.py</code></td><td>Topologically ordered multi-camera stage DAG, source checksum, capture/publish bounds</td><td>Source semantic 해석, execution authority</td></tr>
+<tr><td><code>perception_trace_verification.py</code></td><td>Exact track·camera·timing·input 검증과 runtime receipt join</td><td>Trajectory 생성 또는 fallback</td></tr>
+<tr><td><code>perception_runtime_timeline.py</code></td><td>Capture부터 desired command/feedback까지 하나의 display clock으로 replay</td><td>Planning·controller 결정</td></tr>
+</table>
+
+<h2>Fail-closed 검증 규칙</h2>
+<ol>
+<li>모든 stage는 하나의 <code>track_publish</code> ancestor이며 dependency보다 먼저 시작할 수 없다.</li>
+<li>Camera마다 정확히 하나의 capture와 acquisition 또는 tracking-update primary pose stage가 있어야 한다.</li>
+<li>Fusion camera set, fused track contributing camera set과 input manifest camera set이 같아야 한다.</li>
+<li>Measured replay/live mode는 monotonic clock, raw timing measurement와 replay/live input manifest가 없으면 거부한다.</li>
+<li>Runtime session은 perception trace와 payload가 완전히 같은 track ID, generation, calibration과 timestamp를 받아야 한다.</li>
+<li>Planning receipt는 perception publish보다 빠를 수 없으며 transport latency를 별도로 계산한다.</li>
+<li>Runtime prediction은 command start와 moving contact를 모두 포함해야 하고, 두 시점의 object pose가 event reference와 일치해야 한다.</li>
+<li>Trace 자체는 측정됐더라도 execution authority를 얻지 않는다. Collision, handoff와 controller gate는 독립적으로 남는다.</li>
+</ol>
+
+<h2>시간축 동작</h2>
+<p>통합 viewer는 recorded camera timestamp를 0으로 옮긴 하나의 display clock을 사용한다. Runtime activation 전에는 첫 arm/hand command를 hold하고, object는 fused track의 constant-orientation conveyor model로 과거 위치까지 해석적으로 전파한다. Runtime command가 활성화되면 검증된 exact event trajectory와 feedback 시간으로 전환한다. Viewer가 sleep을 삽입하거나 독립 duration을 추측하지 않는다.</p>
+<p>이 구조는 현재 가정인 “stable tabletop pose는 주어지고 초기 planar position과 yaw는 측정하며, belt 이동 중 yaw는 고정되고 translation만 발생한다”를 그대로 보존한다. FoundPose는 acquisition adapter 후보이고 GoTrack 또는 다른 previous-pose update backend는 별도 adapter 후보다. Released GoTrack에 없는 frame-to-frame optical-flow tracker를 있다고 가정하지 않는다.</p>
+
+<h2>구현 중 발견한 추가 결함</h2>
+<p>처음에는 perception trace와 runtime session이 exact fused track을 공유하면 충분하다고 판단했다. Synthetic negative test에서 runtime prediction과 무관한 <code>moving_contact</code>도 자체 checksum만 맞으면 viewer input에 들어갈 수 있음을 확인했다. 원인은 source integrity와 cross-artifact semantic continuity를 같은 것으로 취급한 것이었다. Projection source track identity, prediction time coverage, command-start/contact object pose equality를 추가해 unrelated contact reference를 명시적으로 거부했다.</p>
+
+<h2>검증 결과</h2>
+<ul>
+<li>집중 회귀: perception contract, runtime visualization과 input composition 19 tests 통과</li>
+<li>전체 회귀: 916 tests 통과, optional backend 14 tests skip</li>
+<li>Measured replay fixture: acquisition trace 9.000 ms, timing authorized, execution unauthorized</li>
+<li>Negative cases: camera ancestry 오류, timing/input mismatch, publish 이전 receipt, payload substitution, unrelated contact trajectory 거부</li>
+<li>BeltBench commit: <a href="https://github.com/gohyunsu/beltbench/commit/63c36c7"><code>63c36c7</code></a></li>
+<li>GPU server clean protocol checkout: <code>63c36c7</code>; dirty cuRobo checkout은 수정하지 않음</li>
+<li>현재 desired animation: server 8096, local forward HTTP 200</li>
+</ul>
+
+<h2>운영 중 발생한 문제와 해결</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>Base Python에서 test import 실패</td><td><code>numpy</code>가 없는 base conda environment를 사용했다.</td><td>기존 <code>beltbench-planning</code> interpreter로 전체 suite를 실행했다.</td><td>916 tests 통과</td></tr>
+<tr><td>Sandbox에서 conda run 실패</td><td>Conda wrapper가 사용할 writable temporary directory가 없었다.</td><td>승인된 test 실행에서 environment interpreter를 직접 호출했다.</td><td>코드 오류와 실행 환경 오류를 분리</td></tr>
+<tr><td>서버 main checkout을 update할 수 없었다.</td><td>미커밋 cuRobo·moving-pick 작업이 incoming 파일과 겹쳤다.</td><td>해당 checkout을 보존하고 clean <code>beltbench-protocol-check</code>만 bundle로 fast-forward했다.</td><td>사용자 작업 손실 없이 source 동기화</td></tr>
+<tr><td>SCP 전송 실패</td><td>서버 SSH가 SCP subsystem을 제공하지 않았다.</td><td>증분 Git bundle을 SSH stdin으로 transfers 경로에 기록했다.</td><td>Clean checkout이 63c36c7로 갱신</td></tr>
+<tr><td>Local 8096 접근 실패</td><td>Remote Viser는 PID 308107로 살아 있었지만 SSH forward가 종료됐다.</td><td>기존 server process를 재시작하지 않고 port forward만 복구했다.</td><td>HTTP 200</td></tr>
+</table>
+
+<h2>교수 시연에서 보여줄 범위</h2>
+<ol>
+<li>8096에서 Pepsi upside-down stable pose가 상류에서 들어와 xArm/Inspire가 contact·attach·bin drop·return하는 1.0x desired animation을 보여준다.</li>
+<li>화면을 실제 robot demo라고 부르지 않고 <code>desired reference / execution blocked</code>라고 먼저 명시한다.</li>
+<li>Offline grasp/path compilation과 online track→prediction→resident query→GPU gate→handoff를 분리한 architecture를 한 장으로 설명한다.</li>
+<li>Measured, provisional, missing evidence 표를 보여주고 현재 perception 3.3초가 budget이며 26.288853초 command와 release 1-frame failure가 실제 상태임을 말한다.</li>
+<li>다음 milestone을 recorded multi-camera input부터 exact track, runtime, cuRobo gate, MuJoCo feedback까지 source-closed한 1.0x replay 한 건으로 제한한다.</li>
+</ol>
+
+<h2>남은 gate</h2>
+<ol>
+<li>Original cadence multi-camera recording과 calibration source를 확보해 acquisition과 tracking-update latency를 별도로 측정한다.</li>
+<li>FoundPose/pose-update/fusion adapter가 새 trace contract를 직접 emit하게 하고 p50/p95/p99/max 및 deadline miss를 기록한다.</li>
+<li>Pepsi continuous path family의 release 1-frame failure를 수정하고 display용 frame filtering을 제거한다.</li>
+<li>Exact xArm/Inspire/object/world resident representation으로 cuRobo parity와 deadline qualification을 통과한다.</li>
+<li>같은 immutable command를 MuJoCo에 입력해 measured robot/object/contact feedback을 만든다.</li>
+<li>위 source가 모두 갖춰진 뒤에만 integrated scenario를 생성한다. 현재 fixture로 가짜 measured scenario를 만들지 않는다.</li>
+</ol>
+
+<p><a href="connector-and-precommand-timeline-audit.html">ISSUE-071 upstream timeline</a> · <a href="runtime-event-session.html">runtime event session</a> · <a href="resident-mujoco-measured-viser-replay.html">MuJoCo measured replay</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>

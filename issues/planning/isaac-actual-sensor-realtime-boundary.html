@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Isaac actual-sensor real-time boundary · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-073 · 2026-08-13 · Isaac actual-sensor real-time boundary</div>
+<h1>보여 주는 영상과 실제로 실행된 모듈을 분리해 첫 Isaac 센서 증거를 만든다.</h1>
+<p class="lede">교수 시연의 최우선 목표는 실제 카메라 입력부터 pose, planning, collision, controller까지 시간의 흐름에 따라 작동하는 modular pipeline이다. 기존 Viser는 완성된 reference를 설명하는 데 유용하지만 실제 perception 실행을 증명하지 못했다. 반대로 새 Isaac D0 실행은 실제 xArm6, Inspire Left, 두 connector CAD, Pepsi Light, conveyor, robot table, drop bin과 두 RGB-D camera를 한 scene에 올리고 실제 render product를 읽는다. D0는 이 sensor transport만 검증하며 pose나 grasp 성공으로 승격하지 않는다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> RTX 3090에서 6초 actual-asset RGB-D trial이 통과했다. Control-path RTF는 <code>1.731</code>, presentation 포함 RTF는 <code>0.983</code>이다. Pose, planning, controller authority는 모두 <code>not_connected</code>이므로 교수용 최종 integrated grasp demo는 아직 아니다.</div>
+
+<h2>목표를 다시 제한한 이유</h2>
+<table class="table">
+<tr><th>위험한 접근</th><th>문제</th><th>채택한 경계</th></tr>
+<tr><td>Simulator object transform을 perception 입력으로 사용</td><td>영상은 정확해 보이지만 physical camera로 교체할 수 없고 pose latency도 사라진다.</td><td>Simulator truth는 evaluator-only다. Planning 입력에는 들어가지 않는다.</td></tr>
+<tr><td>FoundPose, GoTrack, cuRobo, Isaac을 한 Python environment에 설치</td><td>Torch, CUDA, renderer dependency 충돌과 GPU memory contention이 runtime을 불안정하게 만든다.</td><td>각 heavy backend를 edge process로 분리하고 fixed-shape bounded message만 교환한다.</td></tr>
+<tr><td>매 camera frame마다 FoundPose와 global planning 실행</td><td>정적 CAD retrieval과 unrestricted solve가 deadline을 소모하며 stale result가 쌓인다.</td><td>Upstream에서 yaw를 한 번 획득하고 translation만 갱신한다. Planning은 resident atlas/path query다.</td></tr>
+<tr><td>영상 1.0x 재생을 real-time 근거로 사용</td><td>Display sleep, compositing과 encode가 inference latency를 가린다.</td><td>Control-path RTF와 presentation RTF, stage p95/max를 따로 기록한다.</td></tr>
+</table>
+
+<h2>모듈 경계</h2>
+<ol>
+<li><strong>Sensor edge:</strong> Isaac sensor와 이후 physical camera가 synchronized RGB, depth, mask, intrinsics, extrinsics, timestamp의 같은 observation contract를 구현한다.</li>
+<li><strong>Pose acquisition:</strong> object와 stable pose가 선택된 상태에서 upstream RGB mask로 initial planar position과 yaw를 얻는다. FoundPose는 이 event-driven acquisition 후보이며 매 frame 기본 경로가 아니다.</li>
+<li><strong>Constrained tracking:</strong> belt 이동 중 yaw가 고정되고 평행이동만 한다는 선언된 model 아래 depth-mask translation, camera disagreement, belt encoder와 covariance를 갱신한다.</li>
+<li><strong>Resident decision:</strong> verified grasp/yaw/horizon atlas와 path family를 startup에 올리고 bounded maximin query만 수행한다. Unsupported cell은 fallback 없이 <code>no_pick</code>이다.</li>
+<li><strong>GPU collision:</strong> exact remaining arm-hand command를 resident cuRobo gate가 검사한다. Timeout은 CPU fallback이 아니라 reject다. HPP-FCL은 offline named-mesh false-negative oracle로 남는다.</li>
+<li><strong>Controller:</strong> 한 future-start arm/hand lease를 atomic하게 전달하고 simulator와 이후 robot adapter가 같은 계약을 소비한다.</li>
+<li><strong>Evidence/presentation:</strong> trace serialization, Viser와 MP4 composition은 bounded queue 뒤의 비임계 consumer다.</li>
+</ol>
+
+<h2>D0에서 실제로 실행한 것</h2>
+<table class="table">
+<tr><th>항목</th><th>설정 또는 source</th></tr>
+<tr><td>Workstation</td><td>RTX 3090 24 GB, i9-13900K, RAM 128 GB, Ubuntu 22.04, Isaac Sim 4.5.0.0</td></tr>
+<tr><td>Scene assets</td><td>Combined xArm6/Inspire Left URDF, <code>xarm_base.obj</code>, <code>inspire_base.obj</code>, Pepsi Light GLB, configured workcell boxes</td></tr>
+<tr><td>Object condition</td><td><code>pepsi_light</code>, <code>upside_down</code> stable pose, unknown initial yaw 0.4 rad evaluator truth, belt +x translation 0.08 m/s</td></tr>
+<tr><td>Simulation</td><td>Physics 60 Hz, overview/video 30 Hz, two 640x360 RGB-D sensors 15 Hz, 120-step warm-up</td></tr>
+<tr><td>Perception boundary</td><td>Isaac instance mask and rendered image-plane depth만 생성. Pose source는 연결하지 않음</td></tr>
+<tr><td>Source</td><td><a href="https://github.com/gohyunsu/beltbench/commit/79e0fc3"><code>beltbench@79e0fc3</code></a></td></tr>
+<tr><td>Evidence</td><td><code>/home/hyunsu/.agile/projects/evidence/isaac-professor-demo-v1/d0-actual-asset-sensor-v1</code></td></tr>
+</table>
+
+<h2>발생한 문제, 원인, 해결</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>Workcell prim 생성 실패</td><td><code>conveyor-deck</code> 같은 semantic ID의 hyphen이 USD prim component에 그대로 들어갔다.</td><td>Semantic ID는 보존하고 Isaac edge에서만 deterministic USD-safe identifier로 변환했다.</td><td>Scene import가 성공했고 core 계약에 USD 이름이 유출되지 않았다.</td></tr>
+<tr><td>초기 mask가 화면 전체를 object로 표시</td><td>Instance ID가 nonzero면 object라는 잘못된 가정을 사용해 robot과 workcell까지 포함했다.</td><td><code>idToLabels</code>에서 object identity와 정확히 결속된 ID만 선택하고 background와 unlabelled를 제외했다.</td><td>두 camera mask가 Pepsi pixel만 포함한다.</td></tr>
+<tr><td>정확한 semantic class 검색 후 mask가 0</td><td>Isaac 4.5 instance annotator가 class string 대신 object prim path를 label 값으로 반환했다.</td><td>USD identity 해석은 Isaac edge 내부에서만 exact object-root path prefix와 대응하게 했다.</td><td>Raw label representation을 report에 남기고 object 관측률 96.7%를 얻었다.</td></tr>
+<tr><td>상류 시작 위치에서 object가 camera 밖에 있음</td><td>기존 camera target이 robot 앞 intercept 중심이라 충분한 acquisition lead-in을 보지 못했다.</td><td>두 sensor와 overview target을 belt 상류까지 포함하도록 조정했다.</td><td>Object가 -0.46 m에서 진입하는 장면부터 양쪽 RGB-D에 관측된다.</td></tr>
+<tr><td>60 Hz 전체 rendering에서 control RTF가 낮음</td><td>Physics step마다 세 camera render와 presentation 작업을 함께 수행했다.</td><td>Physics는 60 Hz, render/video는 30 Hz, sensor capture는 15 Hz로 분리하고 각각 측정했다.</td><td>Control-path RTF 1.731, presentation RTF 0.983으로 분리 보고했다.</td></tr>
+<tr><td>Connector material이 CAD 원본에서 불명확</td><td>두 OBJ가 참조하는 material source가 assembly bundle에 없었다.</td><td>실제 두 CAD는 그대로 사용하고 Isaac edge에서 connector Gprim에 white PreviewSurface만 강하게 bind했다.</td><td>형상은 실제 CAD, 흰색은 presentation material이다. 물리 bolt-hole metrology 증거로 과장하지 않는다.</td></tr>
+</table>
+
+<h2>측정 결과</h2>
+<table class="table">
+<tr><th>Stage</th><th>Mean</th><th>p95</th><th>Max</th></tr>
+<tr><td>Physics/render cycle, 360 calls</td><td>8.801 ms</td><td>20.887 ms</td><td>29.219 ms</td></tr>
+<tr><td>Two-camera sensor capture, 90 calls</td><td>3.304 ms</td><td>5.020 ms</td><td>5.253 ms</td></tr>
+<tr><td>Video composition, 180 calls</td><td>10.679 ms</td><td>16.567 ms</td><td>19.242 ms</td></tr>
+<tr><td>Video encode, 180 calls</td><td>2.058 ms</td><td>3.006 ms</td><td>3.884 ms</td></tr>
+</table>
+<ul>
+<li>Simulated duration: 6.0 s, measured wall duration: 6.105 s</li>
+<li>Control-path real-time factor: 1.731</li>
+<li>Presentation real-time factor: 0.983</li>
+<li>Left/right object-mask nonzero ratio: 각각 96.7%</li>
+<li>Left/right masked-depth valid ratio: 각각 96.7%</li>
+<li>Report result: <code>passed=true</code>, failure code 없음</li>
+</ul>
+
+<h2>이 수치가 증명하지 않는 것</h2>
+<ul>
+<li>Instance mask는 Isaac semantic capability이며 physical RGB segmentation 성능이 아니다.</li>
+<li>Depth와 mask가 유효하다는 결과는 initial yaw 또는 execution-authoritative object pose가 얻어졌다는 뜻이 아니다.</li>
+<li>Robot은 actual asset으로 보이지만 D0에서 command trajectory를 실행하지 않았다.</li>
+<li>Connector 두 bore가 CAD assembly frame에서 정렬된다는 기존 검사는 physical bolt 체결 공차 측정이 아니다.</li>
+<li>Presentation RTF 0.983은 control failure가 아니지만, live dashboard를 critical path에 넣어도 된다는 근거도 아니다.</li>
+<li>기존 full-task command의 release 한 frame collision failure가 남아 있어 planning pass를 표시할 수 없다.</li>
+</ul>
+
+<h2>FoundPose와 GoTrack의 현실적인 상태</h2>
+<p>RTX workstation에는 vendored FoundPose/GoTrack source가 있다. 그러나 Pepsi용 FoundPose object representation인 <code>repre.pth</code>와 필요한 pretrained artifact는 현재 project/evidence 영역에 없다. 따라서 다음 단계는 기존 source를 import했다고 선언하는 것이 아니라 Pepsi GLB를 checksummed mesh로 onboarding하고, 별도 <code>beltbench-foundpose</code> environment에서 cold/warm first-frame acquisition을 측정하는 것이다.</p>
+<p>GoTrack은 previous-pose-conditioned refinement 후보이지 현재 기본 temporal path가 아니다. 공개 source의 README도 frame-to-frame optical-flow tracking이 구현됐다고 보장하지 않는다. Constant-yaw conveyor에서는 lightweight depth translation update가 더 작고 예측 가능하므로 original-cadence accuracy와 deadline 비교에서 이길 때만 GoTrack을 채택한다.</p>
+
+<h2>다음 구현 순서와 완료 조건</h2>
+<ol>
+<li><strong>D1 acquisition:</strong> Pepsi representation을 생성하고 rendered RGB/mask/intrinsics만으로 initial yaw와 position을 얻는다. Cold/warm latency, multi-view disagreement와 evaluator-only truth error를 기록한다.</li>
+<li><strong>D1 tracking:</strong> Depth-mask world point update와 constant-yaw belt state를 15 Hz에 연결한다. 35 ms deadline, age, covariance, lateral/yaw residual gate를 통과해야 한다.</li>
+<li><strong>D2 decision:</strong> Verified Pepsi upside-down grasp atlas와 path family를 resident load한다. Query 3 ms, changed candidate cuRobo gate 20 ms를 첫 workload로 측정하며 timeout은 reject한다.</li>
+<li><strong>D2 correctness:</strong> 현재 release-frame collision defect를 고치고 exact command가 HPP-FCL oracle과 qualified cuRobo gate를 모두 통과해야 한다.</li>
+<li><strong>D3 execution:</strong> 같은 future-start command로 Isaac articulation을 제어하고 measured contact, attachment, transport, release, bin containment와 stop을 기록한다.</li>
+<li><strong>D4 presentation:</strong> Raw trace를 먼저 기록하고 MP4는 비동기 조합한다. 화면 stage color는 실제 event 전환을 따르며 artificial dwell을 넣지 않는다.</li>
+</ol>
+
+<h2>교수 시연에서 지금 보여줄 수 있는 범위</h2>
+<p>D0 MP4는 “실제 자산이 있는 Isaac scene에서 두 RGB-D sensor와 instance mask transport가 real-time control workload보다 빠르게 돈다”는 환경 통합 증거로 보여 줄 수 있다. 화면에 이미 <code>D0 DIAGNOSTIC - NO POSE OR PLANNING AUTHORITY</code>를 표시했다. 실제 grasp demo라고 설명할 영상은 D3 measured simulation을 통과한 뒤 별도로 만든다.</p>
+
+<p><a href="perception-runtime-evidence-boundary.html">ISSUE-072 perception-runtime evidence</a> · <a href="curobo-realtime-collision-audit.html">cuRobo real-time collision audit</a> · <a href="realtime-full-task-inference-reaudit.html">full-task inference re-audit</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
