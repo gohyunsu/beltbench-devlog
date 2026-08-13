@@ -16,7 +16,7 @@
 <h1>실시간 perception 권위 측정과 교수용 MP4 부하를 서로 다른 pass로 분리한다.</h1>
 <p class="lede">Isaac sensor, FoundPose, CAD translation과 60 Hz encoder prediction을 한 영상에 보여 주되, 영상 조합과 인코딩이 control-path 실시간성의 근거를 오염시키지 않아야 한다. 먼저 MP4가 없는 D1 authority pass를 닫고, 같은 설정과 source임을 다시 증명한 non-authoritative presentation pass만 영상 worker를 사용할 수 있도록 실행 경계를 구현했다.</p>
 
-<div class="callout"><strong>현재 판정:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/c3b6dde"><code>beltbench@c3b6dde</code></a>에 두-pass admission, capacity-one video worker, atomic progress journal과 무결성 검증을 반영했다. 로컬 계약·회귀 테스트는 통과했지만 RTX workstation SSH가 TCP 연결 뒤 응답하지 않고, 로컬 conda Python에는 <code>os.memfd_create</code>가 없어 실제 Linux worker와 Isaac D1을 아직 실행하지 못했다. 따라서 <code>professor_video_ready=false</code>이며 새 D1 영상은 존재하지 않는다.</div>
+<div class="callout"><strong>현재 판정:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/c3b6dde"><code>beltbench@c3b6dde</code></a>에 두-pass admission, capacity-one video worker, atomic progress journal과 무결성 검증을 반영했다. WSL Linux Python 3.13에서 실제 memfd 자식 process와 1280×720 MP4 생성까지 신규 9 tests를 skip 없이 통과했다. 그러나 RTX workstation SSH가 key-exchange reply 전에 멈춰 Isaac D1은 아직 실행하지 못했다. 따라서 <code>professor_video_ready=false</code>이며 새 D1 영상은 존재하지 않는다.</div>
 
 <h2>구현 절차</h2>
 <ol>
@@ -45,13 +45,13 @@
 <tr><td>경량 video worker import가 HPP-FCL 누락으로 실패</td><td><code>beltbench.visualization</code>과 <code>beltbench.simulation</code> package initializer가 모든 planning, MuJoCo, Viser module을 eager import했다.</td><td>기존 public export 이름을 유지하는 PEP 562 lazy loader로 교체했다.</td><td>OpenCV worker와 progress journal import 시 HPP-FCL·MuJoCo가 load되지 않음을 확인했고 기존 public API 32 tests가 통과했다.</td></tr>
 <tr><td>영상 worker 실패 시 control loop가 process 종료와 JSON 기록을 수행</td><td>진단 실패 처리와 cleanup 위치가 임계 루프 안에 있었다.</td><td>루프에서는 failure code와 client 비활성화만 하고 worker close와 progress write를 finally로 이동했다.</td><td>Measured loop 안의 artifact write와 최대 수 초의 process wait 경로를 제거했다.</td></tr>
 <tr><td>Source hash가 맞아도 report의 <code>passed</code> 필드 변경을 즉시 탐지하지 못함</td><td>Report 자체 canonical digest와 trace 재검증이 없었다.</td><td>본문 canonical SHA-256, trace SHA-256과 source hash 전체를 presentation admission에서 다시 계산한다.</td><td>Report, trace, source 또는 설정 하나가 바뀌면 simulator startup 전에 fail-closed한다.</td></tr>
-<tr><td>로컬 실제 shared-memory process test 2개 skip</td><td>현재 conda-forge Python 3.10 build가 Linux WSL 위에서도 <code>os.memfd_create</code>를 노출하지 않는다.</td><td>계약 test는 유지하고 실제 process test를 Linux capability 조건으로 명시했다.</td><td>신규 9 tests 중 7 pass, memfd 2 skip. RTX의 Isaac Python에서 반드시 재실행해야 한다.</td></tr>
-<tr><td>RTX 통합 실행 재개 불가</td><td>Host는 이전에 ICMP에 응답했지만 현재 SSH는 TCP 연결 후 command channel 응답 없이 멈춘다. 원인은 확정하지 않았다.</td><td>중복 Isaac process를 띄우지 않고 remote evidence 생성을 중단했다.</td><td>D1 report와 MP4를 성공으로 주장하지 않는다.</td></tr>
+<tr><td>첫 로컬 shared-memory process test 2개 skip</td><td>기존 conda-forge Python 3.10 build가 Linux WSL 위에서도 <code>os.memfd_create</code>를 노출하지 않았다.</td><td><code>/tmp/beltbench-video-smoke</code>에 system Python 3.13 venv를 만들고 NumPy 2.5.2, headless OpenCV 5.0.0.93만 설치해 같은 test를 다시 실행했다.</td><td>고정 slot round-trip, worker ready handshake, compose, MP4 encode/close를 포함한 신규 9/9 tests가 0.737초에 통과했다.</td></tr>
+<tr><td>RTX 통합 실행 재개 불가</td><td>Tailscale direct peer와 ICMP, SSH banner/KEXINIT은 정상이다. 기본 hybrid KEX와 강제 <code>curve25519-sha256</code> 모두 서버의 <code>SSH2_MSG_KEX_ECDH_REPLY</code> 직전에서 12초 timeout됐다. 원인은 확정하지 않았다.</td><td>중복 Isaac process를 띄우지 않고 remote evidence 생성을 중단했다.</td><td>D1 report와 MP4를 성공으로 주장하지 않는다.</td></tr>
 </table>
 
 <h2>검증 결과</h2>
 <ul>
-<li>D1 authority/report, progress와 video contracts: 9 tests, 7 pass, Linux memfd 2 skip.</li>
+<li>D1 authority/report, progress와 actual memfd video worker: 9/9 pass, 0.737초.</li>
 <li>기존 simulation/visualization public API regression: 32/32 pass.</li>
 <li>변경 Python 10 files AST compile과 <code>git diff --check</code>: pass.</li>
 <li>Package isolation probe: worker/journal import 뒤 <code>hppfcl_loaded=false</code>, <code>mujoco_loaded=false</code>.</li>
