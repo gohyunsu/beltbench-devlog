@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Real-time perception single-GPU plan · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-074 · 2026-08-13 · real-time perception and single-GPU scheduling</div>
+<h1>모든 단계를 빠르게 돌리는 대신, 임계 경로를 작게 만들고 GPU 소유권을 시간축으로 분리한다.</h1>
+<p class="lede">교수 시연에 필요한 것은 1.0x로 보이는 애니메이션이 아니라 실제 Isaac RGB-D generation이 pose acquisition, tracking, bounded decision, collision gate와 controller로 인과적으로 이어지는 실행이다. 첫 D1을 위해 FoundPose를 상주 process로 만들고 initial yaw, CAD translation, encoder prediction의 권한을 분리했다. 한편 RTX rendering과 FoundPose를 합친 실행에서 workstation 응답 정체가 발생해, dependency process 분리만으로는 단일 GPU contention이 해결되지 않는다는 운영 문제도 드러났다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> FoundPose full-yaw component qualification과 resident IPC, 15/60 Hz tracking core는 통과했다. NVIDIA 공식 우회 옵션을 사용한 Isaac 4.5 최소 RTX smoke도 통과했다. 그러나 actual Isaac sensor와 FoundPose를 합친 D1은 report를 닫지 못했고 SSH command channel도 timeout되었으므로 <code>integrated D1 = not accepted</code>다. 원인은 추가 격리 실험 전에는 확정하지 않는다.</div>
+
+<h2>실시간 task를 제한한 가정</h2>
+<ul>
+<li>Object identity와 안정 tabletop pose identity는 trial 전에 주어진다.</li>
+<li>초기 belt-frame 위치와 yaw는 sensor로 관측한다.</li>
+<li>물체는 초기 yaw와 lateral 위치를 유지하고 calibrated belt 방향으로 평행이동한다.</li>
+<li>지원하지 않는 yaw, 위치, 속도, grasp 또는 path cell은 online 생성으로 숨기지 않고 <code>no_pick</code>이다.</li>
+<li>Grasp 생성, intrinsic qualification, path family, contact/release/stop command와 mesh oracle 검증은 offline이다.</li>
+</ul>
+
+<h2>권한과 주기</h2>
+<table class="table">
+<tr><th>모듈</th><th>주기</th><th>권한</th><th>첫 deadline</th><th>실패 동작</th></tr>
+<tr><td>두 camera sensor ingress</td><td>15 Hz</td><td>RGB-D generation</td><td>age 25 ms</td><td>generation 폐기</td></tr>
+<tr><td>FoundPose yaw acquisition</td><td>상류에서 1회</td><td>yaw hypothesis</td><td>0.8 s</td><td>admission 거부</td></tr>
+<tr><td>CAD translation</td><td>15 Hz</td><td>x/y correction</td><td>35 ms</td><td>update 거부, prediction age 증가</td></tr>
+<tr><td>Encoder propagation</td><td>60 Hz</td><td>belt phase와 speed</td><td>2 ms</td><td>track 무효화</td></tr>
+<tr><td>Resident path query</td><td>최대 15 Hz</td><td>retain/latch/no-pick</td><td>3 ms</td><td>certificate 안에서만 retain</td></tr>
+<tr><td>cuRobo exact-command gate</td><td>candidate 변경·commit</td><td>collision admission</td><td>75 ms cap</td><td>reject 또는 stop</td></tr>
+<tr><td>Controller/feedback</td><td>Isaac 60 Hz</td><td>실행과 measured state</td><td>4 ms compute</td><td>protective stop</td></tr>
+</table>
+<p>FoundPose PnP translation은 최종 위치 권한이 아니며 CAD geometry는 yaw 권한이 아니다. 두 결과와 encoder를 받은 constant-yaw estimator만 fused track을 소유한다. Simulator object transform은 evaluator error 계산에만 사용한다.</p>
+
+<h2>확인된 component 결과</h2>
+<table class="table">
+<tr><th>검증</th><th>결과</th><th>판정</th></tr>
+<tr><td>GPU crop 변경 v5</td><td>속도는 약 0.305 s로 개선됐지만 maximum yaw error 0.154 rad</td><td>정확도 gate 실패로 폐기</td></tr>
+<tr><td>Legacy crop 보존·view 병렬 v6</td><td>12/12 admission, yaw max 0.102 rad, p95 0.0942 rad, position max 0.333 mm</td><td>full-yaw component 통과</td></tr>
+<tr><td>v6 total acquisition</td><td>maximum 0.728 s</td><td>0.8 s upstream event budget 통과</td></tr>
+<tr><td>Resident worker IPC 3회</td><td>0.664, 0.651, 0.651 s; boundary overhead max 3.22 ms</td><td>IPC는 주 병목이 아님</td></tr>
+<tr><td>CAD translation</td><td>p95 21.18 ms, max 24.69 ms</td><td>35 ms component budget 통과</td></tr>
+<tr><td>Core regression</td><td>worker, acquisition, registration, tracker와 runtime contract 56 tests</td><td>통과</td></tr>
+</table>
+
+<h2>구현한 경계</h2>
+<ol>
+<li><strong>Zero-copy worker:</strong> Linux <code>memfd</code>의 고정 RGB/mask slot과 JSON-lines metadata만 사용한다. Depth, object truth와 velocity는 worker에 전달하지 않는다.</li>
+<li><strong>Single-flight:</strong> pending acquisition은 하나뿐이며 stale request queue를 만들지 않는다. Model과 representation은 startup에 한 번 load한다.</li>
+<li><strong>Pose state machine:</strong> <code>idle → acquiring → tracking/fault</code> 전이에서 v6 yaw evidence, 같은 generation CAD x/y와 camera order를 검사한다.</li>
+<li><strong>Multi-rate tracker:</strong> camera correction은 15 Hz, encoder prediction은 60 Hz다. 같은 timestamp correction은 허용하되 generation ancestry를 바꾸지 않는다.</li>
+<li><strong>Bounded runtime:</strong> camera, planning, command mailbox를 각각 capacity one으로 유지한다. cuRobo는 camera frame마다 실행하지 않는다.</li>
+</ol>
+
+<h2>발생한 문제, 원인 범위, 처리</h2>
+<table class="table">
+<tr><th>문제</th><th>확인된 원인 또는 범위</th><th>처리</th><th>결과</th></tr>
+<tr><td>Isaac이 driver 535.309.01을 535.53.01로 보고 RTX scene 생성 거부</td><td>NVIDIA가 535.256+ Vulkan driver version 오보고를 공식 known issue로 명시한다.</td><td><code>nvidia-smi</code>, kernel module과 installed library가 535.309.01임을 독립 확인한 뒤 공식 <code>--/rtx/verifyDriverVersion/enabled=false</code> 옵션만 사용했다.</td><td>Isaac 4.5 minimal RTX smoke가 종료 코드 0과 <code>ISAAC_RTX_SMOKE_OK</code>로 통과했다.</td></tr>
+<tr><td>8초 D1 통합 실행이 report 없이 오래 지속된 뒤 SSH 연결 종료</td><td>통합 harness는 Isaac asset import, RTX render, FoundPose load/inference, live composition/encode를 한 실행에 포함한다. 어느 stage가 정체됐는지는 progress trace가 없어 미확정이다.</td><td>성공으로 처리하지 않고 중복 실행을 중단했다. Host는 ICMP에 응답했지만 SSH command는 timeout됐다.</td><td>D1 evidence 없음. Host 회복 후 stage-isolated smoke와 raw-trace-only trial이 필요하다.</td></tr>
+<tr><td>기존 ADR이 FoundPose를 7/12 실패 상태로 표시</td><td>v6 qualification 이후 상태 문서가 갱신되지 않았다.</td><td>ADR과 교수 demo plan을 component pass와 integrated D1 pending으로 구분해 수정했다.</td><td><a href="https://github.com/gohyunsu/beltbench/commit/d973d73"><code>beltbench@d973d73</code></a>에 반영했다.</td></tr>
+</table>
+
+<h2>단일 GPU 실행 계획</h2>
+<ol>
+<li><strong>Startup:</strong> Isaac, FoundPose, 이후 cuRobo를 순차 warm-up한다. Model load, USD conversion, world upload와 allocation은 trial timing에서 분리하되 별도 cold-start 시간으로 기록한다.</li>
+<li><strong>Acquire:</strong> Isaac rendering과 FoundPose만 GPU를 사용한다. cuRobo와 live MP4 encode는 금지한다. Object는 upstream에서 0.8초와 commit reserve를 모두 확보한다.</li>
+<li><strong>Track:</strong> FoundPose를 idle로 두고 15 Hz CAD correction과 60 Hz CPU prediction을 실행한다. Resident atlas/path lookup은 fixed-size CPU query다.</li>
+<li><strong>Commit:</strong> candidate가 바뀌거나 final commit할 때만 FoundPose와 상호배타로 cuRobo를 실행한다. Timeout은 CPU planner fallback이 아니라 reject다.</li>
+<li><strong>Execute:</strong> 60 Hz controller, feedback와 lifecycle monitor만 command authority를 가진다. 일반 global replanning은 금지하고 certified phase/time correction 또는 stop만 허용한다.</li>
+<li><strong>Publish:</strong> raw trace가 닫힌 뒤 sensor panel과 stage color를 MP4로 조합한다. Presentation RTF는 control RTF와 별도다.</li>
+</ol>
+
+<h2>다음 승격 기준</h2>
+<ul>
+<li>D1-A: Isaac scene+sensors만 원 cadence에서 다시 통과하고 host health, VRAM, CPU RSS와 stage heartbeat를 기록한다.</li>
+<li>D1-B: 같은 sensor generation을 raw bundle로 기록한 뒤 Isaac 없이 resident FoundPose+CAD+tracker를 replay한다.</li>
+<li>D1-C: live Isaac와 worker를 결합하되 video writer를 제거하고 authority trace만 기록한다. 15 Hz generation, 60 Hz prediction, pose error와 deadline miss가 모두 통과해야 한다.</li>
+<li>D1-D: 통과한 immutable trace에서 교수용 perception video를 후처리한다.</li>
+<li>D2: verified path-family를 track에 연결하고 changed candidate/final commit에서만 cuRobo exact-command gate와 future-start lease를 측정한다.</li>
+<li>D3: 같은 lease로 Isaac arm/hand를 제어하고 contact, attach, transport, release, bin containment와 retreat를 measured simulator state에서 닫는다.</li>
+</ul>
+
+<h2>현재 교수님께 보여 줄 수 있는 범위</h2>
+<p>현재 확실히 보여 줄 수 있는 영상은 ISSUE-073의 D0 actual-asset sensor diagnostic과 기존 source-bound Viser planning diagnostic이다. FoundPose component 수치와 architecture diagram은 설명 자료로 사용할 수 있지만, 오늘 실패한 D1 시도는 영상이나 integrated demo로 제시하지 않는다. 다음 교수용 영상은 D1-C raw trace가 통과한 뒤 만든 perception 단계 영상이며, grasp 성공 영상이라는 표현은 D3 measured execution 이후에만 사용한다.</p>
+
+<p><a href="https://docs.omniverse.nvidia.com/dsx/latest/common/technical-requirements.html">NVIDIA Omniverse driver known issue</a> · <a href="isaac-actual-sensor-realtime-boundary.html">ISSUE-073 Isaac sensor evidence</a> · <a href="perception-runtime-evidence-boundary.html">ISSUE-072 runtime evidence boundary</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
