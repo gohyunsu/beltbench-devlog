@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Guarded pregrasp와 검증된 drop playback · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-078 · 2026-08-14 · guarded pregrasp and validated drop playback</div>
+<h1>접촉 전 guarded approach와 bin-clear transfer를 분리해 301-frame moving pick-and-drop을 통과시킨다.</h1>
+<p class="lede">80 mm pregrasp offset만 늘려서는 마지막 접촉 전 sample의 clearance 모순을 해결할 수 없었다. 접촉 전 근접과 실제 contact를 명시적으로 분리하고, drop-bin wall을 넘는 attached-object sweep를 workcell 수치에서 다시 산출했다. 그 결과 source-closed BODex rank 1 후보의 4.6초 intercept가 301/301 frame sampled HPP-FCL 검증을 통과했고, actual asset Viser playback을 1× wall-clock 영상으로 확보했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> private MP4는 1920×1080, H.264, 15 fps, 12.0초, 180 frame이며 capture RTF는 0.986349, unique frame fraction은 1.0이다. SHA-256은 <code>a039e735e776fa495354a48ae6ce9c44735e16bf1dcca4618957c310d42a21ce</code>이다. 이 결과는 선택된 planned command가 301-frame sampled validator를 통과했고 1×로 재생됨을 증명한다. <code>selected_execution_candidate</code>는 의도적으로 비어 있으며, causal Isaac perception-to-control trial이나 physics/contact execution을 증명하지 않는다.</div>
+
+<h2>문제와 영향</h2>
+<ul>
+<li>이전 robust path는 마지막 접촉 전 frame에서 intended distal hand geometry와 Pepsi 사이 거리가 약 4.245 mm까지 줄었다. 이 구간에 일반적인 positive uncertainty clearance를 그대로 요구하면 물체에 접근하면서 동시에 물체에서 멀리 떨어져 있으라는 모순이 생긴다.</li>
+<li>Object-relative pregrasp를 60 mm에서 80 mm로 늘리면 approach 시작점은 멀어지지만 접촉 직전 endpoint는 바뀌지 않는다. Offset만 반복해서 키우는 것은 원인을 고치지 못한다.</li>
+<li>Guarded approach를 적용한 뒤 coarse moving approach는 통과했지만, 기존 80 mm lift는 attached Pepsi 중심을 bin wall top 아래에 남겼다. Dense validation에서 <code>lift</code> phase 3 frame이 <code>drop-bin-wall-right</code>와 충돌했다.</li>
+<li>Planning 결과가 통과해도 CPU reference search와 refinement가 약 197초 걸리면 online inference가 아니다. 1× 영상과 real-time planner를 동일한 주장으로 묶으면 안 된다.</li>
+</ul>
+
+<h2>직접 원인</h2>
+<p>Moving-tool schedule은 keyframe 사이 구간을 왼쪽 keyframe의 phase로 기록한다. 따라서 <code>pregrasp → close_above_object</code> Cartesian 이동은 hand가 exact pregrasp command를 유지하더라도 <code>pregrasp</code> phase다. 기존 interaction semantics는 <code>close_above_object</code>만 guarded로 선언했기 때문에 바로 앞 구간의 intended distal geometry가 일반 non-contact clearance를 요구받았다.</p>
+<p>Guarded는 collision 예외가 아니다. 선언된 distal contact geometry에 대해서만 접촉 전 positive uncertainty clearance를 면제한다. Signed nominal penetration은 계속 실패하고, contact count와 bounded penetration은 declared first-contact 이후 <code>contacting</code>, <code>attached</code>, <code>releasing</code> state에서만 평가한다. Arm, palm, non-contact finger geometry에는 예외가 없다.</p>
+<p>Drop 측 원인은 endpoint IK가 아니라 transfer sweep였다. Object center의 pickup 높이는 0.141052 m, bin wall top은 0.240 m다. 이전 0.080 m lift의 중심 높이는 0.221052 m라 wall top에도 못 미쳤다. 새 0.200 m lift에서 wall 위 가용 envelope는 <code>0.141052 + 0.200 - 0.240 - 0.065 = 0.036052 m</code>다. 필요한 envelope는 최대 pose inflation 0.006390 m, environment clearance 0.001 m, minimum collision slack 0.002 m를 더한 0.009390 m이므로 약 26.7 mm의 잔여가 생긴다.</p>
+
+<h2>해결 절차</h2>
+<ol>
+<li><strong>Source-closed candidate regeneration:</strong> 512개 BODex proposal을 exact source와 80 mm object-relative pregrasp 조건으로 다시 screen했다. 46개를 full evaluation하고 43개를 deployment 판단으로 넘겼으며, 30개가 shortlist hard gate에 eligible, 최종 8개가 diversity-aware shortlist에 남았다.</li>
+<li><strong>Guarded phase contract:</strong> object interaction schema 3의 <code>guarded_hand_proximity_phases</code>에 <code>pregrasp</code>와 <code>close_above_object</code>를 모두 선언했다. Validator regression은 named distal geometry의 nonpenetrating proximity만 통과시키고 nominal penetration과 조기 contact counting은 계속 거부한다.</li>
+<li><strong>Bin-clear envelope:</strong> drop profile의 lift를 0.080 m에서 0.200 m로 바꿨다. Workcell wall, predicted object z, object sweep radius, covariance inflation과 clearance policy에서 최소 lift envelope를 계산하는 profile regression을 추가했다.</li>
+<li><strong>Independent dense validation:</strong> portfolio search가 만든 playback을 별도 full-frame HPP-FCL validator로 다시 읽어 301 frame의 robot/workcell, robot/object, object/environment, support와 named contact semantics를 검사했다.</li>
+<li><strong>Presentation capture:</strong> actual xArm6, Inspire Left, paired connector CAD, upside-down Pepsi, conveyor, robot mounting table과 drop bin을 Viser에서 autoplay/loop로 재생했다. Private Xvfb와 headed Chrome을 사용해 1× wall-clock capture를 독립 검사했다.</li>
+</ol>
+
+<h2>실패 연대기</h2>
+<table class="table">
+<tr><th>Run</th><th>관찰</th><th>원인과 조치</th></tr>
+<tr><td><code>moving-intrinsic-6aa2544-v1</code></td><td>새 worktree인데 이전 editable source가 import됐다.</td><td>복제한 HPP 환경의 stale editable finder가 옛 worktree를 가리켰다. Revision-specific <code>PYTHONPATH</code>와 source identity 검사를 사용하도록 바꿨다.</td></tr>
+<tr><td><code>moving-intrinsic-6aa2544-v2</code></td><td>Source/asset identity gate에서 중단됐다.</td><td>Ignored private asset의 상대 경로가 새 worktree에 없었다. 같은 immutable asset을 worktree의 선언 경로에 연결하고 hash를 다시 검증했다.</td></tr>
+<tr><td><code>moving-intrinsic-6aa2544-v3</code></td><td>512 screen, 46 full evaluation, 43 deployment decision, 30 eligible, top 8 생성.</td><td>Source-closed 80 mm pregrasp shortlist를 성공적으로 고정했다. Protocol과 stable pose는 provisional이라 execution authority는 부여하지 않았다.</td></tr>
+<tr><td><code>moving-pregrasp-rank1-6aa2544-v1</code></td><td>Rank 1의 마지막 pre-contact clearance가 실패했다.</td><td>80 mm offset은 segment 시작점만 옮겼다. Phase/contact semantics를 수정해야 함을 확인했다.</td></tr>
+<tr><td><code>guarded-pregrasp-rank1-a8dd14b-v1</code></td><td>Coarse approach는 통과했지만 6.1667, 6.2000, 6.2333초의 3 frame이 bin wall과 충돌했다.</td><td>Guarded semantics는 맞았고, 별도 terminal-routing 결함이 드러났다. Wall envelope에서 lift를 다시 산출했다.</td></tr>
+<tr><td><code>bin-clear-rank1-ac4d9d7-v1</code></td><td>Rank 1, 4.6초 intercept의 301/301 frame이 valid였다.</td><td>0.200 m lift와 dense validation을 통과했다. Grasp approval과 measured latency가 없어 diagnostic만 선택했다.</td></tr>
+<tr><td><code>professor-validated-planning-ac4d9d7-v1</code></td><td>요청한 overlay hide 문자열이 화면에 없어 capture policy가 fail-closed했다.</td><td>추측 문자열로 우회하지 않고 실패 run을 보존했다.</td></tr>
+<tr><td><code>professor-validated-planning-ac4d9d7-v2</code></td><td>Capture 검사는 통과했지만 software WebGL 경고가 영상에 남았다.</td><td>발표용 artifact 기준에는 부적합하다고 판단하고 다시 캡처했다.</td></tr>
+<tr><td><code>professor-validated-planning-ac4d9d7-v3</code></td><td>정확한 경고 overlay를 숨기고 180/180 unique frame, RTF 0.986349로 accepted.</td><td>최종 private MP4와 capture JSON, ffprobe, contact sheet, SHA-256을 같은 evidence set으로 보관했다.</td></tr>
+</table>
+
+<h2>검증 결과</h2>
+<table class="table">
+<tr><th>검증</th><th>결과</th><th>권한 경계</th></tr>
+<tr><td>Guarded semantics focused regression</td><td>20 pass, CUDA test 1 expected skip</td><td>접촉 전 named distal proximity와 penetration/contact state 분리를 검증했다.</td></tr>
+<tr><td>최종 local / RTX 3090 회귀</td><td>각각 47 pass, CUDA test 1 expected skip</td><td>Bin envelope 계약과 관련 planning/playback 회귀를 두 환경에서 재현했다.</td></tr>
+<tr><td>Reference moving approach</td><td>61 timed target, 61 arm waypoint, success</td><td>Robot/workcell/object sampled approach 검사다. Continuous collision이나 controller tracking은 아니다.</td></tr>
+<tr><td>Selected diagnostic robustness</td><td>Deadline slack 2.280 s, collision slack 8.213 mm, workspace margin 147.479 mm, joint margin 0.4811, normalized Jacobian 0.1400 m</td><td>Geometry와 prediction freshness는 통과했지만 grasp evidence와 latency evidence hard gate는 실패했다.</td></tr>
+<tr><td>Independent playback validation</td><td>301/301 valid</td><td>Saved sampled command의 HPP-FCL/contact 검증이다. Isaac physics execution이나 hardware authority는 아니다.</td></tr>
+<tr><td>Wall-clock Viser capture</td><td>1920×1080, 12 s, 180/180 unique, RTF 0.986349</td><td>Actual-time presentation 재생을 증명한다. Online planner latency를 증명하지 않는다.</td></tr>
+</table>
+
+<h2>실시간성에 대한 냉정한 판정</h2>
+<p>이번 reference run의 coarse search는 116.497초, 한 candidate의 full-frame refinement는 80.556초였다. 합계 약 197.053초이므로 현재 planner를 camera observation 뒤 online으로 실행하는 것은 불가능하다. 영상이 1×로 움직인다는 사실은 저장된 command의 시간축이 실제 시간과 맞다는 뜻이지, command가 deadline 안에 생성됐다는 뜻이 아니다.</p>
+<p>실시간 inference는 이번 결과를 runtime 알고리즘으로 최적화하는 방식이 아니라 역할을 다시 배치해야 한다. BODex generation, intrinsic grasp validation, broad IK/collision search와 yaw/horizon path-family compilation은 offline에서 수행한다. Startup은 source와 resident catalog를 검증하고, online hot path는 fresh fused track, bounded catalog query, 한 번의 fixed-budget correction, cuRobo exact-command collision gate와 controller handoff만 수행해야 한다. HPP-FCL은 offline exact-mesh oracle로 남기고, cuRobo는 같은 command에 대해 false negative 0 parity와 measured p99 deadline을 통과한 경우에만 online authority가 된다.</p>
+
+<h2>아직 증명되지 않은 것</h2>
+<ul>
+<li>Intrinsic grasp protocol은 provisional이고 upside-down stable pose는 측정 승인되지 않았다. 따라서 <code>grasp_evidence_valid=false</code>다.</li>
+<li>Pipeline latency p95 evidence가 없어 <code>latency_evidence_valid=false</code>이며 <code>selected_execution_candidate=null</code>이다.</li>
+<li>별도 D1 영상의 Isaac RGB-D/FoundPose perception이 이번 D2 request를 causal하게 생성하지 않았다.</li>
+<li>Hand closure dynamics, attachment/contact force, controller tracking, release와 bin containment을 Isaac articulation이나 hardware에서 검증하지 않았다.</li>
+<li>301-frame sampled check는 continuous swept collision certificate가 아니다.</li>
+</ul>
+
+<h2>다음 절차</h2>
+<ol>
+<li>이번 selected diagnostic을 complete arm-hand command와 lifecycle로 materialize하고 dynamics/contact schedule gate를 통과시킨다.</li>
+<li>같은 command를 HPP-FCL exact mesh와 cuRobo representation에 입력해 dynamic object parity false negative 0을 만든 뒤 resident CUDA hot-path p95/p99를 측정한다.</li>
+<li>Isaac D1 fused generation이 bounded selection request를 실제로 발행하고, accepted command가 simulated controller, contact, attachment와 drop을 수행하는 D1→D2→D3 한 trial을 만든다.</li>
+<li>Color-coded stage state와 generation ID를 simulation 화면과 immutable trace에 함께 기록해 perception, planning, validation, control 전환을 causal하게 대조한다.</li>
+<li>Measured latency, approved grasp/stable-pose evidence와 simulation contact gate가 모두 닫히기 전에는 execution success 영상으로 부르지 않는다.</li>
+</ol>
+
+<p>구현은 <a href="https://github.com/gohyunsu/beltbench/commit/6aa2544"><code>beltbench@6aa2544</code></a>, <a href="https://github.com/gohyunsu/beltbench/commit/a8dd14b"><code>beltbench@a8dd14b</code></a>, <a href="https://github.com/gohyunsu/beltbench/commit/ac4d9d7"><code>beltbench@ac4d9d7</code></a>에 단계별로 push했다. Private 영상과 원본 evidence는 public devlog에 복사하지 않는다.</p>
+<p><a href="dynamic-collision-source-closure-and-current-state-reel.html">ISSUE-077 source closure</a> · <a href="wall-clock-viser-capture-and-planning-boundary.html">ISSUE-076 Viser capture</a> · <a href="d1-authority-presentation-boundary.html">ISSUE-075 D1 perception</a> · <a href="curobo-dynamic-collision-qualification.html">ISSUE-067 dynamic cuRobo gate</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
