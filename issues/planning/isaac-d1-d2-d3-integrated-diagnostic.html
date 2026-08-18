@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Isaac D1-D2-D3 통합 진단 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-080 · 2026-08-18 · Isaac D1-D2-D3 integrated diagnostic</div>
+<h1>실제 Isaac RGB-D 측정부터 command 선택과 계획 상태 재생까지 한 시간축으로 연결한다.</h1>
+<p class="lede">RTX 3090의 Isaac 4.5에서 두 camera RGB-D와 instance mask를 읽고, FoundPose yaw와 CAD translation, encoder propagation으로 Pepsi Light의 planar track을 만들었다. 이 exact track이 301-frame guarded command를 선택하고 xArm6와 Inspire Left의 planned state를 미래 시각부터 재생해 bin 위 release까지 도달했다. 12초 control RTF는 0.9996, wall-lateness p95는 20.0 ms였고 교수용 720p 영상과 source-closed report를 확보했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> <code>professor_video_ready=true</code>인 actual-time 통합 진단이다. D1 perception은 실제 simulator sensor 출력으로 구동됐고 D2 command 선택도 그 exact track을 사용했다. 그러나 D2 충돌 근거는 301개 discrete HPP-FCL sample이며 D3는 controller나 dynamics가 아닌 planned-state playback이다. 따라서 <code>execution_authorized=false</code>, <code>swept_collision_authorized=false</code>를 유지하며 real-time grasp execution 성공으로 부르지 않는다.</div>
+
+<video controls preload="metadata" style="display:block;width:100%;max-width:1280px;background:#111" src="../../assets/videos/isaac-d1-d2-d3-r16.mp4"></video>
+<p class="kicker">1280×720 · 15 fps · 179 frame · 11.934초 · SHA-256 <code>889dc0e7ccd755efc273de4735be3ae50cb6470387dc982fadcf79adc34caca1</code></p>
+
+<h2>검증한 모듈 경계</h2>
+<table class="table">
+<tr><th>단계</th><th>실제로 실행한 것</th><th>권한 경계</th></tr>
+<tr><td>D1 · perception</td><td>Isaac 두 camera의 RGB-D·instance mask, one-shot FoundPose yaw, translation-only CAD correction, 60 Hz encoder prediction</td><td>Simulator truth pose는 evaluator에만 사용했다. Physical camera 보정과 latency는 아직 없다.</td></tr>
+<tr><td>D2 · selection</td><td>Object·stable pose·calibration·encoder ancestry·freshness·speed·lateral·yaw·covariance·future-start lead를 검사해 source-closed command 하나를 선택</td><td>Online grasp generation이나 global planning이 아니다. Sampled collision-valid command catalog의 최소 진단이다.</td></tr>
+<tr><td>D3 · playback</td><td>선택된 301-frame arm·hand·object planned state를 Isaac articulation과 object prim에 적용</td><td>Controller tracking, dynamics, contact force, attachment, release physics를 측정하지 않았다.</td></tr>
+<tr><td>Presentation</td><td>Overview, 두 sensor RGB/depth/mask, 색상 stage history와 authority 문구를 별도 worker가 encode</td><td>180 tick 중 179 frame encode, 1 drop. Presentation은 control path 밖이다.</td></tr>
+</table>
+
+<h2>문제와 영향</h2>
+<ul>
+<li>초기 물체를 belt 중앙이 아니라 upstream edge <code>x=-0.5 m</code>에서 시작하자 후반부 camera 관측범위를 벗어난 RGB-D가 registration failure로 누적됐다. 실제 알고리즘 거부와 관측 불가를 섞으면 D1 health 판정이 잘못된다.</li>
+<li>Tracking correction이 매번 partial silhouette의 depth bounds로 초기화됐다. 이미 encoder-seeded track이 있는데 이를 버리면서 correspondence 탐색 max가 약 40 ms까지 늘고 25 ms deadline을 세 번 넘었다.</li>
+<li>FoundPose one-shot yaw는 같은 장면에서도 run별 변동을 보였다. 12-yaw qualification의 최대 오차는 0.1018 rad였지만 <code>r13</code>은 0.1415 rad까지 벗어났다. 한 favorable run은 반복 강건성을 증명하지 않는다.</li>
+<li>D2 query가 immutable 301-frame playback 전체를 physics tick마다 다시 validate해 평균 약 16.4 ms를 썼다. 여섯 번의 연속 query가 wall-time backlog를 만들어 p95 lateness 121 ms로 presentation을 실패시켰다.</li>
+<li>cuRobo native swept-world API는 매우 빨랐지만 adversarial intermediate collision을 cuboid, mesh, ESDF 모두에서 놓쳤다. 이를 continuous collision authority로 승격하면 false accept가 발생한다.</li>
+</ul>
+
+<h2>해결 절차</h2>
+<ol>
+<li><strong>Source-closed command:</strong> guarded <code>pregrasp → close_above_object</code>, exact first contact, attachment, bin-clear transfer와 release가 301/301 discrete HPP-FCL frame을 통과한 playback·validation·audit 세 파일을 startup에서 함께 검증했다.</li>
+<li><strong>Observation semantics:</strong> 입력 point 또는 correspondence가 부족한 RGB-D는 <code>ModelRegistrationObservationUnavailable</code>로 분리했다. 횟수와 원인은 report에 남기되 geometry·quality·encoder disagreement는 계속 fail-closed했다. Unavailable 처리 시간도 deadline 통계에서 빼지 않았다.</li>
+<li><strong>Encoder-seeded correction:</strong> Acquisition만 depth bounds seed를 사용하고, tracking correction은 exact measurement-time conveyor state에 대한 encoder prediction으로 CAD fit을 시작했다. Partial-view outlier가 사라지고 correction max가 40.3 ms에서 19.3 ms로 줄었다.</li>
+<li><strong>Command-bound authority:</strong> Broad D1 yaw 기준 0.12 rad와 command가 허용하는 0.08 rad를 혼용하지 않았다. <code>r15</code>부터 authority도 0.08 rad를 적용해 D1은 통과하지만 D2가 거부하는 영상을 배제했다.</li>
+<li><strong>Startup/runtime 분리:</strong> Playback, source digest, 301-frame collision, guarded audit는 <code>PrevalidatedCommandSelector</code> 생성 시 한 번만 검사했다. Live track query는 O(1) identity·freshness·residual·uncertainty·lead 검사만 수행했다.</li>
+<li><strong>Staged presentation:</strong> Preflight, authority, presentation을 분리하고 presentation이 prior authority report와 모든 source hash를 다시 확인하게 했다. Diagnostic 입력 네 개는 all-or-none이며 authority 단계에는 전달할 수 없다.</li>
+</ol>
+
+<h2>실패 연대기</h2>
+<table class="table">
+<tr><th>Run/수정</th><th>관찰</th><th>원인·조치·결과</th></tr>
+<tr><td><code>r11</code></td><td>D1 acquisition 0.838 s, 위치·yaw 오차는 통과했지만 correction failure 75, deadline miss 3.</td><td>12초 후반 out-of-view frame도 failure로 계산했다. 관측 불가와 실제 registration rejection을 분리했다.</td></tr>
+<tr><td><code>r12</code></td><td>실제 failure는 1로 줄고 unavailable 74가 별도 기록됐지만 deadline miss 3은 유지.</td><td>Semantics 문제와 계산 병목이 별개임을 확인했다. Tracking correction seed를 조사했다.</td></tr>
+<tr><td><code>r13</code></td><td>CAD p95 14.1 ms, max 19.6 ms, deadline miss 0. 그러나 yaw 오차 0.1415 rad로 fail.</td><td>Encoder prediction을 seed로 쓰는 수정은 유효했다. 동시에 upstream viewpoint의 one-shot FoundPose 변동이 드러났다.</td></tr>
+<tr><td><code>r14</code></td><td>D1의 0.12 rad 기준은 통과했지만 yaw residual 0.0966 rad.</td><td>D2 policy 0.08 rad에는 부적합하므로 presentation authority로 사용하지 않았다. 다음 manifest부터 두 기준을 맞췄다.</td></tr>
+<tr><td><code>r15</code> authority</td><td>Yaw residual 0.00185 rad, CAD deadline miss 0, control RTF 0.9999로 통과.</td><td>Exact D2-compatible authority를 확보했다.</td></tr>
+<tr><td><code>r15</code> presentation</td><td>D1-D2-D3는 연결됐지만 D2 query p95 16.46 ms, wall-lateness p95 121.1 ms로 fail.</td><td>매 query의 <code>playback.validate()</code>가 301 frame을 순회했다. Immutable evidence validation을 startup selector로 옮겼다.</td></tr>
+<tr><td><code>r16</code></td><td>D2 query p95 0.087 ms, wall-lateness p95 20.0 ms, control RTF 0.9996, presentation RTF 0.961로 전 항목 통과.</td><td>Source revision <code>4fcc827</code>의 authority·trace·video hash를 독립 loader로 재검증했다.</td></tr>
+<tr><td><code>curobo swept v1</code></td><td>짧은 interval에서 intermediate obstacle을 검출한 것처럼 보였다.</td><td>Adversarial sample 사이가 충분히 벌어지지 않은 잘못된 probe였다. 결과를 폐기했다.</td></tr>
+<tr><td><code>curobo swept v2</code></td><td>Cuboid p99 0.198 ms, mesh 0.203 ms, ESDF 0.205 ms였지만 세 representation 모두 intermediate obstacle cost가 collision threshold를 넘지 못했다.</td><td>속도만으로 authority를 부여하지 않았다. Self/world/dynamic/attached scope를 분리하고 online swept gate를 계속 차단했다.</td></tr>
+</table>
+
+<h2>최종 측정</h2>
+<table class="table">
+<tr><th>항목</th><th>r16 결과</th><th>해석</th></tr>
+<tr><td>FoundPose/CAD acquisition</td><td>0.7596 s</td><td>Upstream spatial deadline 안의 one-shot acquisition이다. Steady update deadline과 같은 수치로 해석하지 않는다.</td></tr>
+<tr><td>Track error</td><td>Position max 10.15 mm, yaw max 0.02076 rad</td><td>Simulator truth는 평가에만 사용했고 D2 입력에는 들어가지 않았다.</td></tr>
+<tr><td>CAD correction</td><td>p95 12.85 ms, max 18.42 ms, deadline miss 0</td><td>15 Hz update의 25 ms 내부 deadline을 통과했다.</td></tr>
+<tr><td>D2 selector</td><td>8 query, mean 0.081 ms, p95 0.087 ms, max 0.089 ms</td><td>Source audit가 아니라 startup-validated live query 시간이다.</td></tr>
+<tr><td>Future start</td><td>Decision 후 0.369 s, contact는 playback start 후 4.4 s</td><td>Command start lead 0.25 s minimum을 통과했다.</td></tr>
+<tr><td>Control timing</td><td>RTF 0.9996, wall-lateness p95 20.0 ms, max 46.1 ms</td><td>한 run의 soft real-time evidence이며 hard deadline 보장은 아니다.</td></tr>
+<tr><td>Presentation</td><td>RTF 0.961, 179 encoded / 180 scheduled, error 0</td><td>1 frame drop은 declared allowance 안이며 control path를 지연시키지 않는다.</td></tr>
+</table>
+
+<h2>회귀 검증</h2>
+<p>Local 전체 suite는 1,060개를 558.897초에 실행했다. Assertion failure는 없고 skip 18개, WSL에 Linux <code>memfd</code>가 없어 발생한 FoundPose worker 오류 3개만 남았다. 같은 3개를 RTX Linux 서버에서 다시 실행해 3/3 통과했다. Integrated source 관련 focused suite는 서버에서 25/25 통과했다.</p>
+
+<h2>아직 증명되지 않은 것과 다음 단계</h2>
+<ul>
+<li>One-shot FoundPose는 <code>r13</code> outlier를 냈다. Upstream position을 포함한 반복 yaw qualification, deterministic inference 조건, no-pick 비율을 먼저 측정해야 한다.</li>
+<li>현재 D2는 command 하나를 고르는 진단이다. 여러 grasp/context/path-family 후보의 bounded resident maximin 선택과 command-change/final-commit collision gate가 아직 없다.</li>
+<li>cuRobo native finite sweep는 formal adversarial probe에 실패했다. Representation parity와 false-negative 0인 별도 complete-command gate가 생기기 전에는 online collision authority를 부여할 수 없다.</li>
+<li>D3를 Isaac ArticulationController 또는 동일한 controller contract에 연결해 commanded state와 measured state, contact, attachment, release, bin containment을 비교해야 한다.</li>
+<li>Physical camera와 conveyor encoder adapter는 같은 timestamped contract로 추가하되, simulator time이나 truth pose를 재사용하면 안 된다.</li>
+</ul>
+
+<p>주요 구현은 <a href="https://github.com/gohyunsu/beltbench/commit/d57b454"><code>d57b454</code></a>, <a href="https://github.com/gohyunsu/beltbench/commit/de41fed"><code>de41fed</code></a>, <a href="https://github.com/gohyunsu/beltbench/commit/8b9c357"><code>8b9c357</code></a>, <a href="https://github.com/gohyunsu/beltbench/commit/5c589be"><code>5c589be</code></a>, <a href="https://github.com/gohyunsu/beltbench/commit/4fcc827"><code>4fcc827</code></a>, <a href="https://github.com/gohyunsu/beltbench/commit/9a0160e"><code>9a0160e</code></a>에 단계별로 push했다. Presentation report 파일 SHA-256은 <code>4f6ec9e006abe5c68fbaefe316c688f50e716524145f0b9d6cd1ab3c928137b0</code>이다.</p>
+<p><a href="nonpenetrating-guarded-approach-source-closure.html">ISSUE-079 guarded source closure</a> · <a href="d1-authority-presentation-boundary.html">ISSUE-075 authority/presentation</a> · <a href="curobo-realtime-collision-audit.html">ISSUE-040 cuRobo audit</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
