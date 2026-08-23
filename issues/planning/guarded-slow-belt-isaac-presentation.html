@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Guarded slow-belt Isaac presentation · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-081 · 2026-08-24 · guarded slow-belt Isaac presentation</div>
+<h1>비침투 guarded grasp를 실제 Isaac sensor 시간축에 연결하고, 실패한 run까지 보존한다.</h1>
+<p class="lede">Pepsi Light를 뒤집어 놓고 0.04 m/s로 이동시키는 조건에서, 두 Isaac RGB-D camera의 FoundPose/CAD perception과 60 Hz encoder prediction이 source-closed xArm6·Inspire Left command를 선택하도록 연결했다. 선택된 command는 pregrasp부터 물체 위 close pose까지 침투하지 않고 접근하며, 계획 상태로 grasp·이송·bin drop을 재생한다. 최종 r38은 19초 동안 control RTF 0.9995, presentation RTF 0.9748, 285/285 frame으로 통과했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> <code>professor_video_ready=true</code>인 actual-sensor 통합 진단이다. D1 perception과 D2 exact-track 선택은 실제로 실행됐지만 D3는 <code>planned_state_playback</code>이다. <code>execution_authorized=false</code>와 <code>swept_collision_authorized=false</code>이므로 controller·동역학·접촉·hardware grasp 성공으로 해석하지 않는다.</div>
+
+<video controls preload="metadata" style="display:block;width:100%;max-width:1280px;background:#111" src="../../assets/videos/isaac-guarded-slow-r38.mp4"></video>
+<p class="kicker">1280×720 · 15 fps · 285 frame · 19.000초 · SHA-256 <code>960523e12f936b9599fe3f15a56e385340c196b97de5edb0d2c62cd17ae55569</code></p>
+
+<h2>실제로 연결한 범위</h2>
+<table class="table">
+<tr><th>단계</th><th>실행한 모듈</th><th>권한 경계</th></tr>
+<tr><td>D1 · perception</td><td>Isaac 두 camera RGB-D·instance mask, one-shot FoundPose yaw, translation-only CAD, 60 Hz conveyor encoder prediction</td><td>Object identity와 upside-down stable pose만 사전 지정했다. Simulator truth는 error evaluator에만 사용했다.</td></tr>
+<tr><td>D2 · selection</td><td>Live track의 identity·속도·lateral·yaw·covariance·start lead를 resident guarded profile과 비교</td><td>여러 grasp를 online 생성하거나 global planning하지 않는다. Exact profile 하나의 sampled selection이다.</td></tr>
+<tr><td>D3 · presentation</td><td>xArm6, Inspire Left, 두 connector CAD, Pepsi, conveyor, table, bin의 계획 상태 재생</td><td>Articulation feedback, contact force, attachment physics, swept collision은 측정하지 않았다.</td></tr>
+<tr><td>Offline evidence</td><td>r28 independent HPP-FCL 433/433, guarded precontact 159 frame, source-matched r31 dynamics</td><td>Moving segment의 검증이다. 정지 robot state와 nonzero source derivative 사이의 splice는 아직 없다.</td></tr>
+</table>
+
+<h2>Guarded planning을 다시 닫은 이유</h2>
+<p>기존 command는 close pose와 contact를 같은 의미로 다루거나, 움직이는 물체를 더 오래 따라가면 joint rate가 낮아질 것이라고 가정했다. 실제로는 고정 belt 속도에서 chase 시간을 늘리면 물체도 더 멀리 이동하므로 wrist가 같은 singular 부근을 더 오래 통과했다. 임계값을 완화하지 않고 operating point를 바꾸는 것이 필요했다.</p>
+<ol>
+<li><strong>접촉 상태 분리:</strong> <code>clearance → guarded_proximity → bounded_contact</code>를 명시했다. Pregrasp hand command는 <code>close_above_object</code>까지 유지하고, hand closure는 그 이후 first contact까지 진행한다.</li>
+<li><strong>느린 belt 선택:</strong> 0.08 m/s에서 joint 4·6 dynamics가 실패해 0.04 m/s로 낮췄다. Command는 belt-frame -0.374 m에서 시작해 9.4초에 +0.002 m에서 attach한다.</li>
+<li><strong>독립 충돌 검증:</strong> r28은 433/433 playback frame을 HPP-FCL로 통과했다. Guarded 159 frame에서 nominal collision, penetration, early reported contact는 모두 0이었다.</li>
+<li><strong>Source-matched dynamics:</strong> r31은 dense source knot와 첫 q/qd/qdd를 보존했다. Joint 4·6 최대 속도는 0.5532/0.5604 rad/s, jerk는 3.2612/3.3045 rad/s³로 통과했다.</li>
+</ol>
+
+<h2>실시간 병목과 수정</h2>
+<ul>
+<li>CAD registration은 최대 2,048점 정책이 있었지만 전체 mask pixel을 먼저 backproject하고 transform한 뒤 점을 줄였다. 같은 row-major <code>np.linspace</code> 선택을 backprojection 앞으로 옮겨 결과를 바꾸지 않고 계산량을 제한했다.</li>
+<li>FoundPose가 GPU를 소유하는 동안 Isaac sensor render를 멈춘다. 재개 직후 첫 frame은 CAD/encoder disagreement와 약 29~36 ms tail을 반복했다.</li>
+<li>추가 render-only priming은 두 camera annotator를 비동기 generation으로 만들어 r34의 synchronization drop과 66.7 ms stale age를 유발했다. 이 가설은 폐기했다.</li>
+<li>최종 구현은 acquisition 종료 뒤 첫 <em>완전한 synchronized generation</em> 하나를 control mailbox에서만 flush한다. Transport health에는 처리된 frame으로 남고, flush generation도 report에 별도 기록된다.</li>
+<li>영상 라벨은 FoundPose GPU hold와 simulated contact playback hold를 구분한다. 실제 camera가 멈춘다는 의미가 아니며, Isaac single-GPU scheduling만 표현한다.</li>
+</ul>
+
+<h2>실패 연대기</h2>
+<table class="table">
+<tr><th>Run</th><th>직접 관찰</th><th>판정과 조치</th></tr>
+<tr><td><code>r20-r26</code></td><td>Collision은 닫혔지만 joint 4·6 속도·가속도·jerk가 반복 실패했다.</td><td>더 긴 chase가 해결책이라는 가정을 폐기하고 belt 속도와 wrist operating point를 바꿨다.</td></tr>
+<tr><td><code>r27</code></td><td>-0.84 m start에서 Pepsi가 두 camera warmup 모두 보이지 않았다.</td><td>Camera 밖의 긴 lead를 만들지 않고, -0.5 m perception start와 -0.374 m command start를 분리했다.</td></tr>
+<tr><td><code>r28/r31</code></td><td>433/433 collision과 source dynamics가 모두 통과했다.</td><td>0.04 m/s guarded profile을 첫 통합 diagnostic 입력으로 고정했다.</td></tr>
+<tr><td><code>r29/r30/r32</code></td><td>CAD correction max 33.25~35.86 ms가 매번 한 번 발생했다. r30 yaw도 0.1128 rad로 실패했다.</td><td>Threshold를 늘리지 않고 point-work와 첫 post-acquisition generation을 조사했다.</td></tr>
+<tr><td><code>r33</code></td><td>조기 point bound로 CAD 평균은 8.79 ms가 됐지만 generation 208이 28.65 ms로 실패했다.</td><td>일반 tracking이 아니라 acquisition transition defect임을 generation evidence로 확인했다.</td></tr>
+<tr><td><code>r34</code></td><td>Render-only priming 1회가 synchronization drop과 stale measurement를 만들었고 CAD miss도 남았다.</td><td>잘못된 priming을 제거하고 synchronized-generation flush 상태기로 교체했다.</td></tr>
+<tr><td><code>r35</code></td><td>Authority는 CAD max 17.56 ms, miss 0으로 통과했지만 presentation yaw가 0.1514 rad 틀렸다.</td><td>실패 영상을 게시하지 않았다. One-shot FoundPose repeatability 문제로 기록했다.</td></tr>
+<tr><td><code>r36</code></td><td>Authority yaw error 0.1256 rad로 실패했다.</td><td>0.08 rad command gate를 유지했다. 유리한 yaw로 보정하거나 profile을 넓히지 않았다.</td></tr>
+<tr><td><code>r37</code></td><td>전체 gate와 영상은 통과했지만 contact 이후 sensor hold 이유가 FoundPose로 잘못 표시됐다.</td><td>Causal overlay를 상태 기반 순수 함수로 분리하고 영상을 다시 생성했다.</td></tr>
+<tr><td><code>r38</code></td><td>Authority와 presentation, command select·active·contact, video accounting이 모두 통과했다.</td><td>현재 교수용 diagnostic artifact로 채택했다.</td></tr>
+</table>
+
+<h2>r38 측정 결과</h2>
+<table class="table">
+<tr><th>항목</th><th>결과</th><th>해석</th></tr>
+<tr><td>Acquisition</td><td>0.864279 s, yaw error 0.044631 rad</td><td>0.9초 yaw deadline과 0.08 rad command cell 안이다. 반복 강건성은 아니다.</td></tr>
+<tr><td>CAD tracking</td><td>169 success, failure 0, p95 13.729 ms, max 17.407 ms</td><td>25 ms deadline miss 0. Position error max는 5.631 mm다.</td></tr>
+<tr><td>Sensor ingress</td><td>172 source, 171 processed, synchronization drop 1, explicit flush 1</td><td>Ingress failure code는 0이다. Flush와 camera synchronization drop을 같은 사건으로 숨기지 않는다.</td></tr>
+<tr><td>D2 query</td><td>6회, max 0.196 ms</td><td>Generation 6에서 선택했다. 첫 다섯 query는 uncertainty가 충분히 줄지 않아 거부됐다.</td></tr>
+<tr><td>Command clock</td><td>start 4.754709 s, contact 13.854709 s</td><td>948 physics step active, 402 step이 declared contact phase다.</td></tr>
+<tr><td>Control</td><td>RTF 0.999522, wall-lateness p95 33.169 ms</td><td>한 RTX 3090 soft real-time run이며 hard real-time 보장은 아니다.</td></tr>
+<tr><td>Presentation</td><td>RTF 0.974837, 285/285 encoded, drop/error 0</td><td>Video encode는 별도 worker이며 control timing과 분리했다.</td></tr>
+</table>
+
+<h2>검증과 source</h2>
+<p>Perception·tracking·staged-run·overlay 관련 local 회귀는 68개 중 66개가 통과했고, 현재 WSL 환경에서 OpenCV process 실행 조건이 없는 2개만 skip됐다. Guarded timing/search 관련 회귀 93개도 통과했다. Server에서는 r38 authority report와 presentation report, MP4를 각각 닫고 해시를 재검증했다.</p>
+<p>핵심 source는 <a href="https://github.com/gohyunsu/beltbench/commit/cc0eda3"><code>cc0eda3</code></a> slow-belt operating point, <a href="https://github.com/gohyunsu/beltbench/commit/87f5900"><code>87f5900</code></a> bounded backprojection, <a href="https://github.com/gohyunsu/beltbench/commit/d4091af"><code>d4091af</code></a> synchronized-generation flush, <a href="https://github.com/gohyunsu/beltbench/commit/ecd7f0c"><code>ecd7f0c</code></a> causal overlay에 단계별로 push했다. Authority report 파일 SHA-256은 <code>0ea658fcaa05dec3611b33ae30776e8f726ee4768b55ef7cc0e20b6bef818994</code>, presentation report 파일 SHA-256은 <code>93549828b3d35807c4c555532cc5b47eb8283ab194da57c62b673f3cfda4ca58</code>다.</p>
+
+<h2>남은 blocker</h2>
+<ul>
+<li>r35·r36이 보여준 one-shot FoundPose outlier 때문에 upstream 위치별 반복 qualification과 시간적으로 독립된 yaw reacquisition이 필요하다. 성공한 r38 하나로 no-pick 비율을 숨기지 않는다.</li>
+<li>r31 moving segment의 첫 joint derivative가 0이 아니다. Measured stationary state에서 이 경계로 이어지는 position·velocity·acceleration 연속 splice가 필요하다.</li>
+<li>HPP-FCL은 433개 sampled frame을 닫았지만 swept collision authority는 아니다. Exact remaining command의 검증된 cuRobo gate와 adversarial false-negative 시험이 남았다.</li>
+<li>다음 Isaac 단계는 planned-state teleport가 아니라 articulation target, measured joint feedback, contact, attachment, release와 bin containment를 기록하는 D3a/D3b다.</li>
+</ul>
+
+<p><a href="isaac-d1-d2-d3-integrated-diagnostic.html">ISSUE-080 D1-D2-D3 diagnostic</a> · <a href="nonpenetrating-guarded-approach-source-closure.html">ISSUE-079 guarded source closure</a> · <a href="curobo-realtime-collision-audit.html">ISSUE-040 cuRobo audit</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
