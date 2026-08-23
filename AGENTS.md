@@ -58,6 +58,9 @@ not measured. State the verification boundary directly.
 - Validate the local site before pushing to the public remote.
 - Add each new issue to `issues/index.html`; add only current, high-value work to
   the homepage. Check links and serve the site locally before publishing.
+- Never promote a generated video when its source report has
+  `professor_video_ready=false`. Label it as rejected diagnostic evidence,
+  preserve the accepted baseline, and record every failed rerun in order.
 - Update an existing issue rather than creating a success-only duplicate. Append
   dated verification notes so that regressions and superseded conclusions remain
   traceable.

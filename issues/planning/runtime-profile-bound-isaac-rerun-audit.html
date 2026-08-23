@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Runtime profile 결속과 Isaac 재검증 감사 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-084 · 2026-08-24 · runtime-profile-bound Isaac rerun audit</div>
+<h1>14단계 runtime profile을 실제 Isaac evidence에 결속하고 실패 run을 그대로 감사한다.</h1>
+<p class="lede">통합 영상에 단계 이름만 표시하는 대신, pipeline profile의 identity·deadline·실행 상태를 staged manifest와 report에 source-closed하게 결속했다. RTX 3090에서 실제 Isaac RGB-D, FoundPose, CAD translation tracking, exact command selection과 PhysX articulation servo를 다시 실행했다. 새 영상은 생성됐지만 acceptance를 통과하지 못했으므로 검증 완료 자료로 승격하지 않는다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> 구현 revision <a href="https://github.com/gohyunsu/beltbench/commit/af6ca65687e35b182715370f87bd2235fe368147"><code>af6ca65</code></a>에서 profile binding과 fail-closed stage evidence는 검증됐다. 그러나 <code>r78</code>은 provisional D3a feedback gate를 넘었고 <code>professor_video_ready=false</code>다. 교수님께 제시할 accepted 기준선은 계속 <a href="nonpenetrating-four-state-triggered-isaac-servo.html"><code>r72</code></a>이며, 아래 <code>r78</code> 영상은 실패 원인을 재현하는 진단 자료다.</div>
+
+<video controls preload="metadata" style="display:block;width:100%;max-width:1280px;background:#111" src="../../assets/videos/isaac-profile-bound-r78-rejected-feedback.mp4"></video>
+<p class="kicker"><strong>REJECTED DIAGNOSTIC</strong> · 1280×720 · 15 fps · 285 frame · 19.000초 · SHA-256 <code>8b02dcb87f63bedc52ca6e12eb3af20dd83da300c219ceef5b65e3ca129c3924</code></p>
+
+<h2>무엇을 바꿨는가</h2>
+<table class="table">
+<tr><th>경계</th><th>변경</th><th>효과</th></tr>
+<tr><td>Canonical contract</td><td><code>RuntimeStageExecutionEvidence</code>와 <code>RealtimePipelineExecutionEvidence</code>가 profile ID·digest, status, sample, p95/max, miss count를 검증한다.</td><td>파생값이나 deadline 일관성이 깨지면 report 생성 단계에서 실패한다.</td></tr>
+<tr><td>D1 adapter</td><td>실제 runner timing을 14개 canonical stage에 mapping한다.</td><td>측정하지 않은 단계를 0 ms로 기록하지 않고 <code>executed_unmeasured</code> 또는 <code>not_executed</code>로 남긴다.</td></tr>
+<tr><td>Staged source closure</td><td>Manifest가 runtime profile 경로를 필수로 받고 profile ID·canonical digest·파일 hash를 authority와 presentation에 전달한다.</td><td>다른 profile이나 stale source의 report splice를 거부한다.</td></tr>
+<tr><td>권한 경계</td><td>Direct position target은 <code>controller_handoff</code>로, 화면의 phase는 <code>lifecycle_monitor</code>로 세지 않는다.</td><td>실행된 것처럼 보이는 시각화가 command lease·contact lifecycle 권한을 만들지 못한다.</td></tr>
+</table>
+<p>Canonical profile digest는 <code>d22f0228caf96b70efd3e8cfc31a40dc44c800fb06d7f3aa5538d6c0c10bfb15</code>, 입력 파일 hash는 <code>2db3b0134a1f9ddc7046a47fc7d211173c84bc8dcf4bd6570a4b6ade8536a965</code>다. 둘은 의미가 다르므로 하나로 대체하지 않는다.</p>
+
+<h2>실제로 실행된 단계</h2>
+<table class="table">
+<tr><th>상태</th><th>단계</th><th>r78 관찰</th></tr>
+<tr><td><code>measured</code> 7개</td><td>sensor ingress, yaw acquisition, translation observation, motion prediction, resident decision, controller feedback, evidence publisher</td><td>Sensor 166 sample, tracking 573 sample, decision 7 query, feedback 1,140 sample, publisher 285 sample이다.</td></tr>
+<tr><td><code>executed_unmeasured</code> 3개</td><td>acquisition gate, encoder ingress, state estimation</td><td>연산은 수행됐지만 adapter별 wall interval을 분리하지 못했다. Deadline pass를 주장하지 않는다.</td></tr>
+<tr><td><code>not_executed</code> 4개</td><td>correction envelope, cuRobo command gate, controller handoff, lifecycle monitor</td><td>Offline-prevalidated command를 direct position target으로 보냈고 object contact lifecycle은 측정하지 않았다.</td></tr>
+</table>
+<p><code>r78</code>의 sensor p95는 <code>5.154 ms</code>, translation/CAD p95는 <code>14.812 ms</code>, prediction p95는 <code>0.268 ms</code>, selection p95는 <code>0.159 ms</code>였다. 반면 FoundPose acquisition은 <code>813.375 ms</code>로 profile의 800 ms 한도를 한 번 넘었다. Presentation publisher는 frame 조립·copy·비동기 submit을 함께 측정해 p95 <code>3.802 ms</code>였고 0.5 ms 한도를 285/285회 넘었다. 이 두 실패는 비권위 단계라 기존 D1 acceptance boolean을 직접 뒤집지는 않았지만, complete soft-real-time pipeline이 아님을 명시한다.</p>
+
+<h2>재검증 연대기</h2>
+<table class="table">
+<tr><th>Run</th><th>직접 증거</th><th>판정과 조치</th></tr>
+<tr><td><code>r74</code></td><td>Track yaw error <code>0.09223 rad</code> &gt; <code>0.08 rad</code></td><td>Authority에서 거부했다. 반복 실행으로 결과를 덮지 않고 run을 보존했다.</td></tr>
+<tr><td><code>r75</code></td><td>Authority는 통과했으나 stationary-moving source lineage가 <code>995a349</code>와 <code>af6ca65</code>로 달랐다.</td><td>Presentation source closure가 올바르게 거부했다. 과거 command의 revision label을 고치지 않고 현재 source에서 다시 생성했다.</td></tr>
+<tr><td><code>r76</code></td><td>201 waypoint command, 271-frame playback, HPP-FCL <code>271/271</code>, guarded 115 frame 최소 거리 <code>4.151195 mm</code></td><td>현재 revision에 결속된 splice를 재생성했다. Independent validation과 guarded audit hash는 <code>e4f955ec…</code>, <code>507bd208…</code>다.</td></tr>
+<tr><td><code>r77</code></td><td>285/285 영상은 생성됐지만 wall lateness p95 <code>118.29 ms</code> &gt; <code>100 ms</code></td><td>Rejected. GPU 계산 성공과 end-to-end wall deadline을 분리했다.</td></tr>
+<tr><td><code>r78</code></td><td>Control RTF <code>0.999762</code>, wall p95/max <code>38.86/61.10 ms</code>, presentation RTF <code>0.975095</code>, 285/285 frame</td><td>Wall/video gate는 통과했으나 feedback max <code>3.149 ms</code> &gt; provisional adapter gate <code>2 ms</code>로 rejected.</td></tr>
+<tr><td><code>r79</code></td><td>Wall p95 <code>112.08 ms</code>, feedback max <code>3.158 ms</code></td><td>두 gate가 함께 실패했다. 성공 run이 나올 때까지 무제한 재시도하지 않고 변동성을 blocker로 확정했다.</td></tr>
+</table>
+<p><code>r78</code>의 canonical controller-feedback deadline은 4 ms여서 stage evidence 자체는 통과하지만, D3a adapter policy는 2 ms라 전체 report는 실패한다. 어느 쪽이 맞는지 측정된 controller 주기와 stop budget으로 결정해야 하며, 편의를 위해 느슨한 4 ms만 채택하지 않는다.</p>
+
+<h2>테스트와 재현성</h2>
+<p>Runtime profile 계약·adapter·staged binding에 대한 focused suite는 <code>34 passed</code>다. Planning environment 전체 회귀는 <code>1,090 passed, 18 skipped</code>였고, 해당 Python이 <code>os.memfd_create</code>를 제공하지 않아 실패한 FoundPose worker 3개는 별도 <code>bodex</code> environment에서 모두 통과했다. 즉 기능 실패와 host Python capability 차이를 분리해 기록했으며 skip이나 fallback으로 숨기지 않았다.</p>
+<p><code>r76</code> command/playback/report hash는 각각 <code>90b8326d…</code>, <code>614603e7…</code>, <code>b905dc54…</code>다. <code>r78</code> authority report hash는 <code>e413d2c6bb22f69784e4cd39b51cf26a1e0f47ba2368d03cf0153cc9c822f90d</code>, trace hash는 <code>525c8faa1125522f47e72aea9e516d929313a794145d5debc1f3663d25492d44</code>다. 원본 report는 내부 절대 경로와 계정명을 포함하므로 public site에는 복사하지 않았다.</p>
+
+<h2>남은 blocker와 다음 순서</h2>
+<ul>
+<li>FoundPose full-yaw qualification 최대 오차 <code>0.1018 rad</code>가 command gate <code>0.08 rad</code>보다 크고 acquisition latency도 이번 run에서 800 ms를 넘었다. Multi-frame/multi-view acquisition과 no-pick 정책을 함께 재검증한다.</li>
+<li>Publisher 0.5 ms 계약과 현재 frame-build/copy 측정 범위가 맞지 않는다. Critical-loop snapshot 발행과 비동기 영상 조립을 분리한 뒤 각각 deadline을 다시 정의한다.</li>
+<li>Feedback 2 ms/4 ms 불일치는 실제 controller clock·command lease·stop budget 없이 결정할 수 없다. 현재는 더 엄격한 D3a gate를 유지한다.</li>
+<li><code>correction_envelope</code>, resident cuRobo gate, future-start controller handoff와 measured lifecycle이 아직 없다. 이 네 단계를 구현하기 전 complete real-time inference demo를 주장하지 않는다.</li>
+<li>현재 영상은 rigid-object contact, attachment, slip, release와 bin containment를 측정하지 않는다. Full-task 영상은 release/contact schedule과 simulator dynamics가 같은 source-closed command에서 통과한 뒤 별도 생성한다.</li>
+</ul>
+
+<p><a href="nonpenetrating-four-state-triggered-isaac-servo.html">ISSUE-083 accepted r72 기준선</a> · <a href="realtime-conveyor-architecture.html">ISSUE-022 실시간 구조</a> · <a href="curobo-realtime-collision-audit.html">ISSUE-040 cuRobo audit</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
