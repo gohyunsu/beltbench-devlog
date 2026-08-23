@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Four-state guarded approach와 triggered Isaac servo · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-083 · 2026-08-24 · four-state guarded approach and triggered Isaac servo</div>
+<h1>pregrasp부터 first contact까지 비침투 상태를 분리하고 실제 sensor·selection·servo 시간축에서 검증한다.</h1>
+<p class="lede"><code>pregrasp → close_above_object</code>를 접촉 허용 구간으로 취급하던 모호성을 제거했다. 양의 stand-off를 유지하는 <code>guarded_proximity</code>와 first contact로 수렴하는 <code>nonpenetrating_approach</code>를 별도 상태로 만들고, C2 actual-time command·HPP-FCL·Isaac RGB-D·FoundPose·track selection·PhysX articulation servo를 RTX 3090의 19초 실행에 연결했다. 최종 <code>r72</code>는 285/285 frame과 실제 시간 gate를 통과했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> simulation sensor 기반 D1 perception, exact prevalidated command 선택, source-closed C2 reference와 measured joint position servo는 연결됐다. <code>execution_authorized=false</code>이며 continuous swept collision, contact force, object dynamics, physical attachment, release 성공과 hardware controller 권한은 없다. 영상의 grasp와 drop은 검증된 command reference를 보여주는 diagnostic이다.</div>
+
+<video controls preload="metadata" style="display:block;width:100%;max-width:1280px;background:#111" src="../../assets/videos/isaac-triggered-four-state-r72.mp4"></video>
+<p class="kicker">1280×720 · 15 fps · 285 frame · 19.000초 · SHA-256 <code>154ea788446dc55549917697f58566dd727db6722e9501061058906a4518a353</code></p>
+<img src="../../assets/images/isaac-r72/contact-sheet.png" alt="r72 실제 시간 Isaac perception, selection, guarded approach와 articulation servo 접촉 시트" style="display:block;width:100%;border:1px solid var(--line);border-radius:12px">
+
+<h2>왜 네 상태가 필요한가</h2>
+<table class="table">
+<tr><th>상태</th><th>시간 경계</th><th>검증 규칙</th></tr>
+<tr><td><code>clearance</code></td><td><code>pregrasp</code> 이전</td><td>일반 robot-object clearance와 workcell collision을 검사한다.</td></tr>
+<tr><td><code>guarded_proximity</code></td><td><code>pregrasp</code>부터 정확한 <code>close_above_object</code> keyframe까지</td><td>요구 거리 <code>0.1 mm</code>보다 큰 양의 stand-off, contact geometry 0, colliding pair 0을 강제한다.</td></tr>
+<tr><td><code>nonpenetrating_approach</code></td><td><code>close_above_object</code> 직후부터 first contact 직전까지</td><td>고정 경계 <code>0 m</code>로 first contact에 연속 수렴하되 음의 signed distance와 조기 contact를 거부한다.</td></tr>
+<tr><td><code>bounded_contact</code></td><td>선언된 first contact 이후</td><td>명시한 hand-object contact geometry만 허용한다.</td></tr>
+</table>
+<p>first contact까지 양의 고정 여유를 요구하면서 정확한 접촉점에 연속 도달하는 것은 수학적으로 양립하지 않는다. 임계값을 느슨하게 하거나 마지막 sample만 예외 처리하지 않고, 의미가 다른 stand-off와 contact approach를 상태와 phase 수준에서 분리했다. Hand는 <code>close_above_object</code>까지 pregrasp command를 유지하고 그 이후에만 닫히기 시작한다.</p>
+
+<h2>r71 계획·충돌 결과</h2>
+<table class="table">
+<tr><th>항목</th><th>결과</th><th>해석</th></tr>
+<tr><td>C2 command</td><td>201 waypoint, 9.0초, contact 8.7초, attach 9.0초</td><td>정지 시작에서 moving source로 2.4초 quintic splice하며 position·velocity·acceleration 경계를 유지한다.</td></tr>
+<tr><td>Kinematic limits</td><td>통과; arm 최대 jerk는 joint 5의 <code>6.419 rad/s³</code></td><td>Arm jerk limit <code>10 rad/s³</code>를 완화하지 않았다.</td></tr>
+<tr><td>Full playback</td><td>271/271 HPP-FCL frame valid</td><td>Exact mesh sampled 검증이다. Sample 사이 continuous swept authority는 아니다.</td></tr>
+<tr><td>Guarded proximity</td><td>115 frame, 최소 거리 <code>4.151195 mm</code>, 요구 <code>0.1 mm</code></td><td><code>pregrasp</code>와 <code>close_above_object</code>에서 접촉·침투가 없다.</td></tr>
+<tr><td>Contact approach</td><td>44 frame, 최소 signed distance <code>0.019071 mm</code>, collision/contact 0</td><td>First contact 직전의 작은 양수다. Hardware uncertainty에 대한 robust clearance로 해석하지 않는다.</td></tr>
+</table>
+<p>Guarded audit와 271-frame HPP-FCL report의 SHA-256은 각각 <code>05bf689781158e4a1d8cf97eaf59a6caa5e1947a3e232f70ab95e26141d79ad3</code>, <code>604f5fb8ab91907e8fde1d78316c58251f4cc369307590468dd9eb36a8dd5f13</code>다. 원본은 계정과 내부 절대 경로를 포함하므로 public site에는 복사하지 않았다.</p>
+
+<h2>실패와 해결 연대기</h2>
+<table class="table">
+<tr><th>관찰</th><th>원인</th><th>수정과 결과</th></tr>
+<tr><td><code>r52</code> compile에서 arm joint 4/6 jerk가 <code>445.23/434.98 rad/s³</code>였다.</td><td>접촉 직전 finite-speed profile <code>x²(2-x)</code>가 splice 이후 C2 derivative를 악화시켰다.</td><td><code>10x³-15x⁴+6x⁵</code> minimum-jerk profile로 교체했다. 최종 joint 4/6 jerk는 <code>4.158/3.980 rad/s³</code>다.</td></tr>
+<tr><td><code>guarded_proximity</code>만으로 close와 contact를 함께 표현할 수 없었다.</td><td>양의 고정 clearance와 연속적인 exact first contact가 모순이었다.</td><td><code>guarded_contact_approach</code> phase와 <code>nonpenetrating_approach</code> 상태를 추가하고 고정 0 m penetration boundary를 적용했다.</td></tr>
+<tr><td><code>r54</code>가 새 phase를 해석하지 못했고 shell pipeline은 producer 실패를 숨겼다.</td><td>Canonical phase map 누락과 <code>producer | tee</code>의 마지막 exit code 사용이 겹쳤다.</td><td>새 phase를 close semantic에 명시적으로 매핑하고, unguarded pipe 실행을 금지했다.</td></tr>
+<tr><td><code>r57</code>은 고정 playback time, <code>r58/r61</code>은 이동된 artifact의 상대 asset 경로에서 실패했다.</td><td>Splice가 source의 실제 moving boundary 대신 상수를 사용했고 출력 위치를 바꾸면 robot/object manifest 기준이 깨졌다.</td><td>유일한 source phase·arm·hand moving boundary에서 시간을 유도하고, output 기준으로 asset path를 rebase한 뒤 runtime reproduction에서도 그 경로를 보존했다.</td></tr>
+<tr><td><code>r63/r66</code> servo feedback read가 <code>3.194/12.767 ms</code>로 2 ms gate를 넘었다.</td><td>Arm과 hand joint group마다 PhysX state를 반복 조회했다.</td><td>한 번의 <code>get_joint_positions</code> snapshot에서 arm과 12 hand joint를 분리했다. r72 max feedback read는 <code>0.240 ms</code>다.</td></tr>
+<tr><td><code>r60/r67</code> FoundPose yaw가 각각 <code>0.08072/0.14363 rad</code>로 gate를 넘거나 pass 사이 달라졌다.</td><td>Solver RNG가 실행마다 달랐다.</td><td>Camera별 stable seed로 Python·NumPy·Torch/CUDA·OpenCV RNG를 매 solve 직전에 초기화했다. 같은 capture bundle 3회 재생에서 pose, template와 inlier가 bit-identical했다.</td></tr>
+<tr><td><code>r70</code> authority/presentation acquisition이 <code>1.6000/1.5667 s</code>에서 발생해 yaw가 달라졌다.</td><td>첫 mask-area 통과가 영상 부하와 render schedule에 종속됐다.</td><td>Mask는 validity check로 유지하고, 별도 upstream trigger plane <code>belt x=-0.44 m</code> 이후에만 acquisition event를 연다. Truth pose를 perception 입력으로 사용하지 않는다.</td></tr>
+</table>
+
+<h2>r72 실제 시간 결과</h2>
+<table class="table">
+<tr><th>항목</th><th>Authority</th><th>Presentation</th></tr>
+<tr><td>Trigger / acquisition</td><td>simulation timestamp <code>3.066667 s</code>, generation 259, 0.729초</td><td>같은 timestamp, generation 274, 0.764초</td></tr>
+<tr><td>Pose error</td><td>위치 <code>2.300 mm</code>, yaw <code>0.01505 rad</code></td><td>위치 <code>5.412 mm</code>, yaw <code>0.00238 rad</code></td></tr>
+<tr><td>Sensor / CAD</td><td>CAD correction 183회, failure 0</td><td>167/167 ingress 처리, sync drop 0, deadline miss 0, CAD correction 143회</td></tr>
+<tr><td>Selection</td><td>영상 부하 없이 D1 authority만 측정</td><td>8번째 query에서 exact track 선택; query p95 <code>0.079 ms</code></td></tr>
+<tr><td>Servo</td><td>실행하지 않음</td><td>1,140 sample; arm <code>0.01986 rad</code>, hand <code>0.02271 rad</code>, command <code>0.411 ms</code>, feedback <code>0.240 ms</code></td></tr>
+<tr><td>Real time</td><td>control RTF <code>0.999995</code></td><td>control RTF <code>0.999541</code>, wall lateness p95/max <code>77.92/137.29 ms</code></td></tr>
+<tr><td>Video</td><td>생성하지 않음</td><td>presentation RTF <code>0.974836</code>, 285/285 encoded, drop/error 0</td></tr>
+</table>
+<p>Trigger의 simulation timestamp는 고정됐지만 sensor generation 번호와 최종 yaw가 완전히 같지는 않다. Authority/presentation yaw 차이는 <code>0.01743 rad</code>이며 둘 다 동일한 <code>0.08 rad</code> command gate를 통과했다. 따라서 현재 결과는 deterministic solver와 spatially fixed event를 입증하지만 전체 sensor rendering의 bit-identical replay를 의미하지 않는다.</p>
+<p>FoundPose v9 qualification, authority report와 presentation report의 file SHA-256은 각각 <code>8e3a37d1e592d070ce475e5565b6b9f0dc494ce08860d57aee7fc55433745f77</code>, <code>3e5e8b7b75ca08a5ea516d632f941ce0af27ba55a74341da5828ba0bcd6440ea</code>, <code>ad33ddefe3b343ad7bd6f078de9b7bf0fdb6ae34228e163aee22d4ac8fef4a28</code>다. Source-closed 원본 evidence는 RTX run archive에 보존했다.</p>
+
+<h2>Qualification, 테스트와 source closure</h2>
+<p>Seed <code>20260824</code>를 고정한 v9 full-yaw qualification은 12/12 sample을 accepted했고 최대 yaw/position error는 <code>0.10180 rad</code>/<code>0.333 mm</code>였다. 최종 revision <code>995a349d9d1b93a2365a56f8ed2cada7c2f0839c</code>의 전체 회귀는 <code>1,105 passed, 15 skipped</code>다. r72 presentation canonical report digest는 <code>ec42ab4801a9a60a0475d87351fdf94ee29cfaf8126f0c1b5148eae6f89e370f</code>이고 파일 SHA-256은 <code>ad33ddefe3b343ad7bd6f078de9b7bf0fdb6ae34228e163aee22d4ac8fef4a28</code>다.</p>
+<p>구현은 <a href="https://github.com/gohyunsu/beltbench/commit/6ecf8ec"><code>6ecf8ec</code></a> positive-clearance gate, <a href="https://github.com/gohyunsu/beltbench/commit/6cce5d1"><code>6cce5d1</code></a> four-state split, <a href="https://github.com/gohyunsu/beltbench/commit/2db9640"><code>2db9640</code></a> phase mapping, <a href="https://github.com/gohyunsu/beltbench/commit/f9a38a8"><code>f9a38a8</code></a> moving-boundary splice, <a href="https://github.com/gohyunsu/beltbench/commit/4b794c4"><code>4b794c4</code></a>와 <a href="https://github.com/gohyunsu/beltbench/commit/720e3ea"><code>720e3ea</code></a> artifact relocation closure, <a href="https://github.com/gohyunsu/beltbench/commit/b663ba3"><code>b663ba3</code></a> single feedback snapshot, <a href="https://github.com/gohyunsu/beltbench/commit/ac919f8"><code>ac919f8</code></a> deterministic FoundPose, <a href="https://github.com/gohyunsu/beltbench/commit/995a349"><code>995a349</code></a> spatial trigger plane으로 단계별 push했다. 설계 원칙과 실패 재발 방지는 각 commit에서 <code>AGENTS.md</code>와 방법론 문서에 함께 기록했다.</p>
+
+<h2>남은 blocker</h2>
+<ul>
+<li><code>0.019071 mm</code>는 sampled nominal path의 작은 양수일 뿐 calibration·latency·mesh·controller uncertainty를 흡수하는 robust margin이 아니다. Hardware 접근 속도와 stop distance를 포함한 guarded controller가 필요하다.</li>
+<li>271/271 HPP-FCL 결과 사이 구간에 대한 continuous collision authority는 없다. Runtime에는 qualified cuRobo moving-object collision gate를 연결하고 exact-mesh holdout에서 false negative 0과 deadline을 다시 입증해야 한다.</li>
+<li>FoundPose full-yaw qualification의 최대 오차 <code>0.1018 rad</code>는 현재 command yaw gate보다 크다. No-pick 정책, multi-frame/multi-view likelihood와 독립 holdout을 포함한 개선이 필요하다.</li>
+<li>Isaac 영상은 contact force·slip·object free dynamics·attachment 성공을 측정하지 않는다. D3b에서 measured contact와 release/bin containment를 연결하기 전에는 grasp 성공률을 보고하지 않는다.</li>
+<li>Isaac provisional servo gain과 connector CAD 정렬을 실제 xArm/Inspire에 그대로 이전하지 않는다. 실제 controller clock, protective stop, connector seating과 calibration uncertainty를 별도 qualification한다.</li>
+</ul>
+
+<p><a href="source-closed-isaac-articulation-servo.html">ISSUE-082 articulation servo</a> · <a href="nonpenetrating-guarded-approach-source-closure.html">ISSUE-079 guarded source closure</a> · <a href="curobo-realtime-collision-audit.html">ISSUE-040 cuRobo audit</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
