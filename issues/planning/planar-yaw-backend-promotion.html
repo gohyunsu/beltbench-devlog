@@ -78,6 +78,17 @@
 <li>Physical camera/conveyor/robot calibration, controller stop budget과 hardware validation은 별도 미완료다.</li>
 </ul>
 
+<h2>승인 후 재검증 · 2026-08-24</h2>
+<table class="table">
+<tr><th>단계</th><th>관찰</th><th>판정</th></tr>
+<tr><td>최신 HEAD 로컬 회귀</td><td><code>ea5e60c</code>에서 guarded approach, dynamic collision, playback, sampled path, stationary-moving splice, tool trajectory 관련 11개 모듈을 실행해 <code>73 passed, 1 skipped</code>를 얻었다.</td><td><code>pregrasp → close_above_object</code> 양의 clearance와 후속 nonpenetrating contact-approach 계약의 코드 비회귀는 확인했다. 이는 RTX HPP-FCL 재생이나 새 perception authority를 대체하지 않는다.</td></tr>
+<tr><td>RTX 3090 SSH 재시도</td><td>Ping은 3/3 응답했고 TCP·OpenSSH banner·양방향 KEXINIT도 정상이다. 이후 client가 <code>SSH2_MSG_KEX_ECDH_REPLY</code>를 기다리는 상태에서 15초 timeout됐다. 남은 로컬 SSH process는 없었다.</td><td>인증키·Git·BeltBench 코드가 아니라 workstation의 <code>sshd</code> 또는 host 상태 문제다. 로컬 console에서 <code>sshd</code> restart 또는 host reboot가 필요하다.</td></tr>
+<tr><td><code>junjinyong</code> 대체 서버</td><td>PBS login은 가능하지만 checkout은 <code>33b94d5</code>로 183 commits 뒤다. 선언된 capture report와 Pepsi FoundPose <code>repre.pth</code>는 알려진 evidence/run 경로에 없다.</td><td>다른 입력을 새로 만들거나 A6000 timing을 RTX timing으로 보고하지 않는다. Exact data/model을 회수하기 전에는 frozen campaign 대체 경로가 아니다.</td></tr>
+<tr><td>영상 상태</td><td>기존 r90 planning-only Viser MP4는 180/180 unique frames, RTF <code>0.986704</code>, SHA-256 <code>5a6edfcfde87c6cac26ede8eb348d33e78859e05b6058aed70728ea61b6c3a13</code>다.</td><td>Guarded planning 시각화는 유지한다. 새 planar-yaw causal 영상은 saved development→holdout→worker parity→live D1 통과 뒤에만 생성한다.</td></tr>
+</table>
+
+<p>문제의 원인은 server-side key exchange 정지이며, 해결책은 RTX workstation의 local console 복구다. 복구 직후 clean checkout과 exact revision을 확인하고 <code>ea5e60c</code> 이후 문서 commit을 pull한 뒤 saved development부터 재개한다. 영상 확보를 서두르기 위해 gate를 우회하거나 기존 r90을 새 causal 영상으로 재표기하지 않는다.</p>
+
 <p><a href="runtime-profile-bound-isaac-rerun-audit.html">ISSUE-084 실패 run 감사</a> · <a href="realtime-perception-single-gpu-plan.html">ISSUE-074 single-GPU 계획</a> · <a href="nonpenetrating-four-state-triggered-isaac-servo.html">ISSUE-083 r72 기준선</a></p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
