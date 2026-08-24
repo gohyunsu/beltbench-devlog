@@ -14,22 +14,27 @@
 <main class="wrap article">
 <div class="eyebrow">ISSUE-084 · 2026-08-24 · runtime-profile-bound Isaac rerun audit</div>
 <h1>14단계 runtime profile을 실제 Isaac evidence에 결속하고 실패 run을 그대로 감사한다.</h1>
-<p class="lede">통합 영상에 단계 이름만 표시하는 대신, pipeline profile의 identity·deadline·실행 상태를 staged manifest와 report에 source-closed하게 결속했다. RTX 3090에서 실제 Isaac RGB-D, FoundPose, CAD translation tracking, exact command selection과 PhysX articulation servo를 다시 실행했다. 새 영상은 생성됐지만 acceptance를 통과하지 못했으므로 검증 완료 자료로 승격하지 않는다.</p>
+<p class="lede">통합 영상에 단계 이름만 표시하는 대신, pipeline profile의 identity·deadline·실행 상태를 staged manifest와 report에 source-closed하게 결속했다. 이어서 acquisition gate, encoder ingress, current-state estimation, future projection과 resident decision을 독립 계측하고 authoritative trace를 영상 조립에서 분리했다. RTX 3090에서 실제 Isaac RGB-D, FoundPose, CAD tracking, exact command selection과 PhysX articulation servo를 반복 실행했으나 최신 source의 presentation은 FoundPose yaw repeatability와 단일-yaw command cell 때문에 최종 acceptance를 통과하지 못했다.</p>
 
-<div class="callout"><strong>현재 판정:</strong> 구현 revision <a href="https://github.com/gohyunsu/beltbench/commit/af6ca65687e35b182715370f87bd2235fe368147"><code>af6ca65</code></a>에서 profile binding과 fail-closed stage evidence는 검증됐다. 그러나 <code>r78</code>은 provisional D3a feedback gate를 넘었고 <code>professor_video_ready=false</code>다. 교수님께 제시할 accepted 기준선은 계속 <a href="nonpenetrating-four-state-triggered-isaac-servo.html"><code>r72</code></a>이며, 아래 <code>r78</code> 영상은 실패 원인을 재현하는 진단 자료다.</div>
+<div class="callout"><strong>현재 판정:</strong> revision <a href="https://github.com/gohyunsu/beltbench/commit/9c7a7e0a6950063217ac8c3fa51d87005be02c17"><code>9c7a7e0</code></a>에서 profile v2의 일곱 D1 authority stage와 bounded trace timing은 통과했다. <code>r83</code>/<code>r84</code>/<code>r86</code>은 같은 command yaw 조건에서 repeatability failure를 재현했고, qualification-grid 조건 <code>r85</code>도 measured yaw와 단일 prevalidated command의 nominal yaw가 달라 선택되지 않았다. 교수님께 제시할 <strong>accepted</strong> 기준선은 계속 <a href="nonpenetrating-four-state-triggered-isaac-servo.html"><code>r72</code></a>다. 아래 <code>r81</code>은 실제 perception과 servo animation이 완주됐지만 timing gate를 통과하지 못한 진단 영상이다.</div>
+
+<video controls preload="metadata" style="display:block;width:100%;max-width:1280px;background:#111" src="../../assets/videos/isaac-profile-v2-r81-rejected-timing.mp4"></video>
+<p class="kicker"><strong>REJECTED DIAGNOSTIC r81</strong> · 1280×720 · 15 fps · 285/285 frame · 19초 · SHA-256 <code>ea45400520a16362466f9e5aadf21b1eb77df310076fc72a1988fcaf006bcd0b</code></p>
 
 <video controls preload="metadata" style="display:block;width:100%;max-width:1280px;background:#111" src="../../assets/videos/isaac-profile-bound-r78-rejected-feedback.mp4"></video>
-<p class="kicker"><strong>REJECTED DIAGNOSTIC</strong> · 1280×720 · 15 fps · 285 frame · 19.000초 · SHA-256 <code>8b02dcb87f63bedc52ca6e12eb3af20dd83da300c219ceef5b65e3ca129c3924</code></p>
+<p class="kicker"><strong>REJECTED DIAGNOSTIC r78</strong> · 1280×720 · 15 fps · 285 frame · 19.000초 · SHA-256 <code>8b02dcb87f63bedc52ca6e12eb3af20dd83da300c219ceef5b65e3ca129c3924</code></p>
 
 <h2>무엇을 바꿨는가</h2>
 <table class="table">
 <tr><th>경계</th><th>변경</th><th>효과</th></tr>
 <tr><td>Canonical contract</td><td><code>RuntimeStageExecutionEvidence</code>와 <code>RealtimePipelineExecutionEvidence</code>가 profile ID·digest, status, sample, p95/max, miss count를 검증한다.</td><td>파생값이나 deadline 일관성이 깨지면 report 생성 단계에서 실패한다.</td></tr>
 <tr><td>D1 adapter</td><td>실제 runner timing을 14개 canonical stage에 mapping한다.</td><td>측정하지 않은 단계를 0 ms로 기록하지 않고 <code>executed_unmeasured</code> 또는 <code>not_executed</code>로 남긴다.</td></tr>
+<tr><td>Profile v2 stage ownership</td><td>FoundPose yaw, CAD translation observation, acquisition gate, encoder ingress, current-state estimation, future projection과 resident decision을 분리한다.</td><td>현재 상태를 motion prediction으로 세거나 projection을 selection으로 세지 않는다. FoundPose 0.9초, CAD 25 ms, feedback 2 ms edge policy도 profile과 startup에서 대조한다.</td></tr>
+<tr><td>Authoritative trace</td><td>60 Hz snapshot을 immutable JSON string으로 한 번 encode해 bounded queue에 nonblocking enqueue하고, writer는 serialization 없이 write·flush·atomic rename만 수행한다.</td><td>영상 RGB-D copy와 overview readback이 0.5 ms evidence deadline에 섞이지 않으며 drop·worker failure·count mismatch는 run을 거부한다.</td></tr>
 <tr><td>Staged source closure</td><td>Manifest가 runtime profile 경로를 필수로 받고 profile ID·canonical digest·파일 hash를 authority와 presentation에 전달한다.</td><td>다른 profile이나 stale source의 report splice를 거부한다.</td></tr>
 <tr><td>권한 경계</td><td>Direct position target은 <code>controller_handoff</code>로, 화면의 phase는 <code>lifecycle_monitor</code>로 세지 않는다.</td><td>실행된 것처럼 보이는 시각화가 command lease·contact lifecycle 권한을 만들지 못한다.</td></tr>
 </table>
-<p>Canonical profile digest는 <code>d22f0228caf96b70efd3e8cfc31a40dc44c800fb06d7f3aa5538d6c0c10bfb15</code>, 입력 파일 hash는 <code>2db3b0134a1f9ddc7046a47fc7d211173c84bc8dcf4bd6570a4b6ade8536a965</code>다. 둘은 의미가 다르므로 하나로 대체하지 않는다.</p>
+<p>현재 profile ID는 <code>isaac-pepsi-upside-down-realtime-v2</code>, canonical digest는 <code>ad9d1a898b99945b9114f2e705ccfdf44e7f0d46e6084654e27a9e07ce5d8744</code>, 입력 파일 hash는 <code>ba9c6c06b4c8d88c2efa9e1692576a420687872724b7815bf7dbd43a49fe9f43</code>다. Canonical payload digest와 원본 파일 hash는 의미가 다르므로 하나로 대체하지 않는다.</p>
 
 <h2>실제로 실행된 단계</h2>
 <table class="table">
@@ -40,6 +45,19 @@
 </table>
 <p><code>r78</code>의 sensor p95는 <code>5.154 ms</code>, translation/CAD p95는 <code>14.812 ms</code>, prediction p95는 <code>0.268 ms</code>, selection p95는 <code>0.159 ms</code>였다. 반면 FoundPose acquisition은 <code>813.375 ms</code>로 profile의 800 ms 한도를 한 번 넘었다. Presentation publisher는 frame 조립·copy·비동기 submit을 함께 측정해 p95 <code>3.802 ms</code>였고 0.5 ms 한도를 285/285회 넘었다. 이 두 실패는 비권위 단계라 기존 D1 acceptance boolean을 직접 뒤집지는 않았지만, complete soft-real-time pipeline이 아님을 명시한다.</p>
 
+<h2>v2에서 다시 측정한 단계</h2>
+<table class="table">
+<tr><th>범위</th><th>r83 authority 관찰</th><th>판정</th></tr>
+<tr><td>Sensor ingress</td><td>15 Hz 실제 Isaac RGB-D, p95 약 <code>5 ms</code></td><td>25 ms deadline 내 miss 0</td></tr>
+<tr><td>FoundPose yaw</td><td>one-shot 약 <code>0.77 s</code></td><td>0.9 s acquisition deadline 내</td></tr>
+<tr><td>CAD translation</td><td>15 Hz observation p95 약 <code>12-15 ms</code></td><td>25 ms deadline 내 miss 0</td></tr>
+<tr><td>Acquisition gate</td><td>약 <code>0.6 ms</code>, 1 sample</td><td>5 ms deadline 내</td></tr>
+<tr><td>Encoder ingress</td><td>1,140 sample, p95 약 <code>0.18 ms</code> 이하</td><td>4 ms deadline 내 miss 0</td></tr>
+<tr><td>Current-state estimation</td><td>CAD correction과 60 Hz estimate를 별도 raw timing으로 보존</td><td>1 ms deadline 내 miss 0</td></tr>
+<tr><td>Trace publisher</td><td><code>r83</code> authority p95/max <code>0.185/0.250 ms</code>, 1,140/1,140 persisted</td><td>0.5 ms deadline 내 miss 0</td></tr>
+</table>
+<p><code>motion_prediction</code>과 <code>resident_decision</code>은 diagnostic presentation에서만 실행된다. <code>correction_envelope</code>, resident cuRobo gate, future-start handoff와 measured lifecycle은 여전히 실행되지 않으므로 <code>complete_soft_realtime_pipeline=false</code>와 <code>execution_authorized=false</code>를 유지한다.</p>
+
 <h2>재검증 연대기</h2>
 <table class="table">
 <tr><th>Run</th><th>직접 증거</th><th>판정과 조치</th></tr>
@@ -49,18 +67,26 @@
 <tr><td><code>r77</code></td><td>285/285 영상은 생성됐지만 wall lateness p95 <code>118.29 ms</code> &gt; <code>100 ms</code></td><td>Rejected. GPU 계산 성공과 end-to-end wall deadline을 분리했다.</td></tr>
 <tr><td><code>r78</code></td><td>Control RTF <code>0.999762</code>, wall p95/max <code>38.86/61.10 ms</code>, presentation RTF <code>0.975095</code>, 285/285 frame</td><td>Wall/video gate는 통과했으나 feedback max <code>3.149 ms</code> &gt; provisional adapter gate <code>2 ms</code>로 rejected.</td></tr>
 <tr><td><code>r79</code></td><td>Wall p95 <code>112.08 ms</code>, feedback max <code>3.158 ms</code></td><td>두 gate가 함께 실패했다. 성공 run이 나올 때까지 무제한 재시도하지 않고 변동성을 blocker로 확정했다.</td></tr>
+<tr><td><code>r80</code></td><td><code>c2c6313</code> source의 201 waypoint/271-frame splice, HPP-FCL <code>271/271</code>, guarded minimum <code>4.151195 mm</code></td><td>r81 presentation용 current-source command를 재생성했다.</td></tr>
+<tr><td><code>r81</code></td><td>실제 command가 선택되어 285/285 영상과 D3a servo가 완주했다. Control/presentation RTF <code>0.999638/0.974554</code>, yaw error <code>0.07587 rad</code>, feedback max <code>0.228 ms</code>였다.</td><td>Deep-copy trace publisher p95 <code>0.571 ms</code>, miss 163회와 wall p95 <code>107.90 ms</code>로 rejected. 위 영상은 이 run이다.</td></tr>
+<tr><td><code>r82</code></td><td><code>9c7a7e0</code> source의 201 waypoint/271-frame splice, HPP-FCL <code>271/271</code>, guarded minimum <code>4.151195 mm</code></td><td>Command/playback/validation/audit를 최종 source에 다시 결속했다.</td></tr>
+<tr><td><code>r83</code></td><td>Authority는 trace p95 <code>0.185 ms</code>, wall p95 <code>14.17 ms</code>로 accepted. Presentation yaw error는 <code>0.15573 rad</code>였다.</td><td>0.08 rad command cell 밖이라 1,003회 no-pick 후 rejected. 영상 생성과 285/285 accounting 자체는 통과했다.</td></tr>
+<tr><td><code>r84</code></td><td>Authority yaw error <code>0.11436 rad</code>; 나머지 scoped profile timing은 모두 통과</td><td>Perception gate에서 fail-closed 거부했고 presentation은 시작하지 않았다.</td></tr>
+<tr><td><code>r85</code></td><td>Qualification grid index 11 truth <code>-0.5236 rad</code>. Authority yaw error <code>0.03751 rad</code>로 accepted했지만 presentation command residual은 <code>0.10220 rad</code>였다.</td><td>Truth를 selector에 주지 않았고 단일 command nominal yaw와 measured yaw가 달라 no-pick. Qualified 한 조건도 반복 실행에서 같은 estimate를 보장하지 못했다.</td></tr>
+<tr><td><code>r86</code></td><td>원래 command truth에서 세 번째 bounded repeatability run. Authority yaw error <code>0.11296 rad</code></td><td>r83/r84와 함께 반복 실패를 확정하고 추가 retry를 중단했다.</td></tr>
 </table>
-<p><code>r78</code>의 canonical controller-feedback deadline은 4 ms여서 stage evidence 자체는 통과하지만, D3a adapter policy는 2 ms라 전체 report는 실패한다. 어느 쪽이 맞는지 측정된 controller 주기와 stop budget으로 결정해야 하며, 편의를 위해 느슨한 4 ms만 채택하지 않는다.</p>
+<p>r78에서 드러난 4/2 ms controller policy drift는 v2에서 2 ms로 통일했다. r81의 feedback max는 <code>0.228 ms</code>로 통과했다. 현재 실패의 지배 원인은 controller가 아니라 FoundPose repeatability와 단일-yaw prevalidated command다. Command gate를 0.12 rad로 올리면 일부 영상은 통과시킬 수 있지만, collision clearance만으로 grasp-contact robustness를 증명할 수 없으므로 완화하지 않았다.</p>
 
 <h2>테스트와 재현성</h2>
-<p>Runtime profile 계약·adapter·staged binding에 대한 focused suite는 <code>34 passed</code>다. Planning environment 전체 회귀는 <code>1,090 passed, 18 skipped</code>였고, 해당 Python이 <code>os.memfd_create</code>를 제공하지 않아 실패한 FoundPose worker 3개는 별도 <code>bodex</code> environment에서 모두 통과했다. 즉 기능 실패와 host Python capability 차이를 분리해 기록했으며 skip이나 fallback으로 숨기지 않았다.</p>
-<p><code>r76</code> command/playback/report hash는 각각 <code>90b8326d…</code>, <code>614603e7…</code>, <code>b905dc54…</code>다. <code>r78</code> authority report hash는 <code>e413d2c6bb22f69784e4cd39b51cf26a1e0f47ba2368d03cf0153cc9c822f90d</code>, trace hash는 <code>525c8faa1125522f47e72aea9e516d929313a794145d5debc1f3663d25492d44</code>다. 원본 report는 내부 절대 경로와 계정명을 포함하므로 public site에는 복사하지 않았다.</p>
+<p>로컬 focused suite는 57개, publisher 후속 suite는 15개가 통과했다. RTX Linux HPP-FCL environment에는 깨진 pip shebang이 있어 해당 interpreter의 <code>python -m ensurepip</code>로 복구한 뒤 pytest를 설치했다. 서버 전체 회귀는 <code>1,103 passed, 15 skipped, 45 subtests passed</code>다. 로컬 전체 pytest는 코드 실행 전에 WSL <code>p9_client_rpc</code> collection 대기에서 403초 정지해 중단했고, 동일 revision의 Linux 전체 suite로 대체했다.</p>
+<p><code>r82</code> command/playback/report hash는 <code>4c40289f…</code>, <code>39e79cca…</code>, <code>56f9ac16…</code>이고 independent validation/audit hash는 <code>b75f7319…</code>, <code>745eddc0…</code>다. <code>r81</code> presentation report/video hash는 <code>45d05706…</code>, <code>ea454005…</code>다. r83/r84/r85/r86 report hash는 각각 <code>ddae97cb…</code>, <code>c4e739df…</code>, <code>9a9e858f…</code>, <code>d02b9cf1…</code>다. 원본 report는 내부 절대 경로와 계정명을 포함하므로 public site에는 복사하지 않았다.</p>
 
 <h2>남은 blocker와 다음 순서</h2>
 <ul>
-<li>FoundPose full-yaw qualification 최대 오차 <code>0.1018 rad</code>가 command gate <code>0.08 rad</code>보다 크고 acquisition latency도 이번 run에서 800 ms를 넘었다. Multi-frame/multi-view acquisition과 no-pick 정책을 함께 재검증한다.</li>
-<li>Publisher 0.5 ms 계약과 현재 frame-build/copy 측정 범위가 맞지 않는다. Critical-loop snapshot 발행과 비동기 영상 조립을 분리한 뒤 각각 deadline을 다시 정의한다.</li>
-<li>Feedback 2 ms/4 ms 불일치는 실제 controller clock·command lease·stop budget 없이 결정할 수 없다. 현재는 더 엄격한 D3a gate를 유지한다.</li>
+<li>FoundPose full-yaw qualification 최대 오차 <code>0.1018 rad</code>와 runtime repeatability가 command gate <code>0.08 rad</code>보다 나쁘다. 같은 frame의 두 camera가 서로 동의해도 함께 틀릴 수 있으므로 camera-consensus만으로 해결되지 않는다. Upstream temporal reacquisition 또는 texture-aware yaw refinement를 구현하고 original cadence에서 반복 검증해야 한다.</li>
+<li>현재 prevalidated command는 nominal yaw 하나만 갖는다. 임계값을 완화하기보다 yaw/context별 source-closed path family를 offline compile하고, online에서는 measured yaw와 uncertainty가 포함되는 validated cell만 선택해야 한다.</li>
+<li>Trace publisher와 video assembly는 분리됐고 authority timing은 통과했다. 그러나 no-pick가 1,000회 반복되는 presentation에서는 JSON snapshot과 반복 decision이 함께 증가한다. Reject reason이 불변이면 decision을 event-driven으로 retain하고 trace schema도 고정-width field layout으로 줄이는 최적화가 필요하다.</li>
+<li>Controller feedback profile은 2 ms로 통일했고 accepted-command run에서 충분한 margin을 확인했다. 실제 hardware claim 전에는 future-start lease, controller-native clock과 stop budget을 별도로 구현해야 한다.</li>
 <li><code>correction_envelope</code>, resident cuRobo gate, future-start controller handoff와 measured lifecycle이 아직 없다. 이 네 단계를 구현하기 전 complete real-time inference demo를 주장하지 않는다.</li>
 <li>현재 영상은 rigid-object contact, attachment, slip, release와 bin containment를 측정하지 않는다. Full-task 영상은 release/contact schedule과 simulator dynamics가 같은 source-closed command에서 통과한 뒤 별도 생성한다.</li>
 </ul>
