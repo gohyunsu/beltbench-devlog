@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Planar yaw backend 승격 구조 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-085 · 2026-08-24 · planar yaw backend promotion architecture</div>
+<h1>검증되지 않은 PnP를 fallback으로 남기지 않고, task-constrained yaw backend를 단계적으로 교체한다.</h1>
+<p class="lede">두 camera PnP temporal fusion 1/12와 세 camera 0/12 실패 뒤에도 retry나 camera 추가를 반복하지 않았다. FoundPose texture correspondence와 주어진 stable pose·belt plane만 사용해 x/y/yaw를 푸는 경로를 구현하고, runtime에 바로 덧붙이기 전에 saved development, holdout, shared-memory worker parity, live D1 authority를 순서대로 통과하도록 승격 구조를 고정했다. 실제 runtime worker가 아직 PnP candidate type에 결합돼 있다는 구조적 결함도 명시했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/ea5e60c"><code>ea5e60c</code></a>에서 역할·deadline·GPU/CPU 배치·교체 순서를 ADR로 고정했다. Offline correspondence solver와 source-closed runner는 <code>d37522d</code>까지 로컬 40/40을 통과했지만 RTX saved campaign, compact worker parity와 live sensor run은 없다. 따라서 기존 PnP runtime도 새 planar backend도 pose authority가 아니며 새 causal 영상도 생성하지 않는다.</div>
+
+<h2>최신 upstream 재감사</h2>
+<table class="table">
+<tr><th>Source</th><th>확인 결과</th><th>BeltBench 결정</th></tr>
+<tr><td>AutoDex-Code <code>upstream/main</code></td><td>기존 감사와 같은 <code>154af6c</code>다. FoundPose 1회 뒤 GoTrack 반복 구조를 바꾸는 새 upstream은 없다.</td><td>AutoDex는 offline grasp/evidence provider로 유지한다. FoundPose나 GoTrack을 planning core로 가져오지 않는다.</td></tr>
+<tr><td>로컬 <code>autodex-code/main</code></td><td>폴더명과 달리 project-site tree다. 실제 구현 증거는 explicit <code>upstream/main</code> tree다.</td><td>폴더명·active branch를 방법 source로 간주하지 않고 exact commit/tree를 기록한다.</td></tr>
+<tr><td>ParaDex <code>upstream/main</code></td><td><code>59204aba→54e53af6</code>. 50 mm board를 60 mm로 rescale해 camera translation이 1.2배가 되던 오류와 NFS write failure가 성공처럼 보이던 오류를 수정했다.</td><td>한 개의 명시적 physical ruler만 scale authority로 사용하고, mixed-board 평균·hardcoded size를 거부한다. 분산 producer는 자기 directory/write를 확인하고 coordinator에 실패를 전달해야 한다.</td></tr>
+</table>
+
+<h2>냉정한 구조 평가</h2>
+<table class="table">
+<tr><th>현재 상태</th><th>문제</th><th>결정</th></tr>
+<tr><td>Live worker가 <code>FoundPoseViewCandidateSet</code>을 JSON으로 반환</td><td>Core가 unconstrained PnP와 method-specific type에 결합돼 새 solver가 통과해도 설정만으로 교체할 수 없다.</td><td>Qualification 뒤 compact provider-neutral yaw assessment로 parent contract를 교체하고 PnP runtime route를 제거한다. 두 결과를 허용하는 silent union/fallback은 만들지 않는다.</td></tr>
+<tr><td>Offline runner가 correspondence 전체를 report에 보존</td><td>재현 evidence에는 유용하지만 live pipe로 보내면 serialization·allocation·latency 경계가 늘어난다.</td><td>Runtime child가 GPU correspondence와 bounded 3-DOF solve를 끝낸 뒤 yaw/covariance/quality/timing만 반환한다.</td></tr>
+<tr><td>작은 3-DOF solve가 CPU SciPy</td><td>모든 모듈을 GPU로 옮기면 transfer·synchronization이 오히려 커질 수 있다.</td><td>RTX에서 provider와 solver 시간을 분리 계측한다. CPU solver가 100 ms budget의 실질 병목일 때만 CUDA 이전을 검토한다.</td></tr>
+<tr><td>RGB solver가 x/y도 계산</td><td>Pepsi처럼 거의 원통형인 물체에서 RGB fit translation을 최종 위치로 쓰면 PnP depth 오류를 다른 이름으로 반복할 수 있다.</td><td>RGB x/y는 diagnostic seed다. Track admission 위치는 independent depth/CAD 두 view와 encoder consistency gate가 소유한다.</td></tr>
+<tr><td>GoTrack을 매 frame 사용 가능</td><td>감사된 RTX 3090 4-camera 158 ms/frame도 현재 15 Hz, single-GPU 목표와 맞지 않는다.</td><td>기본 steady state는 15 Hz CAD correction+60 Hz encoder prediction이다. GoTrack은 원 cadence accuracy/latency/contention holdout에서 이를 이길 때만 교체 후보가 된다.</td></tr>
+</table>
+
+<h2>확정한 실시간 모듈</h2>
+<table class="table">
+<tr><th>단계</th><th>주기·deadline</th><th>역할과 자원</th></tr>
+<tr><td>Sensor ingress</td><td>15 Hz, 25 ms</td><td>CPU/adapter. 최신 synchronized generation 하나만 admit한다.</td></tr>
+<tr><td>Yaw acquisition</td><td>upstream 1회, 0.9 s</td><td>RTX exclusive event. FoundPose correspondence 뒤 bounded stable-pose solve를 수행한다.</td></tr>
+<tr><td>CAD translation</td><td>15 Hz, 25 ms</td><td>CPU. 초기 position authority와 encoder-seeded correction을 담당한다.</td></tr>
+<tr><td>State/prediction</td><td>60 Hz, 각 1 ms</td><td>CPU fixed-size x/y/yaw/covariance와 belt translation을 전파한다.</td></tr>
+<tr><td>Resident decision</td><td>15 Hz, 3 ms</td><td>Offline-certified object/stable-pose/grasp/yaw/context path cell과 robust slack만 조회한다.</td></tr>
+<tr><td>cuRobo command gate</td><td>path change/commit, 75 ms</td><td>FoundPose와 상호배타 GPU event. Exact full command와 lifecycle collision을 검사한다.</td></tr>
+<tr><td>Handoff/feedback</td><td>event/60 Hz, 2 ms</td><td>CPU controller adapter. Future-start lease, feedback, stop/contact lifecycle을 소유한다.</td></tr>
+<tr><td>Evidence/video</td><td>비동기</td><td>Raw trace 뒤 report와 MP4를 조립하며 control path를 지연시키지 않는다.</td></tr>
+</table>
+
+<p>0.9초 acquisition은 camera period가 아니라 upstream event budget이다. 물체를 arm 바로 앞에서 시작해 이 시간을 숨기면 안 된다. Camera age, yaw, CAD, decision, cuRobo commit, controller lead와 stop reserve가 path cutoff 전에 끝나는 spatial reserve를 belt coordinate로 증명해야 한다.</p>
+
+<h2>승격 순서</h2>
+<ol>
+<li>12 yaw의 <code>temporal_index=0</code> saved development를 unchanged gate로 실행한다.</li>
+<li>Policy를 고정한 채 <code>temporal_index=1..4</code> 48-sample holdout을 실행한다.</li>
+<li>Long-lived memfd worker에서 같은 bundle의 compact result parity와 serialization deadline을 검증한다.</li>
+<li>영상 없이 actual Isaac RGB-D D1 authority를 실행해 original cadence, spatial reserve와 canonical stage timing을 통과시킨다.</li>
+<li>Accepted source를 다시 검증한 별도 presentation run에서 실제 시간 영상을 만든다.</li>
+<li>D2 exact command/collision과 D3 articulation/contact lifecycle을 순차 연결한다.</li>
+</ol>
+
+<h2>문제·원인·조치·결과</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>조치</th><th>결과</th></tr>
+<tr><td><code>autodex-code</code> 폴더가 implementation이라고 오인할 수 있었다.</td><td>Fork main tree는 site인데 삭제된/stale remote-tracking ref와 폴더명은 code를 암시했다.</td><td>willi19 refs를 URL로 갱신하고 exact tree를 비교했다.</td><td>AutoDex-Code source는 변동 없는 <code>154af6c upstream/main</code>으로 재결속했다.</td></tr>
+<tr><td>새 solver를 runtime에 즉시 붙이면 PnP와 두 경로가 공존한다.</td><td>현재 worker/parent가 method-specific response를 사용한다.</td><td>승격 전에는 runtime을 변경하지 않고, 통과 뒤 generic compact result로 한 번에 migrate하도록 ADR을 고정했다.</td><td>Spaghetti fallback은 추가되지 않았고 현재 미검증 상태가 명확하다.</td></tr>
+<tr><td>RTX campaign을 실행할 수 없다.</td><td>Tailscale·ICMP·TCP·SSH banner/KEXINIT은 정상이나 server key-exchange reply가 세 KEX 방식 모두 timeout된다.</td><td>무제한 retry를 중단하고 source/test/ADR 작업만 진행했다.</td><td>서버 pass와 새 영상을 주장하지 않는다. Host/sshd 복구 뒤 clean HEAD 확인부터 재개한다.</td></tr>
+</table>
+
+<h2>남은 blocker</h2>
+<ul>
+<li>RTX saved development와 holdout 결과가 없다. 정확도·acceptance·GPU/CPU latency는 미확정이다.</li>
+<li>Provider-neutral compact runtime result와 worker parity는 설계만 고정됐고 구현 전이다.</li>
+<li>Yaw/context별 resident path family가 아직 한 nominal command를 대체하지 못했다.</li>
+<li>Live D1 spatial reserve, D2 resident cuRobo lifecycle kernel, D3 measured contact/release가 없다.</li>
+<li>Physical camera/conveyor/robot calibration, controller stop budget과 hardware validation은 별도 미완료다.</li>
+</ul>
+
+<p><a href="runtime-profile-bound-isaac-rerun-audit.html">ISSUE-084 실패 run 감사</a> · <a href="realtime-perception-single-gpu-plan.html">ISSUE-074 single-GPU 계획</a> · <a href="nonpenetrating-four-state-triggered-isaac-servo.html">ISSUE-083 r72 기준선</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
