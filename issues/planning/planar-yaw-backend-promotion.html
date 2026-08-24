@@ -16,7 +16,7 @@
 <h1>검증되지 않은 PnP를 fallback으로 남기지 않고, task-constrained yaw backend를 단계적으로 교체한다.</h1>
 <p class="lede">두 camera PnP temporal fusion 1/12와 세 camera 0/12 실패 뒤에도 retry나 camera 추가를 반복하지 않았다. FoundPose texture correspondence와 주어진 stable pose·belt plane만 사용해 x/y/yaw를 푸는 경로를 구현하고, runtime에 바로 덧붙이기 전에 saved development, holdout, shared-memory worker parity, live D1 authority를 순서대로 통과하도록 승격 구조를 고정했다. 실제 runtime worker가 아직 PnP candidate type에 결합돼 있다는 구조적 결함도 명시했다.</p>
 
-<div class="callout"><strong>현재 판정:</strong> Tailscale SSH 우회 경로로 RTX 3090 접근을 복구했고, canonical planar v2는 <a href="https://github.com/gohyunsu/beltbench/commit/e234df1"><code>e234df1</code></a>에서 source-closed development 12/12를 통과했다. 그러나 처음 연 48-sample translated-position holdout은 acceptance 46/48, yaw max/p95 <code>0.1802/0.1264 rad</code>로 실패했다. <a href="https://github.com/gohyunsu/beltbench/commit/941663d"><code>941663d</code></a>에 승격 중단과 실패 SHA를 고정했다. 새 backend는 runtime authority가 아니며 기존 planning-only 영상을 causal perception 영상으로 재표기하지 않는다.</div>
+<div class="callout"><strong>현재 판정:</strong> canonical planar v2의 translated-position holdout 실패를 보존한 뒤, <a href="https://github.com/gohyunsu/beltbench/commit/1cdf402"><code>1cdf402</code></a>에서 upstream trigger-zone campaign을 새로 source-bound했다. 그러나 새 campaign의 development도 yaw max/p95 <code>0.1294/0.0988 rad</code>로 실패했고 holdout은 열지 않았다. 통합 r92는 sensor reserve 수정 후 273/273 frame을 처리했지만 기존 PnP yaw <code>0.119399 rad</code>와 post-GPU CAD <code>33.014 ms</code>로 authority가 거부됐다. 새 backend는 runtime authority가 아니며 새 causal grasp 영상도 승인되지 않았다.</div>
 
 <h2>최신 upstream 재감사</h2>
 <table class="table">
@@ -103,6 +103,25 @@
 </table>
 
 <p>실제 architecture는 FoundPose를 upstream trigger에서 한 번만 실행하고 이후 CAD+encoder로 평행이동을 추적한다. 그러므로 다음 독립 campaign은 <code>-0.44 m</code> 주변의 bounded trigger zone에서 x/y jitter, lighting, mask와 timing nuisance를 predeclare해야 한다. 기존 downstream holdout 실패는 stress evidence로 계속 남기며 새 campaign의 tuning data로 재사용하지 않는다. 새 campaign→worker parity→live D1 authority가 통과하기 전에는 perception causal 영상이라고 주장하지 않는다.</p>
+
+<h2>Trigger-zone campaign과 temporal 대안 진단 · 2026-08-24</h2>
+<table class="table">
+<tr><th>단계</th><th>문제·원인</th><th>조치</th><th>결과·판정</th></tr>
+<tr><td>Campaign source closure</td><td>기존 holdout 위치 <code>-0.408…-0.312 m</code>는 runtime의 1회 upstream trigger 가정 밖이었고, 새 위치를 command line으로만 지정하면 split을 사후 변경할 수 있었다.</td><td><a href="https://github.com/gohyunsu/beltbench/commit/1cdf402"><code>1cdf402</code></a>에서 <code>pepsi-upside-down-trigger-zone-position-v1</code> contract를 추가했다. Development는 <code>-0.440 m</code>, unopened holdout은 <code>-0.439…-0.436 m</code>로 고정하고 campaign source hash를 capture/runner가 검증한다.</td><td>60 bundles를 완전 캡처했다. Policy SHA는 <code>268cfca3…891c</code>, capture report SHA는 <code>ee7f3f3d…ab64d</code>다.</td></tr>
+<tr><td>새 development</td><td>동일 nominal 위치에서도 ray-traced RGB가 run마다 미세하게 달랐다. Object USD, depth, mask pixel/count, intrinsics/extrinsics는 같았지만 RGB mean absolute difference가 downstream/upstream <code>1.17/1.55</code>였다.</td><td>Temporal index 0의 12 yaw만 열어 frozen canonical policy를 실행했다. Renderer seed를 고정해 favorable image를 복구하지 않았다.</td><td>Internal acceptance 12/12와 position <code>3.21/2.88 mm</code> max/p95에도 yaw <code>0.1294/0.0988 rad</code>로 실패했다. Evidence ID는 <code>foundpose-planar-correspondence/242ed77d…73f4</code>다. Holdout indices 1–4는 열지 않았다.</td></tr>
+<tr><td>Pose-level temporal fusion</td><td>여러 frame 평균이 stochastic basin 편향을 줄일 가능성이 있었지만, serial FoundPose는 frame당 약 0.7초라 online 기본 경로로 쓰기 어렵다.</td><td>이미 공개된 이전 5-frame data에 circular mean/medoid를 2–5 frame으로 진단했다.</td><td>최선의 maximum yaw error도 <code>0.0767 rad</code>로 기준을 안정적으로 통과하지 못했다. Runtime 코드는 추가하지 않았다.</td></tr>
+<tr><td>Raw-correspondence shared yaw</td><td>Pose 평균보다 constant-yaw를 solver 내부에 강제하는 방법이 이론적으로 더 타당했다.</td><td>각 시점 x/y는 독립, yaw는 공통인 bounded joint objective를 기존 공개 data에 임시 구현해 1–5 frame을 비교했다.</td><td>2–5 frame maximum error가 계속 <code>0.1222 rad</code> 이상이었다. Noise가 아니라 같은 방향의 correspondence bias이므로 temporal batching을 정확도 해결책으로 폐기했다.</td></tr>
+</table>
+
+<h2>실시간 D1 reserve 재검증 · r91→r92</h2>
+<table class="table">
+<tr><th>Run</th><th>발생한 문제와 원인</th><th>해결 조치</th><th>결과</th></tr>
+<tr><td>r91 @ <code>1cdf402</code></td><td>70 ms camera-to-decision envelope에서 downstream stage deadline 57 ms를 단순 예약해 허용 input age가 13 ms가 됐다. Isaac의 정상 synchronized frame age는 약 50 ms여서 정책 자체가 실행 불가능했다.</td><td>실패 report를 보존하고 재시도하지 않았다. Sensor max age 60 ms와 모든 stage deadline 57 ms를 함께 포괄하도록 envelope를 120 ms로 변경하고, startup alignment에서 <code>maximum_input_age ≥ sensor policy age</code>를 강제했다. 개별 stage deadline과 측정 평균은 바꾸지 않았다.</td><td><code>284/284</code> frame이 <code>sensor/downstream_deadline_reserve_exhausted</code>로 거부되고 acquisition은 실행되지 않았다. 이 run은 perception 실패가 아니라 policy-composition 실패다.</td></tr>
+<tr><td><a href="https://github.com/gohyunsu/beltbench/commit/9966713"><code>9966713</code></a></td><td>불가능한 reserve가 unit test에서는 의도된 동작처럼 고정돼 있었다.</td><td>Current profile은 63 ms input-age reserve를 제공하고 sensor policy가 60 ms로 제한한다. Tight synthetic reservation은 별도 test로 유지했다. 로컬 focused 24/24, RTX Linux D1/staged/presentation 39/39를 통과하고 push했다.</td><td>60 ms sensor freshness + 57 ms downstream worst-case + 3 ms slack가 source-bound profile hash에 반영됐다.</td></tr>
+<tr><td>r92 @ <code>9966713</code></td><td>Reserve 수정 뒤에도 one-shot PnP가 wrong yaw basin을 내부 gate로 검출하지 못했고, FoundPose GPU reservation 직후 첫 CAD update에 CPU resume spike가 남았다.</td><td>같은 고정 입력으로 source-closed authority를 한 번만 실행했다. Yaw 0.08 rad와 CAD 25 ms gate를 낮추지 않았고 실패 후 favorable retry나 presentation을 실행하지 않았다.</td><td>273/273 processed, admission drop 0, max age <code>50.000 ms</code>, position error <code>2.290 mm</code>, RTF/wall timing은 통과했다. Yaw <code>0.119399 rad</code>와 generation 260 CAD <code>33.014 ms</code>로 authority가 거부됐다.</td></tr>
+</table>
+
+<p>교수님께 현재 보여줄 수 있는 최신 자료는 서로 다른 경계를 가진 두 영상이다. r72는 actual Isaac RGB-D→FoundPose/CAD/encoder가 연결된 accepted integrated diagnostic이고, r90은 최신 four-state guarded command의 planning-only validation이다. 둘을 하나의 최신 causal grasp authority로 합쳐 설명하면 안 된다. 새 통합 영상은 yaw repeatability, post-GPU CAD resume, worker parity와 runtime command coverage를 통과한 뒤 별도 staged presentation으로 생성한다.</p>
 
 <p><a href="runtime-profile-bound-isaac-rerun-audit.html">ISSUE-084 실패 run 감사</a> · <a href="realtime-perception-single-gpu-plan.html">ISSUE-074 single-GPU 계획</a> · <a href="nonpenetrating-four-state-triggered-isaac-servo.html">ISSUE-083 r72 기준선</a></p>
 </main>
