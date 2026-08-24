@@ -16,7 +16,7 @@
 <h1>검증되지 않은 PnP를 fallback으로 남기지 않고, task-constrained yaw backend를 단계적으로 교체한다.</h1>
 <p class="lede">두 camera PnP temporal fusion 1/12와 세 camera 0/12 실패 뒤에도 retry나 camera 추가를 반복하지 않았다. FoundPose texture correspondence와 주어진 stable pose·belt plane만 사용해 x/y/yaw를 푸는 경로를 구현하고, runtime에 바로 덧붙이기 전에 saved development, holdout, shared-memory worker parity, live D1 authority를 순서대로 통과하도록 승격 구조를 고정했다. 실제 runtime worker가 아직 PnP candidate type에 결합돼 있다는 구조적 결함도 명시했다.</p>
 
-<div class="callout"><strong>현재 판정:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/ea5e60c"><code>ea5e60c</code></a>에서 역할·deadline·GPU/CPU 배치·교체 순서를 ADR로 고정했다. Offline correspondence solver와 source-closed runner는 <code>d37522d</code>까지 로컬 40/40을 통과했지만 RTX saved campaign, compact worker parity와 live sensor run은 없다. 따라서 기존 PnP runtime도 새 planar backend도 pose authority가 아니며 새 causal 영상도 생성하지 않는다.</div>
+<div class="callout"><strong>현재 판정:</strong> Tailscale SSH 우회 경로로 RTX 3090 접근을 복구했고, canonical planar v2는 <a href="https://github.com/gohyunsu/beltbench/commit/e234df1"><code>e234df1</code></a>에서 source-closed development 12/12를 통과했다. 그러나 처음 연 48-sample translated-position holdout은 acceptance 46/48, yaw max/p95 <code>0.1802/0.1264 rad</code>로 실패했다. <a href="https://github.com/gohyunsu/beltbench/commit/941663d"><code>941663d</code></a>에 승격 중단과 실패 SHA를 고정했다. 새 backend는 runtime authority가 아니며 기존 planning-only 영상을 causal perception 영상으로 재표기하지 않는다.</div>
 
 <h2>최신 upstream 재감사</h2>
 <table class="table">
@@ -71,7 +71,7 @@
 
 <h2>남은 blocker</h2>
 <ul>
-<li>RTX saved development와 holdout 결과가 없다. 정확도·acceptance·GPU/CPU latency는 미확정이다.</li>
+<li>Canonical development는 통과했지만 translated-position holdout이 실패했다. 기존 holdout을 튜닝·재분류하지 않고 upstream trigger-zone nuisance campaign을 새로 predeclare해야 한다.</li>
 <li>Provider-neutral compact runtime result와 worker parity는 설계만 고정됐고 구현 전이다.</li>
 <li>Yaw/context별 resident path family가 아직 한 nominal command를 대체하지 못했다.</li>
 <li>Live D1 spatial reserve, D2 resident cuRobo lifecycle kernel, D3 measured contact/release가 없다.</li>
@@ -87,7 +87,22 @@
 <tr><td>영상 상태</td><td>기존 r90 planning-only Viser MP4는 180/180 unique frames, RTF <code>0.986704</code>, SHA-256 <code>5a6edfcfde87c6cac26ede8eb348d33e78859e05b6058aed70728ea61b6c3a13</code>다.</td><td>Guarded planning 시각화는 유지한다. 새 planar-yaw causal 영상은 saved development→holdout→worker parity→live D1 통과 뒤에만 생성한다.</td></tr>
 </table>
 
-<p>문제의 원인은 server-side key exchange 정지이며, 해결책은 RTX workstation의 local console 복구다. 복구 직후 clean checkout과 exact revision을 확인하고 <code>ea5e60c</code> 이후 문서 commit을 pull한 뒤 saved development부터 재개한다. 영상 확보를 서두르기 위해 gate를 우회하거나 기존 r90을 새 causal 영상으로 재표기하지 않는다.</p>
+<p>이 표의 SSH 판정은 당시 상태를 보존한 기록이다. 이후 Windows Tailscale SSH client의 별도 인증 경로로 접근을 복구했으며, 아래 절차에서 실제 RTX campaign까지 재개했다. 영상 확보를 서두르기 위해 gate를 우회하거나 기존 r90을 새 causal 영상으로 재표기하지 않는 원칙은 유지한다.</p>
+
+<h2>RTX 복구 이후 development→holdout · 2026-08-24</h2>
+<table class="table">
+<tr><th>단계</th><th>문제·원인</th><th>조치</th><th>결과·판정</th></tr>
+<tr><td>접근 복구</td><td>일반 <code>sshd</code>는 KEX reply에서 멈췄고 무암호 sudo도 없어 daemon을 재시작할 수 없었다.</td><td>Windows Tailscale SSH client로 browser 인증을 완료하고 <code>kds-Z790-AERO-G</code>의 <code>/home/hyunsu/.agile/projects/beltbench-realtime-validation</code> checkout을 사용했다. RTX 3090, driver 535.309.01, 24 GiB VRAM을 다시 확인했다.</td><td>Host reboot를 허위 주장하지 않고 별도 control path로 clean exact-revision 실행을 재개했다.</td></tr>
+<tr><td>Source closure</td><td>첫 development report는 FoundPose provider는 현재 checkout이었지만 DINOv2가 stale editable checkout에서 import됐다.</td><td><code>cd607c9</code>에서 FoundPose config/provider, correspondence/input utility, vendored DINOv2 package와 BOP utility의 exact path/hash를 모두 강제했다.</td><td>다른 checkout import는 hard failure가 됐다. RTX Linux planar/memfd 회귀도 통과했다.</td></tr>
+<tr><td>Solver latency</td><td>초기 solver max/p95가 <code>303.8/296.6 ms</code>였다. Profile에서 scalar 25-combination×72-yaw coarse search가 3.90/4.47 aggregate seconds를 차지했다.</td><td><code>cd607c9</code>에서 combination당 multi-RHS least squares와 72-yaw vectorized projection으로 바꾸고, <code>bed80db</code>에서 finite-difference refinement를 analytic Jacobian으로 교체했다.</td><td>Source-closed max/p95가 <code>103.6/96.6 ms</code>까지 감소했다. Search 폭, template 수, yaw coverage와 quality gate는 줄이지 않았다.</td></tr>
+<tr><td>Correspondence cap</td><td>300 cap은 yaw max/p95 <code>0.1031/0.0879 rad</code>로 development truth gate도 실패했다.</td><td>결과를 보기 전에 top-confidence <code>{40,60,80}</code>을 commit <code>99e4059</code>에 고정하고 모두 실행했다.</td><td>Acceptance는 <code>0/1/0</code>이었다. Top60만 truth yaw <code>0.0605/0.0540 rad</code>와 100 ms deadline을 통과했으나 internal quality가 실패해 바로 승격하지 않았다.</td></tr>
+<tr><td>중복 진단</td><td>120 hypotheses의 unique object-point 비율이 0.379–0.682라 cyclic-buddy 다대일 중복이 독립 evidence처럼 보였다.</td><td>Provider vertex identity deduplication을 구현하기 전에 exact-coordinate proxy로 top40/60/80 replay를 predeclare했다.</td><td>Yaw max가 <code>0.136/0.156/0.156 rad</code>로 악화돼 dedup-only 변경은 폐기했다. 불필요한 adapter 복잡성은 추가하지 않았다.</td></tr>
+<tr><td>측정모델 수정</td><td>14 px DINO grid인데 policy는 2 px noise, 5 px RMSE라 quantization noise floor보다 작았다. 한 coarse cell 0.0873 rad보다 작은 0.08 rad alternate threshold는 같은 basin seed를 별도 mode로 셌다.</td><td><code>f960274</code>에서 grid로부터 4.1 px noise, 10 px radius, 6.6 px required-support RMSE를 유도했다. Count/fraction 전체는 유지하고, refinement 12개 안에서 global yaw-bin coverage와 두-cell basin exclusion을 적용했다.</td><td>Fresh RTX development 12/12, solver max/p95 <code>80.8/78.6 ms</code>, yaw <code>0.0605/0.0540 rad</code>를 통과했다. Report SHA는 <code>882ca10b…93d4</code>다.</td></tr>
+<tr><td>Canonical 재현</td><td>개발 전용 policy 통과만으로 canonical promotion을 주장할 수 없었다.</td><td><code>e234df1</code>에서 동일 payload를 canonical v2로 승격하고 clean revision에서 development를 다시 실행했다.</td><td>12/12, solver <code>90.4/89.2 ms</code>, report SHA <code>81f2216d…5659</code>로 재현됐다. 이 시점까지 holdout은 열지 않았다.</td></tr>
+<tr><td>최초 holdout</td><td>Temporal indices 1–4는 belt x <code>-0.408/-0.376/-0.344/-0.312 m</code>에서 재추론해 upstream development 위치 <code>-0.44 m</code> 밖의 perspective를 시험했다.</td><td>Policy/revision을 고정한 채 48개를 한 번 실행했다. 실패 뒤 gate를 바꾸거나 sample을 제외하지 않았다.</td><td>46/48 acceptance지만 yaw max/p95 <code>0.1802/0.1264 rad</code>로 실패했다. 두 reject 외에도 accepted yaw-index-9가 0.1802 rad 오차였다. Evidence ID <code>…bf24ea66…2ca150</code>, report SHA <code>e80791f1…88cfc</code>를 <code>941663d</code>에 고정했다.</td></tr>
+</table>
+
+<p>실제 architecture는 FoundPose를 upstream trigger에서 한 번만 실행하고 이후 CAD+encoder로 평행이동을 추적한다. 그러므로 다음 독립 campaign은 <code>-0.44 m</code> 주변의 bounded trigger zone에서 x/y jitter, lighting, mask와 timing nuisance를 predeclare해야 한다. 기존 downstream holdout 실패는 stress evidence로 계속 남기며 새 campaign의 tuning data로 재사용하지 않는다. 새 campaign→worker parity→live D1 authority가 통과하기 전에는 perception causal 영상이라고 주장하지 않는다.</p>
 
 <p><a href="runtime-profile-bound-isaac-rerun-audit.html">ISSUE-084 실패 run 감사</a> · <a href="realtime-perception-single-gpu-plan.html">ISSUE-074 single-GPU 계획</a> · <a href="nonpenetrating-four-state-triggered-isaac-servo.html">ISSUE-083 r72 기준선</a></p>
 </main>
