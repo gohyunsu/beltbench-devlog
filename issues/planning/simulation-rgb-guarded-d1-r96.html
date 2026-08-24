@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Simulation RGB yaw와 guarded D1-D3a r96 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-086 · 2026-08-24 · qualified simulation RGB yaw and guarded D1-D3a</div>
+<h1>검증된 simulation perception부터 guarded grasp servo까지 실제 시간축으로 닫는다.</h1>
+<p class="lede">FoundPose PnP의 재현성 실패를 retry나 threshold 완화로 숨기지 않았다. 별도 simulation-only RGB yaw backend를 sealed offset-yaw holdout으로 검증하고, independent depth/CAD translation·encoder prediction·exact guarded-command selection·Isaac articulation feedback에 연결했다. RTX 3090의 r96 authority와 presentation은 source revision <code>b483e24</code>에서 모두 통과했고 19초 영상을 확보했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> 실제 두-camera Isaac RGB-D가 D1 track을 만들고, D2가 exact prevalidated pick command를 선택하며, D3a가 xArm과 Inspire 12-joint position target을 적용하고 feedback을 읽는다. 영상은 <strong>accepted actual-time pick diagnostic</strong>이다. Rigid-object dynamics, measured contact, attachment, detach, release, bin containment, qualified continuous collision과 hardware execution은 없으므로 full pick-and-drop 성공으로 부르지 않는다.</div>
+
+<video controls preload="metadata" style="display:block;width:100%;max-width:1280px;background:#111" src="../../assets/videos/isaac-simulation-rgb-guarded-r96.mp4"></video>
+<p class="kicker">1280×720 · 15 fps · 285 frame · 19.000초 · SHA-256 <code>a3dbba9bd52e4b517b4b99fecd5e0ec386f229c553a47d424c28d65fb10ffec6</code></p>
+<img src="../../assets/images/isaac-r96/contact-sheet.png" alt="r96 simulation RGB perception, exact command selection과 guarded articulation servo contact sheet" style="display:block;width:100%;border:1px solid var(--line);border-radius:12px">
+
+<h2>방법론 결정</h2>
+<table class="table">
+<tr><th>모듈</th><th>선택</th><th>이유와 경계</th></tr>
+<tr><td>Yaw acquisition</td><td>72-cell simulation RGB reference bank를 upstream에서 1회 조회</td><td>96개 half-cell offset query를 별도 capture에서 검증했다. Simulation domain 전용이며 FoundPose나 physical-camera authority가 아니다.</td></tr>
+<tr><td>Translation</td><td>두 view depth/CAD correction</td><td>RGB texture yaw가 위치 권한까지 소유하지 않는다. 초기 position과 15 Hz correction은 independent geometry gate가 담당한다.</td></tr>
+<tr><td>Tracking</td><td>60 Hz constant-yaw encoder prediction</td><td>물체는 초기 yaw를 유지한 채 belt 방향으로 평행이동한다. Heavy pose inference를 매 frame 반복하지 않는다.</td></tr>
+<tr><td>Planning</td><td>Offline source-closed guarded command, online exact bounded selection</td><td>201-waypoint command와 271 sampled collision frame을 startup에 검증하고 control tick에서는 O(frame-count) 재검사를 하지 않는다.</td></tr>
+<tr><td>Execution diagnostic</td><td>Isaac articulation position servo</td><td>Planned robot teleport가 아니라 target 적용 후 named joint feedback을 읽는다. Object dynamics와 contact lifecycle은 별도 D3b로 남긴다.</td></tr>
+<tr><td>Evidence</td><td>Immutable typed snapshot을 nonblocking queue에 제출</td><td>Payload 검증·확장·JSON serialization은 worker에서 수행해 60 Hz control path와 MP4 조립을 분리한다.</td></tr>
+</table>
+
+<h2>Yaw qualification</h2>
+<p>Reference bank와 query는 서로 다른 source-bound capture다. Query yaw는 reference cell 중간으로 offset되어 exact lookup이 통과 조건이 되지 않는다. 최초 sealed holdout은 96/96을 통과했다. 이후 matcher의 optional assessment field 추가로 구현 source hash만 바뀌었기 때문에 policy와 입력을 고정한 채 같은 sealed query를 한 번 재폐쇄했다. Non-timing record와 판정은 최초 report와 완전히 같았고 개별 결과를 보고 tuning하지 않았다.</p>
+<table class="table">
+<tr><th>항목</th><th>결과</th></tr>
+<tr><td>Evidence ID</td><td><code>simulation-rgb-yaw/c27e8cf08c1d17a6734530aa32c213fdbb25e25973a07d7053a32c477fced69b</code></td></tr>
+<tr><td>Holdout</td><td>96/96 accepted</td></tr>
+<tr><td>Yaw error max / p95</td><td><code>0.031371 / 0.024839 rad</code></td></tr>
+<tr><td>Inference max / p95</td><td><code>31.156 / 30.380 ms</code></td></tr>
+<tr><td>Runtime fallback</td><td>없음. Manifest가 <code>foundpose</code> 또는 <code>simulation_rgb_reference_bank</code> 중 하나만 명시한다.</td></tr>
+</table>
+
+<h2>문제·원인·해결·결과</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>r93이 Isaac 시작 전에 import error로 종료됐다.</td><td>Direct runner가 requested checkout보다 stale editable package를 먼저 import했다.</td><td>어떤 BeltBench import보다 먼저 자기 repository root를 <code>sys.path</code> 선두에 둔다. 이후 exact source path/hash를 계속 검증한다.</td><td>r94 authority가 clean <code>3d42b38</code> source에서 통과했다.</td></tr>
+<tr><td>r94 presentation만 evidence deadline을 실패했다.</td><td>Control thread가 snapshot validation, dictionary 확장과 JSON encoding까지 수행해 publisher p95가 <code>0.543 ms</code>였다.</td><td>Small mutable edge map만 copy하고 frozen feedback snapshot 자체를 queue에 넣는다. Validation·payload assembly·serialization은 background worker로 이동했다.</td><td>r96 publisher p95가 <code>0.206 ms</code>로 감소했고 285회 miss 0, submit/encode 285/285, drop/error 0이었다.</td></tr>
+<tr><td>Driver check가 실제 host driver와 다른 Vulkan version을 표시했다.</td><td>Host는 535.309.01이지만 Isaac Vulkan probe는 535.53.01을 보고했다.</td><td>Host/GPU receipt를 보존하고 Kit의 driver-version verification만 명시적으로 비활성화했다. Physics, perception, timing gate는 우회하지 않았다.</td><td>RTX 3090에서 authority와 presentation을 재실행했다.</td></tr>
+</table>
+
+<h2>r96 실제 시간 결과</h2>
+<table class="table">
+<tr><th>항목</th><th>Authority</th><th>Presentation</th></tr>
+<tr><td>Canonical gates</td><td>15/15 pass</td><td>교차검증 및 professor-video-ready pass</td></tr>
+<tr><td>Pose error</td><td>Yaw <code>0.014936 rad</code>, position <code>2.302 mm</code></td><td>Decision yaw residual <code>0.014106 rad</code></td></tr>
+<tr><td>Real time</td><td>Control RTF <code>0.999992</code></td><td>Control RTF <code>0.999777</code>, presentation RTF <code>0.997607</code></td></tr>
+<tr><td>Servo</td><td>Authority pass에는 presentation servo를 섞지 않음</td><td>1,140 feedback sample; arm/hand max error <code>0.019864/0.022707 rad</code></td></tr>
+<tr><td>Adapter timing</td><td>CAD max <code>24.61 ms</code></td><td>Command/feedback max <code>0.662/0.215 ms</code>, 각 2 ms gate 내</td></tr>
+<tr><td>Media</td><td>없음</td><td>285/285 encoded, drop/error 0</td></tr>
+</table>
+
+<h2>Guarded command 재검증</h2>
+<p>Source-current r97은 201 waypoint와 271 sampled frame을 재생성해 HPP-FCL 271/271을 통과했다. <code>pregrasp → close_above_object</code>의 115-frame <code>guarded_proximity</code>는 요구 <code>0.1 mm</code>보다 큰 최소 <code>4.151195 mm</code>를 유지했다. 그 뒤 44-frame <code>nonpenetrating_approach</code>는 최소 signed distance <code>0.019071 mm</code>, collision/contact 0이었다. Hand는 <code>close_above_object</code>까지 pregrasp command를 유지하고 이후에만 닫힌다.</p>
+
+<h2>교수님께 보여줄 때의 설명</h2>
+<p>영상에서 색이 바뀌는 sensor·acquisition·track·selection·servo stage와 두 camera panel을 순서대로 설명한다. 물체가 upstream에서 충분한 reserve를 두고 들어오며, 뒤집힌 Pepsi tabletop pose의 초기 yaw와 위치를 simulation sensor로 관측하고, 미리 검증한 grasp command를 선택해 실제 Isaac articulation feedback으로 추종하는 과정이다. Arm, Inspire hand, 흰색 paired CAD connector, conveyor, mounting table과 drop bin은 모두 실제 scene asset이다.</p>
+<p>마지막 frame은 grasp diagnostic이다. 상자는 후속 task 목적지를 보여주지만 이번 command는 transfer·release를 수행하지 않는다. 물체가 손에 붙고 떨어지는 시각 효과를 임의로 덧붙이지 않았다. 다음 D3b는 attached-object collision, measured contact/attachment, finite hand-open, detach, drop dynamics와 containment을 같은 source-closed command에서 검증해야 한다.</p>
+
+<h2>코드와 검증</h2>
+<p>구현은 <a href="https://github.com/gohyunsu/beltbench/commit/fde709e"><code>fde709e</code></a> simulation RGB runtime 연결, <a href="https://github.com/gohyunsu/beltbench/commit/3d42b38"><code>3d42b38</code></a> direct-run source closure, <a href="https://github.com/gohyunsu/beltbench/commit/b483e24"><code>b483e24</code></a> trace serialization 분리로 단계별 push했다. 로컬 focused 회귀는 52/52, server source/trace/evidence 회귀는 19/19를 통과했다. Runtime report 원본에는 내부 절대 경로가 있어 public site에 게시하지 않고, 정제한 영상·contact sheet·수치만 남긴다.</p>
+
+<p><a href="planar-yaw-backend-promotion.html">ISSUE-085 yaw backend ADR</a> · <a href="runtime-profile-bound-isaac-rerun-audit.html">ISSUE-084 실패 run 감사</a> · <a href="nonpenetrating-four-state-triggered-isaac-servo.html">ISSUE-083 guarded D3a 기준선</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
