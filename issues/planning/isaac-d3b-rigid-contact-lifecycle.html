@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Isaac D3b rigid contact lifecycle · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+<style>pre{overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;line-height:1.55}code{font-size:.92em}table{width:100%;border-collapse:collapse}th,td{padding:.65rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}</style>
+</head>
+<body>
+<header class="top"><div class="wrap"><a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a><nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav></div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-087 · 2026-08-25 · Isaac D3b rigid contact lifecycle</div>
+<h1>Planning animation을 실제 rigid-object contact, release, bin containment 증거로 교체한다.</h1>
+<p class="lede">현재 r96은 실제 Isaac RGB-D perception, exact D2 command selection과 measured D3a articulation servo를 연결했지만 물체 pose는 계획값으로 매 frame 설정된다. 다음 교수용 영상은 이 경계를 숨기지 않고, 동일 source-closed command에 collision mesh, 질량·마찰, PhysX contact, contact-confirmed attachment, release와 큰 bin containment를 연결하는 D3b를 목표로 한다. 현재 상태는 구현 중이며 physics run과 최종 영상은 아직 통과하지 않았다.</p>
+
+<h2>관찰한 문제</h2>
+<p>기존 Isaac runner의 센서와 관절 feedback은 실제 simulator 출력이지만 물체는 <code>SingleXFormPrim</code>이고 매 tick 계획 pose로 이동한다. 따라서 화면에서 손과 캔이 함께 움직여도 grasp contact, 마찰 유지, 낙하와 containment를 측정한 결과가 아니다. 이 runner에 조건문을 계속 추가하면 2,500줄 이상의 D1-D3a 경로가 perception, presentation과 object physics까지 동시에 소유하게 된다.</p>
+<pre>D3a verified boundary
+rendered RGB-D → planar perception → exact D2 selection
+→ PhysX articulation target/feedback
+→ planned object pose presentation
+
+D3b required boundary
+source-closed command → PhysX articulation
+→ rigid object + canonical contact → measured lifecycle
+→ detach → gravity → measured bin containment</pre>
+
+<h2>r98 실패와 r99 계획 검증</h2>
+<table><thead><tr><th>Run</th><th>직접 증거</th><th>판정과 조치</th></tr></thead><tbody>
+<tr><td><code>r98</code></td><td>독립 HPP-FCL 검증 1,590 frame 중 522 frame 실패. Phase별로 return 293, release 118, contain 90, close 20, stop 1이며 첫 실패는 close에서 <code>left_ring_2_0</code> robot/object clearance였다.</td><td>당시 object-interaction hash는 현재 four-state schema와 달랐다. 실패를 contact 허용 범위 확대로 덮지 않고, nonpenetrating approach와 bounded-contact phase를 명시한 current schema로 source playback부터 재생성했다.</td></tr>
+<tr><td><code>r99</code></td><td>동일 1,590 frame 독립 검증 1,590/1,590 valid. Contact 6.3초, attach 6.6초, release-open 13.9276초, detach 14.4958초이며 전체 command는 23.0303초다.</td><td>Planning/collision reference로만 승인했다. 이 결과는 contact force, controller-object coupling이나 physics grasp 성공을 증명하지 않는다.</td></tr>
+<tr><td><code>r99 planning MP4</code></td><td>1,280×720, 15 fps, 24초, 360/360 unique frame, capture RTF 0.9945. SHA-256은 <code>a979a5e8...30732a0</code>이다.</td><td>교수 설명용 fallback으로 보존한다. Robot이 작고 label overlap이 있으며 planned-command 재생이므로 최종 D3b 영상으로 승격하지 않는다.</td></tr>
+</tbody></table>
+
+<h2>원인과 설계 결정</h2>
+<table><thead><tr><th>위험</th><th>원인</th><th>선택한 해결</th></tr></thead><tbody>
+<tr><td>Dynamic object가 다시 순간이동함</td><td>기존 <code>set_object_pose</code>가 sensor scene과 diagnostic playback 양쪽에서 사용된다.</td><td>Visual-only legacy와 rigid-object 옵션을 all-or-nothing으로 분리한다. Collision USD, dynamics policy, interaction semantics와 physics period가 모두 있을 때 legacy setter는 fail-closed한다.</td></tr>
+<tr><td>접촉 이름을 잘못 해석함</td><td>PhysX raw contact는 grasp semantics의 collision geometry가 아니라 rigid-body prim path를 제공한다.</td><td>Deployment policy에 hand link→canonical geometry map을 선언하고 startup에 exact body path를 한 번 resolve한다. Tick 중 substring 추론은 사용하지 않는다.</td></tr>
+<tr><td>Connector frame과 grasp frame 혼동</td><td>계획된 <code>expected_object_from_tool</code>은 arm tip 기준이지만 constraint는 hand root body에 체결해야 한다.</td><td>Measurement tool은 <code>link6</code>, optional attachment body는 <code>base_link</code>로 분리한다. 두 이름은 planning core 상수가 아니라 current deployment config다.</td></tr>
+<tr><td>고정 joint가 grasp 성공을 만들어냄</td><td>접촉 전 constraint를 생성하면 손가락이 닿지 않아도 캔이 따라온다.</td><td>허용 fingertip 수, minimum force, conveyor support 해제, object/tool pose 오차와 hold가 모두 측정된 뒤에만 fixed joint를 만든다. Contact를 얻지 못하면 attach deadline 이후 fault다.</td></tr>
+<tr><td>Constraint-assisted 결과를 force closure로 과장함</td><td>Fixed joint는 frictional retention과 slip을 제거한다.</td><td><code>contact_confirmed_constraint_assisted_attachment</code>로 별도 표기하고 <code>force_closure_evidence=false</code>를 고정한다. Native-contact mode도 physical hardware force closure를 증명하지 않는다.</td></tr>
+</tbody></table>
+
+<h2>구현 경계</h2>
+<ul>
+<li><code>IsaacRigidObjectPolicy</code>: provisional mass/material, contact threshold, hold, attachment error, release/containment, body mapping과 timing tolerance를 source-bound한다.</li>
+<li><code>IsaacRigidObjectRuntime</code>: kinematic conveyor transport, dynamics 전환, raw contact read, canonical contact aggregation, optional fixed joint와 measured pose/velocity만 소유한다.</li>
+<li><code>MeasuredObjectLifecycle</code>: simulator-neutral contact→attached→released→contained state machine이다. 기존 MuJoCo backend도 같은 core를 재사용한다.</li>
+<li><code>IsaacD3bLifecycleRuntime</code>: physics step 전 ownership 변경과 step 후 measured inference를 분리하고, attach·release·task-end deadline을 fail-closed한다.</li>
+<li><code>PrimitiveDropBinContainment</code>: object collision bounds의 8개 corner가 floor frame의 큰 bin interior에 margin을 두고 들어오며, bin contact와 속도 hold까지 만족할 때만 contained로 전이한다.</li>
+</ul>
+
+<h2>2026-08-25 검증 상태</h2>
+<ul>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/ce98249"><code>beltbench@ce98249</code></a>에 Isaac policy, raw-contact mapping, D3b lifecycle와 공통 measured lifecycle을 반영했다.</li>
+<li>Writable temp를 사용하는 focused 회귀 45개가 통과했고, 로컬 MuJoCo package가 필요한 3개 integration test만 skip됐다.</li>
+<li>접촉 없는 attach 금지, contact hold 후 constraint 1회 생성, detach 제거, release hold, containment hold와 natural-contact 무constraint 경로를 단위 테스트로 고정했다.</li>
+<li>로컬 추가 회귀의 임시 파일 오류는 sandbox에 writable temp directory가 없어서 발생했다. 코드 회귀와 분리해 target server에서 다시 실행한다.</li>
+<li>Isaac 4.5의 USD collision/material/contact API smoke, actual Pepsi collision asset, 실제 xArm/Inspire raw body naming과 fixed-joint create/remove는 아직 target RTX에서 검증 전이다.</li>
+<li>따라서 현재 교수용 최선 증거는 r96 integrated D1-D3a 영상과 r99 planning fallback 두 개이며, D3b 최종 영상은 아직 없다고 명시해야 한다.</li>
+</ul>
+
+<h2>다음 실행 순서</h2>
+<ol>
+<li>RTX 3090에서 actual visual/coacd collision GLB를 별도 USD로 변환하고 rigid root, convex collision, material과 contact report를 smoke test한다.</li>
+<li>Current combined xArm6/Inspire/connector URDF에서 <code>link6</code>, <code>base_link</code>와 다섯 fingertip body path가 정확히 하나씩 resolve되는지 확인한다.</li>
+<li>r99 command를 actual physics time으로 servo하고 contact가 없으면 실패를 보존한다. 필요한 수정은 friction relaxation보다 collision pose, approach, inertial/contact parameter 원인부터 진단한다.</li>
+<li>Contact-confirmed constraint-assisted run과 native-contact run을 분리하고, 전자는 orchestration 영상, 후자는 simulator retention 진단으로 표시한다.</li>
+<li>Raw control/contact trace를 먼저 닫은 뒤 별도 presentation worker에서 SENSOR→YAW→CAD→TRACK→D2→COLLISION→SERVO→CONTACT→ATTACHED→RELEASE→CONTAINED 색상 전이를 합성한다.</li>
+</ol>
+
+<div class="callout"><strong>현재 성공 기준:</strong> 영상의 mesh가 자연스럽게 보이는 것이 아니라, source-closed r99 command와 actual sensor/servo가 real-time budget 안에서 실행되고 허용 contact, measured attachment, release와 bin containment가 순서대로 관측되며 constraint-assisted 범위가 보고서와 화면에 명시되는 것이다.</div>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
