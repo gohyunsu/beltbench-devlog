@@ -37,6 +37,14 @@
 <li>다음 실행은 native RGB yaw capture campaign, qualification, 새 source-closed admission, actual-time Isaac trial과 video를 순서대로 생성해야 한다. 그 전까지 이번 결과는 interface/modality wiring verified이며 perception 정확도나 professor-ready 영상 verified가 아니다.</li>
 </ul>
 
+<h3>RTX native RGB campaign r1-r2와 development 판정</h3>
+<table><thead><tr><th>Run</th><th>직접 관찰</th><th>원인, 조치와 판정</th></tr></thead><tbody>
+<tr><td><code>r1</code></td><td>Isaac app은 기동했지만 driver <code>535.53</code>이 4.5의 최소 RTX 범위 <code>535.129</code>보다 낮아 scene renderer 생성이 실패했다. 약 5분 45초 동안 capture bundle이나 report가 하나도 생성되지 않았다.</td><td>CPU 사용 중인 sleep loop를 성공으로 오인하지 않고 process를 종료했다. Code/perception 실패가 아니라 renderer admission 실패이며, kit log를 negative evidence로 보존했다.</td></tr>
+<tr><td><code>r2</code></td><td>기존 <code>r212</code> report와 서버 manifest가 공통으로 기록한 <code>--/rtx/verifyDriverVersion/enabled=false</code>를 명시해 재실행했다. 12 yaw × 5 temporal position의 60 capture, 120 view가 생성됐다.</td><td>Report는 source <code>ca23136</code>, <code>sensor_modalities=["rgb","object_mask"]</code>, <code>observed_depth_used=false</code>를 기록한다. 독립 검사는 모든 manifest/view hash, 12×5 coverage와 최소 mask 11,135 pixel을 확인했고 NPZ key가 <code>rgb</code>, <code>object_mask</code>, <code>intrinsic</code>, <code>camera_from_arm_base</code>뿐임을 확인했다. Report SHA-256은 <code>71747967374976b09fd3efd1c0380f58b75c05a0ec303c6a4527c0d366501416</code>이다. Driver override는 재현 조건이지 호환성 보증이 아니므로 upgrade 필요성은 남는다.</td></tr>
+<tr><td>development</td><td>사전 고정된 planar policy로 temporal index 0의 12 yaw를 평가해 11/12 measurement를 수락했다. Position max/p95는 <code>3.055/2.675 mm</code>였지만 yaw max/p95는 <code>0.08961/0.08441 rad</code>로 gate <code>0.08/0.06 rad</code>를 넘었다. Inference p95는 <code>266.88 ms</code>, solver p95는 <code>92.22 ms</code>였다.</td><td>Yaw 0 sample은 실제 오차 <code>0.12875 rad</code>와 매우 작은 ambiguity margin <code>0.00655</code>로 정상 거부됐다. 수락된 yaw 1/9/10도 각각 약 <code>0.08961/0.07922/0.06915 rad</code> 오차를 보여 단순히 acceptance gate만 느슨하게 해서는 안 된다. Qualification은 exit 2, <code>qualified=false</code>이며 holdout temporal index 1-4는 열지 않았다.</td></tr>
+</tbody></table>
+<p>다음 조치는 development에서만 temporal fusion 또는 yaw representation/solver 개선을 비교하고 같은 strict gate를 통과시키는 것이다. Holdout을 보고 threshold를 맞추거나 실패 sample을 제외하지 않는다. 이 campaign은 native RGB capture source 경계는 닫았지만 FoundPose promotion, 새 event admission과 source-matched actual-time 영상은 아직 닫지 못했다.</p>
+
 <h2>2026-08-26 독립 encoder, correction, async trace 통합 진단: r212</h2>
 <video controls preload="metadata" style="display:block;width:100%;max-width:1280px;background:#111" src="../../assets/videos/isaac-rgb-event-trace-r212.mp4"></video>
 <p class="kicker"><code>r212</code> · diagnostic only · 1280×720 · 15 fps · 405/405 frame · 27.000 s · SHA-256 <code>b8d55c627579a088c1a2f008af9139ec796c7f6dbac8939a594f25d5eecd3eb9</code></p>
