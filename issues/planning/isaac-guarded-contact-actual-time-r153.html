@@ -16,6 +16,27 @@
 
 <div class="callout warn"><strong>현재 판정:</strong> <code>r212</code>은 <code>integrated_simulation_diagnostic_complete=true</code>, <code>declared_scope_ready=true</code>, D1-driven D2 selection, 독립 encoder/state estimation, 615회 identity correction, guarded contact, attachment, release, containment와 1,620-tick trace reconciliation을 만족했다. Canonical 14단계 중 12단계가 independently measured이고 deadline miss는 0이지만 resident online collision commit과 future-start controller lease는 아직 실행되지 않았다. Simulation mask-plane position, instance segmentation과 guarded command 수정도 qualification되지 않았다. 따라서 <code>integrated_simulation_ready=false</code>, <code>complete_soft_realtime_pipeline=false</code>, <code>professor_demo_ready=false</code>, <code>hardware_execution_authorized=false</code>다. 아래 영상은 최종 grasp 성공률 증거가 아니라 실제시간 RGB-only 통합 진단이다.</div>
 
+<h2>2026-08-26 canonical RGB-only source 경계 전환: ca23136</h2>
+<h3>문제와 영향</h3>
+<p><code>r212</code> 실행은 observed depth 없이 RGB와 object mask만 사용했지만, 실행 바깥의 canonical source에는 depth sensor 기본 활성화, 최상위 perception package의 RGB-D export, historical RGB-D bundle을 읽는 FoundPose qualification 도구가 남아 있었다. <code>minimum_depth_m</code>도 실제 depth measurement가 아니라 CAD point를 camera frame으로 변환한 뒤의 projective Z near-plane guard였으므로 이름이 권한을 잘못 전달했다. 이 상태에서는 새 개발자가 legacy adapter를 현재 physical-camera 경로로 선택하거나, depth가 포함된 과거 yaw bank를 RGB-only qualification 증거로 재사용할 수 있다.</p>
+
+<h3>원인과 해결</h3>
+<p>원인은 simulation demo의 D1 backend만 먼저 RGB로 교체하고 sensor 초기화, public API, capture producer와 qualification consumer를 하나의 modality 계약으로 함께 닫지 않은 데 있었다. 실패를 숨기기 위해 depth를 0으로 채우거나 RGB-D type을 유지하는 fallback은 추가하지 않았다.</p>
+<ul>
+<li>Isaac sensor 초기화는 기본 <code>enable_depth=false</code>이며, current path는 <code>read_calibrated_rgb_observation</code>만 사용한다. Depth가 필요한 두 historical diagnostic만 명시적으로 opt-in하고 API 이름에도 <code>legacy_rgbd</code>를 표시했다.</li>
+<li>Canonical <code>beltbench.perception</code> export에서 RGB-D observation, backprojector와 depth-mask estimator를 제거했다. Legacy module은 재현을 위해 직접 import할 수 있지만 current pipeline의 자동 선택 대상은 아니다.</li>
+<li>Yaw capture는 RGB, object mask, 정확한 intrinsics/extrinsics만 담는 native bundle을 생성한다. Current FoundPose onboarding, inference, worker smoke, planar/temporal qualification과 replay는 모두 같은 depth-free runtime view adapter를 소비하고, capture report가 <code>["rgb", "object_mask"]</code>가 아니거나 <code>observed_depth_used=false</code>가 아니면 fail-closed한다.</li>
+<li>Planar correspondence policy를 schema <code>1.1</code>로 올리고 <code>minimum_depth_m</code>을 <code>minimum_camera_z_m</code>으로 교체했다. 이는 sensor depth가 아니라 projection 전 CAD point의 camera-frame Z guard다.</li>
+</ul>
+
+<h3>검증과 증거 경계</h3>
+<ul>
+<li>Source <a href="https://github.com/gohyunsu/beltbench/commit/ca231362c5e4685277183fee278b0fc64b4161f5"><code>ca23136</code></a>에서 로컬 전체 suite는 <code>1,364 passed</code>, <code>22 skipped</code>로 종료됐다.</li>
+<li>RTX 3090 worktree를 같은 revision으로 fast-forward한 뒤 RGB wiring과 bundle focused suite 51개가 통과했다. Server probe는 schema <code>1.1</code>, <code>minimum_camera_z_m=0.05</code>, canonical RGB-D export 부재와 schema <code>1.0</code> legacy payload 거부를 확인했다.</li>
+<li><code>r212</code> 영상과 report는 source <code>a190254</code>의 RGB-only actual-time diagnostic으로 계속 유효하다. 그러나 <code>ca23136</code>의 source-closed 실행 증거는 아니며, 과거 <code>r211</code> admission도 새 source에 재사용하지 않는다.</li>
+<li>다음 실행은 native RGB yaw capture campaign, qualification, 새 source-closed admission, actual-time Isaac trial과 video를 순서대로 생성해야 한다. 그 전까지 이번 결과는 interface/modality wiring verified이며 perception 정확도나 professor-ready 영상 verified가 아니다.</li>
+</ul>
+
 <h2>2026-08-26 독립 encoder, correction, async trace 통합 진단: r212</h2>
 <video controls preload="metadata" style="display:block;width:100%;max-width:1280px;background:#111" src="../../assets/videos/isaac-rgb-event-trace-r212.mp4"></video>
 <p class="kicker"><code>r212</code> · diagnostic only · 1280×720 · 15 fps · 405/405 frame · 27.000 s · SHA-256 <code>b8d55c627579a088c1a2f008af9139ec796c7f6dbac8939a594f25d5eecd3eb9</code></p>
