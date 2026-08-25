@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Isaac RGB-only causal guarded actual-time r153-r200 · BeltBench 개발 기록</title>
+<title>Isaac RGB-only causal guarded actual-time r153-r212 · BeltBench 개발 기록</title>
 <link rel="stylesheet" href="../../assets/css/site.css">
 <style>pre{overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;line-height:1.55}code{font-size:.92em}table{width:100%;border-collapse:collapse}th,td{padding:.65rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}</style>
 </head>
@@ -12,9 +12,66 @@
 <main class="wrap article">
 <div class="eyebrow">ISSUE-088 · 2026-08-26 · RGB-only split backend actual-time D1-D3</div>
 <h1>RGB-only perception부터 guarded grasp, 이송, release와 bin containment까지 실제 시간으로 연결한다.</h1>
-<p class="lede"><a href="isaac-d3b-rigid-contact-lifecycle.html">ISSUE-087</a>에서 정의한 D3b를 RTX 3090의 Isaac Sim 4.5에서 실행한 뒤, 물리 카메라가 RGB-only라는 전제를 반영해 D1을 다시 설계했다. 최신 <code>r200</code>은 두 synchronized RGB에서 sealed simulation yaw reference bank와 같은 generation의 instance mask·보정 평면 위치를 분리 추정하고, provider-neutral planar pose 계약을 통해 exact D2 selection과 measured D3를 구동한다. FoundPose는 동일 계약의 후보로 남지만 renderer variation에서 yaw가 불안정해 현재 기본 simulation demo path에서는 제외했다. 과거 <code>r153-r163</code>의 RGB-D 경로는 재현 가능한 역사적 진단으로만 남기며 현재 물리 카메라 방법론의 증거로 사용하지 않는다.</p>
+<p class="lede"><a href="isaac-d3b-rigid-contact-lifecycle.html">ISSUE-087</a>에서 정의한 D3b를 RTX 3090의 Isaac Sim 4.5에서 실행한 뒤, 물리 카메라가 RGB-only라는 전제를 반영해 D1을 다시 설계했다. 최신 <code>r212</code>은 두 synchronized RGB에서 얻은 초기 planar pose를 exposure 시각의 encoder state에 결속하고, 독립 60 Hz encoder로 constant-yaw translation을 계속 전파한다. 선택 후 correction envelope와 bounded asynchronous JSONL trace까지 실제 제어 시간축에서 측정해 exact D2 selection과 measured D3를 구동한다. FoundPose는 동일 provider-neutral 계약의 후보로 남지만 renderer variation에서 yaw가 불안정해 현재 기본 simulation demo path에서는 제외했다. 과거 <code>r153-r163</code>의 RGB-D 경로는 재현 가능한 역사적 진단으로만 남기며 현재 물리 카메라 방법론의 증거로 사용하지 않는다.</p>
 
-<div class="callout warn"><strong>현재 판정:</strong> <code>r200</code>은 <code>integrated_simulation_diagnostic_complete=true</code>, <code>declared_scope_ready=true</code>, D1-driven D2 selection, guarded contact, attachment, release와 containment를 만족했다. Simulation yaw component는 sealed holdout 96/96으로 검증됐지만 mask-plane position, instance segmentation과 guarded command 수정은 아직 qualification되지 않았다. 독립 encoder/state-estimation loop, correction, online collision commit, controller lease와 async evidence publisher도 실행되지 않았다. 따라서 <code>integrated_simulation_ready=false</code>, <code>complete_soft_realtime_pipeline=false</code>, <code>professor_demo_ready=false</code>, <code>hardware_execution_authorized=false</code>다. 아래 영상은 최종 grasp 성공률 증거가 아니라 실제시간 RGB-only 통합 진단이다.</div>
+<div class="callout warn"><strong>현재 판정:</strong> <code>r212</code>은 <code>integrated_simulation_diagnostic_complete=true</code>, <code>declared_scope_ready=true</code>, D1-driven D2 selection, 독립 encoder/state estimation, 615회 identity correction, guarded contact, attachment, release, containment와 1,620-tick trace reconciliation을 만족했다. Canonical 14단계 중 12단계가 independently measured이고 deadline miss는 0이지만 resident online collision commit과 future-start controller lease는 아직 실행되지 않았다. Simulation mask-plane position, instance segmentation과 guarded command 수정도 qualification되지 않았다. 따라서 <code>integrated_simulation_ready=false</code>, <code>complete_soft_realtime_pipeline=false</code>, <code>professor_demo_ready=false</code>, <code>hardware_execution_authorized=false</code>다. 아래 영상은 최종 grasp 성공률 증거가 아니라 실제시간 RGB-only 통합 진단이다.</div>
+
+<h2>2026-08-26 독립 encoder, correction, async trace 통합 진단: r212</h2>
+<video controls preload="metadata" style="display:block;width:100%;max-width:1280px;background:#111" src="../../assets/videos/isaac-rgb-event-trace-r212.mp4"></video>
+<p class="kicker"><code>r212</code> · diagnostic only · 1280×720 · 15 fps · 405/405 frame · 27.000 s · SHA-256 <code>b8d55c627579a088c1a2f008af9139ec796c7f6dbac8939a594f25d5eecd3eb9</code></p>
+<figure style="margin:24px 0"><img src="../../assets/images/isaac-r212/attached-12s.png" alt="r212 RGB-only Isaac pipeline attached stage" style="display:block;width:100%;border:1px solid var(--line);border-radius:10px"><figcaption>12초의 attached stage. 뒤집힌 Pepsi 캔, xArm와 Inspire hand, belt, robot table, 넉넉한 drop bin, 두 RGB sensor panel과 색상 기반 D1-D4 history를 동시에 표시한다. 우측 sensor panel에는 observed depth가 없다.</figcaption></figure>
+
+<h3>문제와 영향</h3>
+<p><code>r200</code>은 RGB pose가 D2를 구동했지만 selection 이후 물체 상태가 최신 encoder tick으로 계속 전파되는지, 선택된 command가 correction tube 안에 남는지, 60 Hz evidence 기록이 control deadline을 오염하지 않는지 증명하지 못했다. Report는 1,620개의 full track payload를 메모리에 쌓아 약 3.89 MB가 됐고, post-trial JSON serialization은 canonical <code>evidence_publisher</code>로 볼 수 없었다. 이 상태에서 평균 RTF만 보고 실시간 pipeline이라고 부르면 perception time ancestry와 기록 지연을 숨기게 된다.</p>
+
+<h3>수정한 실제시간 모듈 경계</h3>
+<pre>15 Hz synchronized RGB exposure
+  -> exposure timestamp와 일치하는 bounded encoder history lookup
+  -> initial planar [x, y, yaw] acquisition and exact ancestry gate
+
+60 Hz independent conveyor encoder
+  -> constant-yaw track translation propagation
+  -> selected event identity-correction envelope
+  -> measured articulation feedback and rigid lifecycle
+  -> immutable small EventRuntimeTraceSnapshot
+  -> nonblocking bounded enqueue
+
+background worker
+  -> snapshot validation -> JSONL serialization -> fsync -> atomic rename
+  -> submitted == persisted == control ticks, drop == 0, SHA-256 binding</pre>
+<p>Camera generation과 encoder sequence를 같은 숫자로 강제하지 않는다. Camera는 exposure timestamp, calibration ID와 clock domain으로 encoder history를 조회하고, encoder는 physics/control tick마다 독립 증가한다. Trace control path는 작은 scalar/tuple snapshot 생성과 <code>put_nowait</code>만 수행한다. Validation, payload expansion, JSON serialization과 file I/O는 worker가 소유한다. Queue drop, worker failure, sequence gap 또는 count mismatch는 run을 fail-closed한다.</p>
+
+<h3>실패를 보존한 r202-r212 계보</h3>
+<table><thead><tr><th>Run</th><th>직접 관찰</th><th>원인, 해결과 결과</th></tr></thead><tbody>
+<tr><td><code>r202</code></td><td>Camera frame과 latest encoder의 timestamp/identity가 달라 causal ancestry가 거절됐다.</td><td>Camera가 직전 render tick에 노출됐는데 sensor edge가 현재 encoder만 읽었다. Float equality를 느슨하게 하는 대신 독립 encoder history 계약을 도입했다.</td></tr>
+<tr><td><code>r204</code></td><td>Camera measurement <code>1.5333 s</code>와 current encoder <code>1.5500 s</code>가 계속 달랐다.</td><td>1 ns numerical tolerance만으로는 실제 한 tick 차이를 해결할 수 없음을 확인했다. Exposure timestamp의 exact historical state를 bounded lookup하도록 수정했다.</td></tr>
+<tr><td><code>r206</code></td><td><code>RGB pose and conveyor ancestry differs</code>로 선택 직전에 중단됐다.</td><td>Camera generation과 encoder sequence가 같은 counter를 공유해야 한다는 잘못된 결합이 남아 있었다. 두 sequence를 분리하고 timestamp/calibration/clock-domain ancestry만 결속했다.</td></tr>
+<tr><td><code>r208</code></td><td>독립 60 Hz encoder와 연속 state estimation이 D1-D3 전체를 구동해 grasp, release와 containment를 완료했다.</td><td>Temporal ancestry 수정이 기능적으로 닫혔다. Correction, collision, handoff와 evidence publisher는 당시 <code>not_executed</code>로 유지했다.</td></tr>
+<tr><td><code>r210</code></td><td>615/615 identity correction이 accepted됐고 p95 <code>0.0299 ms</code>, max <code>0.0340 ms</code>였다.</td><td>선택된 command와 current track의 longitudinal, timing, lateral, yaw, belt-speed residual을 contact 전 60 Hz로 감시했다. Nonzero correction은 아직 materialize하지 않고 stop/no-pick한다.</td></tr>
+<tr><td><code>r212</code></td><td>1,620개의 immutable trace가 drop 없이 persisted되고 control-path publisher p95 <code>0.0350 ms</code>, max <code>0.0606 ms</code>였다.</td><td>Canonical evidence publisher가 실제 실행됐다. Full propagation은 JSONL로 외부화하고 main report에는 first/latest만 남겨 report를 약 3.89 MB에서 1.07 MB로 줄였다.</td></tr>
+</tbody></table>
+
+<h3>r212 실제시간 측정</h3>
+<table><thead><tr><th>항목</th><th>측정</th><th>판정</th></tr></thead><tbody>
+<tr><td>Physics/control</td><td>60 Hz, simulation <code>27.000 s</code>, wall <code>27.000068 s</code>, RTF <code>0.999997</code></td><td>평균 actual-time pacing 통과. Hard real-time 주장은 하지 않는다.</td></tr>
+<tr><td>Wall/physics tail</td><td>Wall p95 <code>16.669 ms</code>, max <code>159.677 ms</code>, one-period lateness 82회; physics p95 <code>20.387 ms</code></td><td>평균 RTF와 60 Hz worst-case guarantee는 다르다. Tail latency는 그대로 blocker로 보존한다.</td></tr>
+<tr><td>RGB D1</td><td>Sensor <code>3.401 ms</code>, yaw provider <code>34.977 ms</code>, planar fit <code>0.917 ms</code>, total acquisition <code>36.182 ms</code></td><td>15 Hz one-shot 80 ms budget 안. Physical RGB accuracy/segmentation qualification은 아님.</td></tr>
+<tr><td>Encoder/state</td><td>1,621 samples, encoder p95 <code>0.0313 ms</code>, state estimation p95 <code>0.2499 ms</code></td><td>독립 60 Hz translation propagation deadline 통과.</td></tr>
+<tr><td>Correction</td><td>615 samples, p95 <code>0.0297 ms</code>, max <code>0.0340 ms</code>; 최대 timing residual <code>8.88e-16 s</code>, 나머지 0</td><td>Identity tube 유지 증거. Nonzero online correction capability는 아직 없음.</td></tr>
+<tr><td>Feedback/lifecycle</td><td>Feedback 1,620 samples p95 <code>0.1689 ms</code>; lifecycle 1,383 samples p95 <code>4.104 ms</code>, max <code>4.880 ms</code></td><td>각 2 ms/5 ms deadline 통과, miss 0. Guarded assistance 범위는 유지.</td></tr>
+<tr><td>Evidence publisher</td><td>1,620 submit/persist, drop 0; control p95 <code>0.0350 ms</code>, max <code>0.0606 ms</code>; worker p95 <code>0.0797 ms</code></td><td>0.5 ms control budget 통과. Worker drain 후 count와 digest를 report에 결속.</td></tr>
+<tr><td>Video</td><td>MPEG-4, 1280×720, 15 fps, 405 frame, <code>5,293,292 bytes</code></td><td>27초 전체 stage/lifecycle diagnostic. Professor-ready 또는 hardware authority가 아님.</td></tr>
+</tbody></table>
+
+<h3>검증과 재현 경계</h3>
+<ul>
+<li>Source <a href="https://github.com/gohyunsu/beltbench/commit/a190254"><code>a190254</code></a>에서 로컬 전체 suite <code>1,356 passed</code>, <code>22 skipped</code>, RTX focused suite 30개가 통과했다.</li>
+<li>r211 source-closed admission은 1,590-frame request/validation과 15개 runtime source를 다시 검증했다. Startup validation은 <code>0.954580 s</code>, 1,000-query selector p95는 <code>0.053111 ms</code>였다.</li>
+<li>r212 report SHA-256은 <code>d918e9a4bc93597892bb58becc37d44de40f927740bb5067cf5bc7f209ee3712</code>, MP4 SHA-256은 <code>b8d55c627579a088c1a2f008af9139ec796c7f6dbac8939a594f25d5eecd3eb9</code>다.</li>
+<li>1,620-line JSONL trace는 <code>1,580,164 bytes</code>, SHA-256 <code>7655e738970624ae57fbaed02ab4b1a03e16121e3574d4224b0fa2bea916d189</code>이며 report의 digest와 일치한다.</li>
+<li>Canonical 14단계 중 measured 12개, deadline-missed 0개다. <code>command_collision_gate</code>와 <code>controller_handoff</code>만 <code>not_executed</code>로 남는다.</li>
+</ul>
+<div class="callout"><strong>다음 병목:</strong> Offline sampled HPP-FCL validation이나 world-only cuRobo probe를 online collision commit으로 재라벨링하지 않는다. Exact robot/self, robot/world, moving object, attached object, release envelope lifecycle을 source-closed CUDA backend에서 검증하고 deadline을 통과한 뒤에만 그 accepted command를 capacity-one future-start controller lease로 넘긴다.</div>
 
 <h2>2026-08-26 split RGB backend 통합 진단: r200</h2>
 <video controls preload="metadata" style="display:block;width:100%;max-width:1280px;background:#111" src="../../assets/videos/isaac-rgb-reference-mask-plane-r200.mp4"></video>
@@ -214,14 +271,14 @@ capacity-one video submission → MP4/report                       [no control a
 
 <h2>냉정한 결론과 다음 단계</h2>
 <ol>
-<li><code>r200</code>은 planning animation이 아니라 RGB-derived split D1 track이 exact D2를 선택하고 measured D3가 grasp/drop을 수행한 실제시간 통합 진단이다. 교수님께는 이 영상과 component별 authority, canonical missing stage를 함께 보여줄 수 있다.</li>
-<li>다음 우선순위는 진단을 success로 재라벨링하는 것이 아니다. Physical-domain native RGB full-yaw holdout, physical segmentation·synchronization, canonical per-stage timing/lease, resident collision commit gate와 source-unmodified 또는 별도 승인된 guarded command contract를 닫아야 한다.</li>
+<li><code>r212</code>는 planning animation이 아니라 RGB-derived split D1 track, 독립 encoder propagation과 correction이 exact D2를 선택하고 measured D3가 grasp/drop을 수행한 실제시간 통합 진단이다. 교수님께는 이 영상과 12/14 canonical stage evidence, 남은 두 stage를 함께 보여줄 수 있다.</li>
+<li>다음 우선순위는 진단을 success로 재라벨링하는 것이 아니다. Resident dynamic lifecycle collision commit을 실제 CUDA backend로 닫고, accepted command에만 future-start controller lease를 발급해야 한다. 그 다음 physical-domain native RGB full-yaw holdout, segmentation·synchronization과 source-unmodified 또는 별도 승인된 guarded command contract를 닫는다.</li>
 <li>실제 moving belt surface는 정지 deck+prescribed translation과 동역학이 다르다. Hardware 전에는 moving-surface scene에서 native support/contact를 별도 qualification하고 constraint-assisted 결과와 섞지 않는다.</li>
 <li>질량·마찰·force threshold는 provisional이다. 실제 Pepsi·belt·Inspire fingertip 측정값으로 system identification하기 전에는 자연 grasp 가능성이나 성공률을 주장하지 않는다.</li>
 <li>Isaac 실행에 사용한 driver-version bypass는 진단용이다. Vulkan/CUDA/driver 정합성을 고친 뒤 동일 run을 재현해야 최종 simulator 환경을 승인한다.</li>
 </ol>
 
-<div class="callout"><strong>다음 성공 기준:</strong> Physical RGB camera adapter가 rectified RGB, bounded synchronization skew와 qualified segmentation을 발행하고, sealed native-RGB holdout에서 position·yaw·acceptance·latency gate를 통과해야 한다. 이어 canonical controller lease·per-stage deadline evidence·resident collision commit gate를 실행한다. Guarded hand target 수정은 숨기지 않고 별도 승인된 execution contract로 승격하거나 source command 자체를 다시 생성한다. Ground truth와 observed depth는 계속 selector에서 금지한다.</div>
+<div class="callout"><strong>다음 성공 기준:</strong> Source-closed dynamic lifecycle command를 resident cuRobo backend가 robot/self, robot/world, moving object, attached object와 release envelope 전 구간에서 검사하고 deadline 안에 accepted해야 한다. 그 accepted result와 exact trajectory만 capacity-one future-start handoff에 넘겨 14/14 stage를 측정한다. Physical RGB camera adapter는 rectified RGB, bounded synchronization skew와 qualified segmentation을 발행하고 sealed native-RGB holdout의 position·yaw·acceptance·latency gate를 별도로 통과해야 한다. Guarded hand target 수정은 숨기지 않고 별도 승인된 execution contract로 승격하거나 source command 자체를 다시 생성한다. Ground truth와 observed depth는 계속 selector에서 금지한다.</div>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
 </body>
