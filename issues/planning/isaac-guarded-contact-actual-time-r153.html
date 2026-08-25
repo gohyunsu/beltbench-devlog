@@ -3,23 +3,68 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Isaac causal guarded actual-time r153-r163 · BeltBench 개발 기록</title>
+<title>Isaac RGB-only causal guarded actual-time r153-r194 · BeltBench 개발 기록</title>
 <link rel="stylesheet" href="../../assets/css/site.css">
 <style>pre{overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;line-height:1.55}code{font-size:.92em}table{width:100%;border-collapse:collapse}th,td{padding:.65rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}</style>
 </head>
 <body>
 <header class="top"><div class="wrap"><a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a><nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav></div></header>
 <main class="wrap article">
-<div class="eyebrow">ISSUE-088 · 2026-08-25 · causal guarded actual-time D1-D3</div>
-<h1>실제시간 guarded contact부터 grasp, 이송, release와 bin containment까지 측정값으로 닫는다.</h1>
-<p class="lede"><a href="isaac-d3b-rigid-contact-lifecycle.html">ISSUE-087</a>에서 정의한 D3b 경계를 RTX 3090의 Isaac Sim 4.5에서 실행했다. <code>r153</code>은 실제 xArm6·Inspire hand·connector·Pepsi collision asset을 사용하고, 60 Hz physics에서 measured articulation, PhysX contact, contact-confirmed constraint, release와 bin containment를 순서대로 관측했다. 다만 RGB-D는 이 run의 선택 권한이 아니라 표시용 ground-truth diagnostic이므로, 아직 causal D1-D3 통합 데모나 자연 마찰 grasp 성공은 아니다.</p>
+<div class="eyebrow">ISSUE-088 · 2026-08-25 · RGB-only causal guarded actual-time D1-D3</div>
+<h1>RGB-only perception부터 guarded grasp, 이송, release와 bin containment까지 실제 시간으로 연결한다.</h1>
+<p class="lede"><a href="isaac-d3b-rigid-contact-lifecycle.html">ISSUE-087</a>에서 정의한 D3b를 RTX 3090의 Isaac Sim 4.5에서 실행한 뒤, 물리 카메라가 RGB-only라는 전제를 반영해 D1을 다시 설계했다. 최신 <code>r194</code>는 두 synchronized RGB, simulation-only instance mask, FoundPose correspondence, belt-plane constrained planar solver, encoder prediction, exact D2 selection과 measured D3를 한 시간축으로 연결한다. 과거 <code>r153-r163</code>의 RGB-D 경로는 재현 가능한 역사적 진단으로만 남기며 현재 물리 카메라 방법론의 증거로 사용하지 않는다.</p>
 
-<div class="callout"><strong>현재 판정:</strong> 후속 <code>r163</code>에서 simulation RGB-D가 D1 track을 만들고 그 track이 D2 exact command를 실제로 선택했으며, measured D3 contact·attachment·release·containment까지 actual-time으로 이어졌다. 그러나 guarded feedback가 admitted hand target을 수정하므로 <code>integrated_simulation_ready=false</code>, <code>professor_demo_ready=false</code>, <code>hardware_execution_authorized=false</code>다. 교수님께는 완성 데모가 아니라 causal pipeline diagnostic으로만 제시한다.</div>
+<div class="callout warn"><strong>현재 판정:</strong> <code>r194</code>는 <code>integrated_simulation_diagnostic_complete=true</code>와 <code>declared_scope_ready=true</code>를 만족했다. 그러나 simulation instance mask와 완화된 development acquisition gate는 physical RGB qualification이 아니며, guarded feedback가 admitted hand target을 수정한다. 따라서 <code>integrated_simulation_ready=false</code>, <code>professor_demo_ready=false</code>, <code>hardware_execution_authorized=false</code>다. 아래 영상은 최종 grasp 성공률 증거가 아니라 실제시간 RGB-only 통합 진단이다.</div>
+
+<h2>2026-08-25 RGB-only 통합 진단: r194</h2>
+<video controls preload="metadata" style="display:block;width:100%;max-width:1280px;background:#111" src="../../assets/videos/isaac-rgb-only-guarded-r194.mp4"></video>
+<p class="kicker"><code>r194</code> · diagnostic only · 1280×720 · 15 fps · 406/406 frame · 27.067 s · SHA-256 <code>14ad68b0ae88a2159a555c75f36f3cfb48ed0d96e23468f2f54ae57af08a4dee</code></p>
+<p>우측 두 패널은 depth 없이 RGB와 Isaac instance mask만 표시한다. 색상 history는 D1 RGB causal track, D2 source-closed selection, D3a measured PhysX servo, D3b contact lifecycle, D4 diagnostic validation의 전환을 실제 presentation tick에 맞춰 보여준다. 캔은 belt 상류에서 들어와 upside-down stable pose와 일정 yaw를 유지한 채 평행이동하고, contact-confirmed guarded close 뒤 이송되어 넉넉한 bin 안으로 release된다.</p>
+
+<h3>문제와 영향</h3>
+<p>물리 장비가 RGB camera인데 이전 최신 영상과 여러 설계 문서는 RGB-D depth/CAD translation을 D1 위치 관측으로 사용했다. 이 상태에서 simulation 영상을 통과시켜도 실제 장비에는 같은 입력 modality가 없으므로 adapter 교체만으로 이식할 수 없고, depth fallback이 calibration 또는 pose 실패를 가리는 구조가 된다. 단순히 depth 배열을 0으로 채우는 수정은 interface와 권한 오인을 남기므로 채택하지 않았다.</p>
+
+<h3>수정한 모듈 경계</h3>
+<pre>synchronized rectified RGB + explicit segmentation capability
+  -> FoundPose RGB-to-CAD 2D/3D correspondences
+  -> known stable pose + calibrated belt-plane joint fit [x, y, yaw]
+  -> quality / disagreement / covariance / deadline gates
+  -> exact measurement-time encoder registration
+  -> 60 Hz constant-yaw translation propagation
+  -> bounded resident D2 selection
+  -> measured D3a servo + D3b guarded contact lifecycle
+
+simulation-only edge: Isaac instance mask
+physical edge required: qualified RGB segmentation + camera synchronization
+forbidden fallback: observed depth or simulator ground truth</pre>
+<p>Planner는 계속 <code>FusedPlanarObjectTrack</code>만 소비하므로 Isaac RGB와 물리 RGB를 구분하지 않는다. FoundPose crop의 correspondence는 source image intrinsic과 같지 않기 때문에 crop camera matrix는 그대로 solver에 전달하고, 별도 source calibration SHA-256으로 원본 RGB ancestry만 검증한다. Object identity와 stable tabletop pose는 사전에 주어지며, belt 위에서는 초기 위치와 yaw만 RGB로 측정하고 이후 yaw rate를 0으로 둔다.</p>
+
+<h3>실패와 원인, 해결 계보</h3>
+<table><thead><tr><th>Run</th><th>직접 관찰</th><th>원인과 해결</th></tr></thead><tbody>
+<tr><td><code>r182-r183</code></td><td>Depth array를 읽지 않는 12-view replay에서 최대 위치 오차 <code>3.321 mm</code>, yaw 오차 <code>0.1295 rad</code>, acquisition p95 <code>356.7 ms</code>였다. Strict gate는 6/12만 받았다.</td><td>정확한 joint fit도 camera별 yaw disagreement <code>0.10 rad</code>에서 거절되어 low recall임을 확인했다. 이 gate 하나만 <code>0.25 rad</code>로 올린 simulation integration policy를 별도 development 경로에 두고 qualification과 분리했다.</td></tr>
+<tr><td><code>r185</code></td><td>Reject된 duplicate generation에 encoder timing이 항상 존재한다고 assert해 algorithm 전에 중단됐다.</td><td>Rejected sensor generation은 timing을 만들지 않는 것이 정상이다. Optional timing을 그대로 보존하고 rejection trace가 계속 흐르도록 고쳤다.</td></tr>
+<tr><td><code>r187</code></td><td>FoundPose response가 <code>response_ancestry_mismatch</code>로 거절됐다.</td><td>Crop correspondence intrinsic을 source camera intrinsic과 같다고 잘못 가정했다. Crop matrix와 source calibration fingerprint의 역할을 분리했다.</td></tr>
+<tr><td><code>r189</code></td><td>실제 Isaac RGB에서 FoundPose <code>350.8 ms</code>, pose 오차 약 <code>1.3 mm / 0.0126 rad</code>였지만 strict camera-yaw gate가 거절했다.</td><td>Strict policy는 변경하지 않고 negative evidence로 보존했다. 앞서 분리한 development integration policy만 후속 통합 run에 사용했다.</td></tr>
+<tr><td><code>r190</code></td><td>12/12 replay가 diagnostic gate를 통과했고 provider p95 <code>267.8 ms</code>, solver p95 <code>89.7 ms</code>, total p95 <code>345.4 ms</code>였다.</td><td>Depth-free integration 가능성만 확인했다. Historical capture에 depth key가 있다는 이유로 qualification으로 승격하지 않았다.</td></tr>
+<tr><td><code>r192</code></td><td>RGB D1, grasp, attachment, release, containment과 406-frame 영상은 완료됐지만 <code>--require-ready</code>가 failure record를 남겼다. 영상 패널도 depth가 없는데 RGB-D로 표시됐다.</td><td>Source-unmodified authority와 guarded diagnostic completion이 하나의 boolean에 섞여 있었다. 두 readiness를 분리하고 실제 panel modality에 따라 라벨을 생성하도록 수정했다.</td></tr>
+<tr><td><code>r194</code></td><td>Failure record 없이 declared RGB diagnostic scope를 완료했다. D1부터 D4까지 실제 단계 색상과 406/406-frame MP4가 일치했다.</td><td>Source-closed readiness는 계속 false로 유지하면서, guarded contact·servo deadline·lifecycle·containment을 모두 통과한 별도 non-authoritative readiness만 true로 판정했다.</td></tr>
+</tbody></table>
+
+<h3>r194 측정 결과</h3>
+<table><thead><tr><th>항목</th><th>측정</th><th>해석</th></tr></thead><tbody>
+<tr><td>RGB planar pose</td><td>Translation <code>1.401 mm</code>, yaw <code>0.01670 rad</code>; simulator truth는 evaluator only</td><td>해당 Isaac scene에서는 정확하지만 physical domain accuracy가 아니다.</td></tr>
+<tr><td>Acquisition</td><td>FoundPose provider <code>280.38 ms</code>, solver <code>42.28 ms</code>, total <code>323.06 ms</code></td><td>60 Hz inference가 아니라 upstream one-shot acquisition이다. 이후 pose는 encoder로 60 Hz 전파한다.</td></tr>
+<tr><td>Control pacing</td><td>60 Hz physics, simulation <code>27.050 s</code>, wall <code>27.0501 s</code>, RTF <code>0.999996</code></td><td>Actual-time 평균 pacing 통과. 16.67 ms period를 넘은 tick이 96개라 hard real-time 주장은 금지한다.</td></tr>
+<tr><td>Lifecycle</td><td>Contact <code>10.35 s</code>, attach <code>10.68 s</code>, release <code>18.55 s</code>, contained <code>19.15 s</code></td><td>Measured PhysX lifecycle과 guarded retention qualification 통과. Natural force closure 증거는 아니다.</td></tr>
+<tr><td>Video</td><td>406 submit/encode, drop/error 0, 15 fps, MP4 <code>5,302,408 bytes</code></td><td>비동기 presentation이 control pacing을 막지 않았고 report-bound SHA와 local copy가 일치한다.</td></tr>
+</tbody></table>
+
+<h2>역사적 RGB-D 진단: r153-r163</h2>
 
 <video controls preload="metadata" style="display:block;width:100%;max-width:1280px;background:#111" src="../../assets/videos/isaac-feedback-guarded-full-task-r153.mp4"></video>
 <p class="kicker"><code>r153</code> · 1280×720 · 15 fps · 376 frame · 25.067 s · SHA-256 <code>06676b7bd850435b46ebb25f5d0e50e6ae7bbc66b112a0cb3d7e21a47cb776d8</code></p>
 
-<h2>2026-08-25 causal D1-D3 follow-up: r163</h2>
+<h3>2026-08-25 causal D1-D3 follow-up: r163</h3>
 <video controls preload="metadata" style="display:block;width:100%;max-width:1280px;background:#111" src="../../assets/videos/isaac-causal-guarded-full-task-r163.mp4"></video>
 <p class="kicker"><code>r163</code> · diagnostic only · 1280×720 · 15 fps · 406/406 frame · 27.067 s · SHA-256 <code>d5a23797159da2065001ed815938d8ed4dc48d9c39625a6aa171dab17f49797d</code></p>
 <p>첫 인코딩 프레임은 <code>stage=perception</code>, D1 active, D2 inactive, <code>d1_compute=pending</code>를 표시한다. 다음 프레임은 D1과 D2를 complete로 바꾸고 measured compute <code>64.08 ms</code>를 표시한다. 임의 pause를 넣지 않았고 같은 physics tick에서 렌더 snapshot을 먼저 제출한 뒤 sensor work를 실행했다. 따라서 stage 표시 해상도는 15 fps의 <code>66.67 ms</code>로 제한되며 report에 그 quantization과 latest-completed sensor panel age를 명시했다.</p>
@@ -67,7 +112,7 @@ D1 sensor observation → object track and prediction              [r153: diagno
 asynchronous evidence
 capacity-one video submission → MP4/report                       [no control authority]</pre>
 <table><thead><tr><th>경계</th><th>역할</th><th>실시간 경로에서 제외한 것</th></tr></thead><tbody>
-<tr><td>D1 perception</td><td>Timestamped RGB-D와 calibration으로 planar position·initial yaw·velocity·covariance를 만든다.</td><td>Grasp 생성, collision planning, 영상 encoding.</td></tr>
+<tr><td>D1 perception</td><td>Timestamped calibrated RGB와 explicit segmentation으로 planar position·initial yaw·covariance를 만들고 encoder로 translation을 전파한다.</td><td>Observed depth, simulator truth fallback, grasp 생성, collision planning, 영상 encoding.</td></tr>
 <tr><td>D2 selection</td><td>Object ID, stable pose, yaw cell과 predicted intercept time에 맞는 resident command를 bounded query로 고른다.</td><td>Hot path의 trajectory optimization. Candidate 생성과 dense collision 검증은 offline이다.</td></tr>
 <tr><td>D3a servo</td><td>Source joint target을 60 Hz controller에 전달하고 measured q error와 deadline을 감시한다.</td><td>Object 성공 상태 추론.</td></tr>
 <tr><td>D3b interaction</td><td>Contact force, attachment assistance, measured object pose, detach와 containment를 simulator-neutral lifecycle로 판정한다.</td><td>Contact가 없을 때 성공을 만드는 fixed-joint fallback.</td></tr>
@@ -117,6 +162,11 @@ capacity-one video submission → MP4/report                       [no control a
 <li><a href="https://github.com/gohyunsu/beltbench/commit/1d734e3"><code>1d734e3</code></a>: constraint-assisted carry와 natural retention 판정을 명시적으로 분리한다.</li>
 <li><a href="https://github.com/gohyunsu/beltbench/commit/bbade17"><code>bbade17</code></a>: D1 covariance floor와 D2 uncertainty gate의 구조적 불일치를 startup에서 차단하고 simulation-only provisional policy를 최소 교정한다.</li>
 <li><a href="https://github.com/gohyunsu/beltbench/commit/cf5ea78"><code>cf5ea78</code></a>: same-tick D1 경계를 실제 presentation frame에 노출하고 MP4 SHA·size·display quantization을 report에 바인딩한다.</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/3a4c5bd"><code>3a4c5bd</code></a>: admitted Isaac causal edge를 synchronized calibrated RGB와 FoundPose planar correspondence backend로 교체하고 depth sensor를 비활성화한다.</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/e1350ef"><code>e1350ef</code></a>: FoundPose crop camera와 source RGB calibration ancestry를 분리한다.</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/e0cade3"><code>e0cade3</code></a>: simulation integration gate를 strict qualification policy와 별도 development policy로 분리한다.</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/d245a26"><code>d245a26</code></a>: guarded diagnostic readiness를 source-unmodified authority와 분리하고 depth-free 영상 라벨과 D4 색상을 바로잡는다.</li>
+<li>Revision <code>d245a26201d1727a9b62e935fbd267a92d7f2912</code>에서 로컬 전체 suite <code>1,306 passed</code>, <code>22 skipped</code>, subtest 55개가 통과했다.</li>
 <li><code>r160/r161</code>은 revision <code>cf5ea789d4ec6bd2a73c7acafb591bf62dce0e94</code>에서 r99 exact command 1,590 frame과 simulation D1 source를 각각 재감사했다.</li>
 <li><code>r163</code> report SHA-256은 <code>ce290634a19fa7bf448c6df4951a45e74341db1a29d18236341d2359e027aa2d</code>, MP4 SHA-256은 <code>d5a23797159da2065001ed815938d8ed4dc48d9c39625a6aa171dab17f49797d</code>다.</li>
 <li>Revision <code>cf5ea78</code>에서 로컬 전체 suite 1,276개가 통과하고 21개가 environment/capability 조건으로 skip됐다. RTX focused suite 20개도 통과했다.</li>
@@ -127,14 +177,14 @@ capacity-one video submission → MP4/report                       [no control a
 
 <h2>냉정한 결론과 다음 단계</h2>
 <ol>
-<li>현재 영상은 planning animation보다 강하다. Robot/object가 physics state이고 contact·attachment·release·containment가 측정됐다. 그러나 D1이 선택을 구동하지 않으므로 교수님께는 “실시간 D2-D3 interaction diagnostic”으로만 제시한다.</li>
-<li>Simulation RGB-D의 mask/depth/yaw estimate가 timestamped track을 만들고 D2 exact input이 되는 causal 경계는 r163에서 닫혔다. 다음 우선순위는 이 진단을 success로 재라벨링하는 것이 아니라 canonical per-stage timing/lease와 source-unmodified command execution을 닫는 것이다.</li>
+<li><code>r194</code>는 planning animation이 아니라 RGB-derived D1 track이 exact D2를 선택하고 measured D3가 grasp/drop을 수행한 실제시간 통합 진단이다. 교수님께는 이 범위와 RGB-only correction을 함께 보여줄 수 있다.</li>
+<li>다음 우선순위는 진단을 success로 재라벨링하는 것이 아니다. Native RGB full-yaw holdout, physical segmentation·synchronization, canonical per-stage timing/lease, resident collision commit gate와 source-unmodified 또는 별도 승인된 guarded command contract를 닫아야 한다.</li>
 <li>실제 moving belt surface는 정지 deck+prescribed translation과 동역학이 다르다. Hardware 전에는 moving-surface scene에서 native support/contact를 별도 qualification하고 constraint-assisted 결과와 섞지 않는다.</li>
 <li>질량·마찰·force threshold는 provisional이다. 실제 Pepsi·belt·Inspire fingertip 측정값으로 system identification하기 전에는 자연 grasp 가능성이나 성공률을 주장하지 않는다.</li>
 <li>Isaac 실행에 사용한 driver-version bypass는 진단용이다. Vulkan/CUDA/driver 정합성을 고친 뒤 동일 run을 재현해야 최종 simulator 환경을 승인한다.</li>
 </ol>
 
-<div class="callout"><strong>다음 성공 기준:</strong> Simulation instance mask/reference-bank yaw를 physical-camera segmentation과 qualified pose backend로 교체하고, canonical controller lease·per-stage deadline evidence·resident collision commit gate를 실행한다. 그 exact source command가 guarded hand-target 수정 없이 contact/retention을 통과해야만 <code>integrated_simulation_ready</code> 또는 professor demo status를 승격한다. Ground truth는 계속 evaluator에만 둔다.</div>
+<div class="callout"><strong>다음 성공 기준:</strong> Physical RGB camera adapter가 rectified RGB, bounded synchronization skew와 qualified segmentation을 발행하고, sealed native-RGB holdout에서 position·yaw·acceptance·latency gate를 통과해야 한다. 이어 canonical controller lease·per-stage deadline evidence·resident collision commit gate를 실행한다. Guarded hand target 수정은 숨기지 않고 별도 승인된 execution contract로 승격하거나 source command 자체를 다시 생성한다. Ground truth와 observed depth는 계속 selector에서 금지한다.</div>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
 </body>
