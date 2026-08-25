@@ -14,6 +14,8 @@
 <h1>Planning animation을 실제 rigid-object contact, release, bin containment 증거로 교체한다.</h1>
 <p class="lede">현재 r96은 실제 Isaac RGB-D perception, exact D2 command selection과 measured D3a articulation servo를 연결했지만 물체 pose는 계획값으로 매 frame 설정된다. 다음 교수용 영상은 이 경계를 숨기지 않고, 동일 source-closed command에 collision mesh, 질량·마찰, PhysX contact, contact-confirmed attachment, release와 큰 bin containment를 연결하는 D3b를 목표로 한다. 현재 상태는 구현 중이며 physics run과 최종 영상은 아직 통과하지 않았다.</p>
 
+<div class="callout"><strong>2026-08-25 후속:</strong> RTX 실제시간 검증과 r153 영상이 확보됐다. 실패 계보, guarded contact, assisted carry와 measured release·containment 결과는 <a href="isaac-guarded-contact-actual-time-r153.html">ISSUE-088</a>에서 이어서 기록한다. 이 문서는 구현 전 설계와 당시 미검증 상태를 그대로 보존한다.</div>
+
 <h2>관찰한 문제</h2>
 <p>기존 Isaac runner의 센서와 관절 feedback은 실제 simulator 출력이지만 물체는 <code>SingleXFormPrim</code>이고 매 tick 계획 pose로 이동한다. 따라서 화면에서 손과 캔이 함께 움직여도 grasp contact, 마찰 유지, 낙하와 containment를 측정한 결과가 아니다. 이 runner에 조건문을 계속 추가하면 2,500줄 이상의 D1-D3a 경로가 perception, presentation과 object physics까지 동시에 소유하게 된다.</p>
 <pre>D3a verified boundary
