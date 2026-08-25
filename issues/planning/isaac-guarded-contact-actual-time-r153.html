@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Isaac RGB-only causal guarded actual-time r153-r212 · BeltBench 개발 기록</title>
+<title>Isaac RGB-only causal guarded actual-time r153-r216 · BeltBench 개발 기록</title>
 <link rel="stylesheet" href="../../assets/css/site.css">
 <style>pre{overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;line-height:1.55}code{font-size:.92em}table{width:100%;border-collapse:collapse}th,td{padding:.65rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}</style>
 </head>
@@ -12,9 +12,41 @@
 <main class="wrap article">
 <div class="eyebrow">ISSUE-088 · 2026-08-26 · RGB-only split backend actual-time D1-D3</div>
 <h1>RGB-only perception부터 guarded grasp, 이송, release와 bin containment까지 실제 시간으로 연결한다.</h1>
-<p class="lede"><a href="isaac-d3b-rigid-contact-lifecycle.html">ISSUE-087</a>에서 정의한 D3b를 RTX 3090의 Isaac Sim 4.5에서 실행한 뒤, 물리 카메라가 RGB-only라는 전제를 반영해 D1을 다시 설계했다. 최신 <code>r212</code>은 두 synchronized RGB에서 얻은 초기 planar pose를 exposure 시각의 encoder state에 결속하고, 독립 60 Hz encoder로 constant-yaw translation을 계속 전파한다. 선택 후 correction envelope와 bounded asynchronous JSONL trace까지 실제 제어 시간축에서 측정해 exact D2 selection과 measured D3를 구동한다. FoundPose는 동일 provider-neutral 계약의 후보로 남지만 renderer variation에서 yaw가 불안정해 현재 기본 simulation demo path에서는 제외했다. 과거 <code>r153-r163</code>의 RGB-D 경로는 재현 가능한 역사적 진단으로만 남기며 현재 물리 카메라 방법론의 증거로 사용하지 않는다.</p>
+<p class="lede"><a href="isaac-d3b-rigid-contact-lifecycle.html">ISSUE-087</a>에서 정의한 D3b를 RTX 3090의 Isaac Sim 4.5에서 실행한 뒤, 물리 카메라가 RGB-only라는 전제를 반영해 D1을 다시 설계했다. 최신 <code>r216</code>은 두 synchronized RGB와 instance mask만으로 초기 planar pose를 얻고 exposure 시각의 encoder state에 결속한다. 이후 독립 60 Hz encoder로 constant-yaw translation을 전파하고, selection, correction envelope, measured articulation/contact lifecycle과 bounded asynchronous trace를 하나의 actual-time run에서 구동한다. FoundPose는 동일 provider-neutral 계약의 physical RGB 후보로 남지만 현재 simulation 기본 경로는 sealed native-RGB yaw bank와 known-plane mask position을 사용한다. 과거 <code>r153-r163</code>의 RGB-D 경로는 재현 가능한 역사적 진단으로만 남기며 현재 물리 카메라 방법론의 증거로 사용하지 않는다.</p>
 
-<div class="callout warn"><strong>현재 판정:</strong> <code>r212</code>은 <code>integrated_simulation_diagnostic_complete=true</code>, <code>declared_scope_ready=true</code>, D1-driven D2 selection, 독립 encoder/state estimation, 615회 identity correction, guarded contact, attachment, release, containment와 1,620-tick trace reconciliation을 만족했다. Canonical 14단계 중 12단계가 independently measured이고 deadline miss는 0이지만 resident online collision commit과 future-start controller lease는 아직 실행되지 않았다. Simulation mask-plane position, instance segmentation과 guarded command 수정도 qualification되지 않았다. 따라서 <code>integrated_simulation_ready=false</code>, <code>complete_soft_realtime_pipeline=false</code>, <code>professor_demo_ready=false</code>, <code>hardware_execution_authorized=false</code>다. 아래 영상은 최종 grasp 성공률 증거가 아니라 실제시간 RGB-only 통합 진단이다.</div>
+<div class="callout warn"><strong>현재 판정:</strong> source <code>8ce9740</code>의 <code>r216</code>은 <code>integrated_simulation_diagnostic_complete=true</code>, <code>declared_scope_ready=true</code>, D1-driven D2 selection, 독립 encoder/state estimation, 615회 identity correction, guarded contact, attachment, release, containment와 1,620-tick trace reconciliation을 만족했다. Canonical 14단계 중 12단계가 independently measured이고 deadline miss는 0이지만 resident online collision commit과 future-start controller lease는 아직 실행되지 않았다. Sealed holdout이 승인한 것은 simulation yaw component뿐이며 mask-plane position, instance segmentation과 guarded hand-target 수정은 qualification되지 않았다. 따라서 <code>integrated_simulation_ready=false</code>, <code>complete_soft_realtime_pipeline=false</code>, <code>professor_demo_ready=false</code>, <code>hardware_execution_authorized=false</code>다. 아래 영상은 최종 grasp 성공률 증거가 아니라 current-source actual-time RGB-only 통합 진단이다.</div>
+
+<h2>2026-08-26 current-source RGB-only actual-time 통합: r216</h2>
+<video controls preload="metadata" style="display:block;width:100%;max-width:1280px;background:#111" src="../../assets/videos/isaac-rgb-event-r216.mp4"></video>
+<p class="kicker"><code>r216</code> · diagnostic only · 1280×720 · 15 fps · 405/405 frame · 27.000 s · SHA-256 <code>398ed249a0dd9791d7b4f2054023a740083d8e87729e0564a9db7e27b84a59b7</code></p>
+<figure style="margin:24px 0"><img src="../../assets/images/isaac-r216/contact-sheet.png" alt="r216 current-source RGB-only Isaac pipeline contact sheet" style="display:block;width:100%;border:1px solid var(--line);border-radius:10px"><figcaption>시작, RGB acquisition, guarded approach, contact, attached transport, release, containment와 return의 8개 시점. 실제 xArm6, Inspire Left, 흰색 paired connector CAD, 뒤집힌 Pepsi 캔, conveyor, robot table, 넉넉한 drop bin과 두 RGB/mask panel을 함께 표시한다.</figcaption></figure>
+
+<h3>native RGB yaw qualification을 다시 닫은 과정</h3>
+<table><thead><tr><th>단계</th><th>직접 측정</th><th>권한 경계</th></tr></thead><tbody>
+<tr><td>Reference campaign</td><td>Source <a href="https://github.com/gohyunsu/beltbench/commit/87507dc4699770690f3409f2fb615890a439f129"><code>87507dc</code></a>, 72 capture/144 view. 모든 bundle은 RGB와 object mask만 포함하고 observed depth key가 없다.</td><td>24개 yaw reference bank를 만드는 simulation RGB producer 증거다.</td></tr>
+<tr><td>Query campaign</td><td>120 capture/240 view, 24 yaw × 5 belt position. RGB/mask/intrinsic/extrinsic와 source hash를 결박했다.</td><td>Temporal index를 development 1개와 sealed holdout 4개로 사전 분할했다.</td></tr>
+<tr><td>Development</td><td>24/24 성공, yaw max <code>0.027224 rad</code>, p95 <code>0.010659 rad</code>, inference p95 <code>35.683 ms</code>.</td><td>고정된 matcher와 threshold가 development gate를 통과한 뒤에만 holdout을 한 번 열었다.</td></tr>
+<tr><td>Sealed holdout</td><td>96/96 성공, yaw max <code>0.033150 rad</code>, p95 <code>0.029621 rad</code>, inference p95 <code>36.137 ms</code>. Evidence ID는 <code>simulation-rgb-yaw/265093f25bbc5a58fa9e28eee33898615621edab6d15237fe9cb485194be43c0</code>이다.</td><td><code>qualified_simulation_sensor_yaw_candidate_cad_translation_still_required</code>. Yaw component만 승인하며 position과 full perception은 승인하지 않는다.</td></tr>
+</tbody></table>
+
+<h3>발견한 RGB-D 오결박과 구조 수정</h3>
+<p>첫 event perception admission은 이름과 실행 mode는 RGB-only였지만 source list가 <code>CadTranslationObserver</code>, <code>RectifiedRgbdBackprojector</code>, depth 기반 object-surface model을 결박하고 있었다. Isaac runner도 admission 하나가 아니라 simulation matcher, reference, qualification과 acquisition policy를 loose CLI로 다시 받을 수 있었다. 실제 run이 depth를 읽지 않았더라도 이 구조에서는 증거 계약이 RGB-only라고 말할 수 없다.</p>
+<p>Source <a href="https://github.com/gohyunsu/beltbench/commit/9e97600a28b5334f44cccdb3ed904ccb9467613c"><code>9e97600</code></a>에서 admission source를 mask-known-plane position, RGB planar acquisition, ingress, tracking, runtime profile, sealed yaw evidence로 교체했다. Runtime은 <code>SimulationRgbMaskPlaneBackend</code>와 provider-neutral <code>RealtimeRgbPosePipeline</code>만 만들고, runner는 simulation mode에서 하나의 <code>--perception-admission</code>만 받는다. Position authority는 의도적으로 false다. 로컬 전체 1,371개와 RTX focused 52개 테스트가 통과했다.</p>
+
+<h3>실패를 숨기지 않은 r214와 정책 의미 수정</h3>
+<p>첫 current-source trial <code>r214</code>는 Isaac app과 RTX renderer가 기동한 뒤 scene 실행 전에 <code>RGB runtime profile and edge policies disagree</code>로 중단됐다. 원인은 backend 내부 acquisition 한도 <code>0.08 s</code>와 acquisition 시작부터 track/selection까지의 상위 한도 <code>0.25 s</code>를 validator가 동일해야 한다고 잘못 강제한 것이었다. Threshold를 임의로 완화하지 않고 두 deadline의 소유권을 분리했다. Source <a href="https://github.com/gohyunsu/beltbench/commit/8ce97407d8167f90ad41b835b6f5def5f78ef6b5"><code>8ce9740</code></a>은 상위 한도가 내부 한도 이상인지 검사하고 runtime budget에는 상위 한도를 예약한다. 실제 source config를 함께 로드하는 회귀 테스트를 추가했고 로컬 전체 <code>1,373 passed</code>, <code>22 skipped</code>, RTX focused 24개가 통과했다.</p>
+
+<h3>r215 command admission과 r216 실제시간 측정</h3>
+<ul>
+<li><code>r215</code>는 현재 source에서 1,590-frame playback과 독립 HPP-FCL/contact validation을 정확히 재현했다. Startup validation <code>0.945231 s</code>, 1,000-query resident selector p95 <code>0.051608 ms</code>이며 15개 runtime source를 하나의 admission에 결박했다.</li>
+<li><code>r216</code>은 simulation <code>27.000 s</code>, wall <code>27.000108 s</code>, RTF <code>0.999996</code>다. 60 Hz physics/control 1,620 tick, synchronized RGB 405회, 영상 405/405 frame, drop/error 0이다.</li>
+<li>첫 causal RGB pose는 sensor ingress <code>2.637 ms</code>, yaw provider <code>34.364 ms</code>, mask-plane fit <code>0.919 ms</code>, acquisition gate <code>0.167 ms</code>, total <code>35.576 ms</code>다. Simulator truth는 selector에 들어가지 않고 evaluator-only로 사용했다.</li>
+<li>전파된 최종 track evaluator 오차는 translation <code>4.121 mm</code>, yaw <code>0.018590 rad</code>다. 이는 한 run의 integration diagnostic이며 position accuracy qualification으로 승격하지 않는다.</li>
+<li>Canonical measured stage는 12/14, deadline-missed stage는 0이다. <code>command_collision_gate</code>와 <code>controller_handoff</code>는 명시적으로 not-executed다.</li>
+<li>Guarded retention은 thumb/index/middle/ring contact group으로 성공했고 contact, attach, release, bin containment가 관찰됐다. 그러나 admitted hand target을 contact feedback으로 수정했으므로 <code>source_targets_unmodified=false</code>이며 guarded diagnostic 범위를 유지한다.</li>
+<li>Report SHA-256은 <code>18d92b2deaaefd73346da5baaccef94d3914990c27b58e34f3987540d714e879</code>다. 내부 원본과 로컬 사본은 비공개 evidence registry의 run ID <code>isaac-rgb-event-8ce9740-r216</code>으로 추적한다.</li>
+</ul>
+<div class="callout"><strong>다음 병목:</strong> simulation mask-plane position 독립 holdout, physical RGB segmentation/FoundPose development 승격, resident CUDA command collision commit, capacity-one future-start controller lease가 남아 있다. 이 네 항목 전에는 영상의 grasp 성공을 full perception 또는 professor-ready/hardware-ready 권한으로 재라벨링하지 않는다.</div>
 
 <h2>2026-08-26 canonical RGB-only source 경계 전환: ca23136</h2>
 <h3>문제와 영향</h3>
