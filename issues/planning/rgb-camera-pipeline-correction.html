@@ -14,9 +14,9 @@
 <main class="wrap article">
 <div class="eyebrow">ISSUE-089 · 2026-08-26 · physical target is RGB, not RGB-D</div>
 <h1>깊이를 대체하는 fallback이 아니라, RGB-only 관측 계약과 검증 순서를 다시 닫는다.</h1>
-<p class="lede">실제 장비의 카메라가 RGB라는 사실을 기준으로 전체 D1 경계를 다시 감사했다. Metric 위치는 depth image가 아니라 알려진 CAD scale, stable tabletop pose, camera calibration과 belt plane에서 얻고, 초기 pose 이후의 이동은 encoder가 전파한다. 현재 Isaac RGB background mask와 FoundPose를 바로 연결한 방법은 개발 분할에서 실패했으므로 교수용 새 영상을 만들기 위해 threshold를 느슨하게 하지 않는다.</p>
+<p class="lede">실제 장비의 카메라가 RGB라는 사실을 기준으로 전체 D1 경계를 다시 감사했다. Metric 위치는 depth image가 아니라 알려진 CAD scale, stable tabletop pose, camera calibration과 belt plane에서 얻고, 초기 pose 이후의 이동은 encoder가 전파한다. Isaac RGB background mask와 FoundPose를 바로 연결한 방법은 개발 분할에서 실패했으므로 threshold를 느슨하게 하지 않고, qualified YOLOE mask와 source-matched RGB yaw backend로 simulation diagnostic을 다시 구성했다.</p>
 
-<div class="callout"><strong>현재 판정:</strong> 센서, observation, planner 인터페이스의 RGB-only 전환은 구현됐다. 그러나 현재 RGB background mask 기반 pose는 qualification에 실패했다. 기존 r218은 역사적 actual-time integration diagnostic이지만 instance-mask 계보를 포함하므로 physical RGB camera의 segmentation/pose 증거가 아니다. 새 source-matched D1-D3 영상은 learned RGB mask와 pose development가 통과하기 전까지 보류한다.</div>
+<div class="callout"><strong>현재 판정, 2026-08-27:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/a541e282e22218cf0bbe651ffaba75e818f37230"><code>a541e28</code></a>에서 raw RGB → resident two-view YOLOE → known-plane position → source-matched RGB yaw → encoder → event selection → collision/handoff → PhysX grasp/drop의 선언된 simulation diagnostic이 r488에서 실제시간으로 통과했다. 다만 known-plane metric position의 독립 holdout, unmodified hand target, physical-camera qualification과 hardware safety가 남아 <code>professor_demo_ready=false</code>와 hardware authority false를 유지한다.</div>
 
 <h2>고정한 실제 시스템 계약</h2>
 <pre>synchronized raw RGB cameras
@@ -43,6 +43,34 @@
 <tr><td>단일-bundle FoundPose benchmark가 잘못된 source revision도 report에 기록했다.</td><td><code>--source-revision</code> 문자열을 실제 checkout, tracked status, imported package와 비교하지 않았다.</td><td><code>e790570</code>에서 resolved checkout을 import path 앞에 두고 exact HEAD, tracked-clean 상태와 <code>beltbench.__file__</code>을 model load 전에 검증한다. 기존 r396은 timing reconnaissance로 강등하고 source-closed r398로 대체했다.</td></tr>
 </tbody></table>
 
+<h2>2026-08-27: learned RGB mask로 causal edge를 교체</h2>
+<table><thead><tr><th>변경</th><th>원인</th><th>검증 결과</th></tr></thead><tbody>
+<tr><td>Resident YOLOE two-view worker</td><td>Static background의 cast shadow가 Pepsi body와 합쳐지고 handcrafted 제거가 object를 지우거나 view별 잔여물을 남겼다.</td><td><code>yoloe-26s-pepsi-rgb-temporal-cluster-v5</code>가 24/24 batch, 48/48 view를 통과했다. Minimum IoU 0.96867, boundary F1 1.0, maximum area error 0.02487, batch p95 8.985 ms다. Model과 text encoder digest를 admission에 결박하고 fallback을 두지 않았다.</td></tr>
+<tr><td>Source-matched RGB yaw</td><td>Mask source가 달라지면 과거 reference/holdout 정확도를 새 runtime query에 전이할 수 없다.</td><td><code>44c72a3</code> holdout이 48/48을 수락했다. Maximum/p95 yaw error는 0.024699/0.014544 rad, matcher p95는 34.423 ms다.</td></tr>
+<tr><td>Admission source 검증</td><td>Compiler가 qualified YOLOE source 대신 과거 static-background default로 yaw evidence를 검증하는 결함이 있었다.</td><td><code>38a1d4a</code>에서 qualification의 exact mask source를 yaw verifier에 전달했다. <code>3a5f678</code>은 segmentation, matcher, position-fit 합이 provider 75 ms와 total 110 ms budget에 들어가는지 runtime 전에 검사한다.</td></tr>
+<tr><td>영상 mask provenance</td><td>r482의 실제 mask는 YOLOE였지만 presentation string이 <code>RGB / ISAAC INSTANCE MASK</code>로 고정돼 있었다.</td><td><code>a541e28</code>에서 admitted <code>mask_source</code>를 video worker contract에 추가했다. YOLOE, legacy instance, background, unknown source가 각각 보수적인 label을 내며 새 영상은 <code>RGB / YOLOE MASK</code>를 표시한다.</td></tr>
+</tbody></table>
+
+<h2>실패를 포함한 actual-time 재검증</h2>
+<table><thead><tr><th>Run</th><th>직접 관찰</th><th>판정</th></tr></thead><tbody>
+<tr><td><code>r481 @ 3a5f678</code></td><td>RGB, selection, contact, attachment와 release는 수행됐지만 최종 object가 bin floor penetration tolerance를 2.34 mm 초과했다.</td><td><code>--require-ready</code> 실패. Containment gate를 완화하지 않았다.</td></tr>
+<tr><td><code>r482 @ 3a5f678</code></td><td>동일 admission 재실행에서 containment까지 통과했지만 영상 mask label이 실제 source와 달랐다.</td><td>Runtime diagnostic은 통과했으나 교수 설명용 최신 영상으로 채택하지 않았다.</td></tr>
+<tr><td><code>r487 @ a541e28</code></td><td>D1, collision certificate, controller handoff와 initial contact는 통과했지만 guarded retention의 5 N 한도를 넘었다. Maximum thumb force는 19.93 N이었다.</td><td>실패 보존. Force limit이나 trajectory를 조정하지 않았다.</td></tr>
+<tr><td><code>r488 @ a541e28</code></td><td>동일 immutable admissions 재실행. Correct <code>RGB / YOLOE MASK</code> label, contact, guarded retention, attachment, release와 containment가 모두 통과했다.</td><td>Declared simulation diagnostic verified. Physical camera와 hardware authority는 여전히 차단한다.</td></tr>
+</tbody></table>
+
+<h2>r488 측정 결과</h2>
+<table><thead><tr><th>항목</th><th>측정값</th></tr></thead><tbody>
+<tr><td>Simulation / wall / RTF</td><td>27.083333 s / 27.175684 s / 0.996602</td></tr>
+<tr><td>Raw camera contract</td><td><code>["rgb"]</code>, observed depth requested=false, used=false</td></tr>
+<tr><td>Sensor read / perception compute / planar acquisition</td><td>18.415 ms / 36.314 ms / 35.166 ms</td></tr>
+<tr><td>Command collision gate / controller handoff</td><td>1.370 ms / 5.672 ms</td></tr>
+<tr><td>Evaluator-only error</td><td>Translation 0.126 mm, yaw 0.001546 rad; simulator truth는 selector에 입력되지 않음</td></tr>
+<tr><td>Video</td><td>1280×720, 15 FPS, 407/407 encoded, drop/error 0, SHA-256 <code>9a3b60f7afbb04e4e9af271d76898063514f512dcbee073828d4a5acb1011994</code></td></tr>
+</tbody></table>
+
+<div class="callout"><strong>영상 공개 경계:</strong> r488 MP4는 로컬 evidence에 보존했지만 report가 <code>professor_demo_ready=false</code>이므로 public devlog asset으로 게시하지 않았다. 교수님께는 “실제 RGB-only simulation module chain과 measured lifecycle을 보여 주는 diagnostic”으로 재생하고, physical-camera 성공 또는 hardware-ready demo라고 설명하지 않는다.</div>
+
 <h2>RTX 3090 개발 결과</h2>
 <table><thead><tr><th>Run</th><th>직접 관찰</th><th>판정</th></tr></thead><tbody>
 <tr><td><code>r393</code></td><td>V3 two-view rig, reference 72개와 query 120개, raw modality는 RGB뿐이고 depth request/use는 false다. Static-background segmentation p95는 7.397 ms였다. Simulation reference matcher는 development 11/24만 수락했고 accepted yaw p95가 0.072325 rad였다.</td><td>실패. Cast shadow가 Pepsi body와 하나의 connected component로 합쳐졌다. Holdout temporal index 1-4는 열지 않았다.</td></tr>
@@ -58,12 +86,11 @@
 
 <h2>다음 구현 및 승격 순서</h2>
 <ol>
-<li>R393의 공개 development RGB에 대해 object-only evaluator mask를 offline diagnostic으로 만들어 static-background shadow와 pose failure를 요인 분리한다. 이 mask는 runtime authority로 사용하지 않는다.</li>
-<li>SAM3 teacher와 YOLOE/FastSAM/compact model 후보가 같은 <code>RgbSegmentationBackend</code> contract를 구현하도록 별도 environment worker를 만든다. Model weight와 source hash, camera batch identity, latency를 report에 결박한다.</li>
-<li>Development RGB에서 mask quality와 downstream FoundPose/planar error를 함께 비교한다. Empty, duplicate object, out-of-belt, insufficient support와 cross-view disagreement는 fail-closed한다.</li>
-<li>Development가 기존 yaw/position/acceptance/latency gate를 통과한 뒤에만 sealed simulation holdout을 한 번 연다. Physical camera는 조명, motion blur, exposure, calibration drift와 capture skew를 포함한 별도 native holdout을 요구한다.</li>
-<li>통과한 segmentation, pose, encoder, event command와 runtime profile로 새 perception admission과 command admission을 만든다. 이전 revision admission은 재사용하지 않는다.</li>
-<li>RTX 3090에서 raw RGB acquisition부터 D1 color transition, D2 collision/lease, D3 contact/release/containment까지 1.0x trial과 영상을 생성한다. Report가 통과한 trajectory만 표시한다.</li>
+<li><strong>완료:</strong> YOLOE learned mask, source-matched simulation yaw, exact weight/source admission과 actual-time D1-D3 lifecycle을 연결했다.</li>
+<li><strong>다음:</strong> Known-plane metric position을 independent simulation holdout에서 bias, covariance, camera disagreement, trigger coverage로 검증한다.</li>
+<li><strong>다음:</strong> Physical RGB rig에서 hardware synchronization, in-memory rectification, exposure/blur/occlusion, segmentation과 x/y/yaw를 별도 native holdout으로 qualification한다.</li>
+<li><strong>다음:</strong> CPU startup certificate만 사용하는 현재 collision 경계를 resident GPU collision gate와 비교 qualification하고, 실제 decision latency 감소가 있을 때만 승격한다.</li>
+<li><strong>다음:</strong> Guarded contact의 run-to-run force와 containment repeatability를 multi-seed/multi-run protocol로 측정한 뒤 controller/stop route와 supervised hardware safety를 검증한다.</li>
 </ol>
 
 <h2>검증</h2>
@@ -72,9 +99,11 @@
 <li><code>e790570</code>: provider-neutral segmentation/source-closure 대상 24개, 전체 1,459개 통과, 22개 skipped.</li>
 <li>RTX checkout을 incremental bundle로 exact fast-forward한 뒤 대상 24개 테스트를 다시 통과했다.</li>
 <li>r397 qualification은 의도대로 exit 2와 <code>qualified=false</code>를 냈다. 실패 report를 성공 영상 재료로 사용하지 않는다.</li>
+<li><code>a541e28</code>: local 전체 1,521개 통과, 26개 skipped. RTX mask/video/admitted-runner 대상 19개 통과.</li>
+<li>r488은 <code>--require-ready</code> exit 0, <code>declared_scope_ready=true</code>, <code>complete_soft_realtime_pipeline=true</code>다. 동시에 <code>integrated_simulation_ready=false</code>, <code>professor_demo_ready=false</code>, hardware authority false를 유지한다.</li>
 </ul>
 
-<div class="callout"><strong>교수님께 설명할 현재 상태:</strong> “물리 카메라가 RGB이므로 depth 기반 위치 추정은 제거했습니다. Calibrated RGB와 known belt plane/stable pose로 초기 planar pose를 만들고 encoder로 이동을 전파하는 구조는 닫혔습니다. 다만 현재 background mask+FoundPose는 개발 세트에서 실패했기 때문에, 지금 보여드릴 기존 영상은 simulation integration diagnostic이며 physical RGB perception 성공 영상이라고 주장하지 않습니다. 다음 영상은 qualified learned mask를 실제 raw RGB causal edge에 연결한 뒤 생성하겠습니다.”</div>
+<div class="callout"><strong>교수님께 설명할 현재 상태:</strong> “물리 카메라가 RGB이므로 depth 기반 위치 추정은 제거했습니다. 이번 영상에서는 두 synchronized RGB를 resident YOLOE가 실제로 segmentation하고, known belt plane과 RGB yaw로 initial planar pose를 만든 뒤 encoder, source-closed selection, collision/handoff, PhysX grasp와 bin drop까지 0.997× actual time으로 연결했습니다. 다만 position 독립 검증과 physical-camera domain, contact repeatability, hardware controller safety는 아직 남아 있어 simulation diagnostic으로만 보고합니다.”</div>
 
 <p><a href="isaac-guarded-contact-actual-time-r153.html">ISSUE-088 actual-time RGB integration</a> · <a href="realtime-perception-single-gpu-plan.html">ISSUE-074 single-GPU plan</a> · <a href="planar-yaw-backend-promotion.html">ISSUE-085 pose promotion</a></p>
 </main>
