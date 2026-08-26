@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RGB camera pipeline correction · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-089 · 2026-08-26 · physical target is RGB, not RGB-D</div>
+<h1>깊이를 대체하는 fallback이 아니라, RGB-only 관측 계약과 검증 순서를 다시 닫는다.</h1>
+<p class="lede">실제 장비의 카메라가 RGB라는 사실을 기준으로 전체 D1 경계를 다시 감사했다. Metric 위치는 depth image가 아니라 알려진 CAD scale, stable tabletop pose, camera calibration과 belt plane에서 얻고, 초기 pose 이후의 이동은 encoder가 전파한다. 현재 Isaac RGB background mask와 FoundPose를 바로 연결한 방법은 개발 분할에서 실패했으므로 교수용 새 영상을 만들기 위해 threshold를 느슨하게 하지 않는다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> 센서, observation, planner 인터페이스의 RGB-only 전환은 구현됐다. 그러나 현재 RGB background mask 기반 pose는 qualification에 실패했다. 기존 r218은 역사적 actual-time integration diagnostic이지만 instance-mask 계보를 포함하므로 physical RGB camera의 segmentation/pose 증거가 아니다. 새 source-matched D1-D3 영상은 learned RGB mask와 pose development가 통과하기 전까지 보류한다.</div>
+
+<h2>고정한 실제 시스템 계약</h2>
+<pre>synchronized raw RGB cameras
+  -> calibration-bound in-memory rectification
+  -> one batched object-mask backend
+  -> one-shot RGB-to-CAD planar [x, y, yaw] acquisition
+  -> exact measurement-time encoder registration
+  -> 60 Hz constant-yaw translation propagation
+  -> prevalidated intercept family selection
+  -> collision gate -> future-start controller lease
+  -> measured contact, release, bin containment</pre>
+<ul>
+<li>Object identity와 stable tabletop pose ID는 trial 전에 주어진다.</li>
+<li>초기 belt-frame x, y와 yaw는 RGB에서 측정한다. 물체가 belt 위에서 추가 회전하지 않는다는 가정만 사용한다.</li>
+<li>Camera intrinsic/extrinsic, belt plane, belt axis, CAD scale과 stable pose가 metric scale을 제공한다. Observed depth, zero depth, simulator pose fallback은 금지한다.</li>
+<li>FoundPose는 상류 event에서 한 번 실행할 수 있지만 매 frame stage가 아니다. 이후 위치는 encoder가 60 Hz로 전파한다.</li>
+<li>GoTrack은 qualified initial pose 이후 선택 가능한 correction/tracking backend다. 초기 mask와 pose 실패를 대체하지 않는다.</li>
+</ul>
+
+<h2>코드에서 발견한 문제와 수정</h2>
+<table><thead><tr><th>문제</th><th>원인</th><th>해결과 결과</th></tr></thead><tbody>
+<tr><td>Physical adapter가 simulation static-background 모듈의 segmentation type을 import했다.</td><td>결과 type과 backend protocol이 첫 구현 파일에 함께 들어 있어 의존성 방향이 뒤집혔다.</td><td><a href="https://github.com/gohyunsu/beltbench/commit/e790570b36d4e02bdff6a58976549826a1b966a8"><code>e790570</code></a>에서 provider-neutral <code>rgb_segmentation.py</code>를 만들었다. Physical adapter와 Isaac static backend는 이제 동등한 backend로 generic contract에 의존한다. Static background 구현의 simulation 권한이 physical adapter로 전이되지 않는다.</td></tr>
+<tr><td>새 RGB capture report를 FoundPose qualifier가 읽지 못했다.</td><td>Capture는 segmentation policy source/hash를 추가했지만 qualifier의 허용 source 목록은 과거 schema에 고정돼 있었다.</td><td><a href="https://github.com/gohyunsu/beltbench/commit/660beb8941df9cf033c84ed5f27b17d4de9abe30"><code>660beb8</code></a>에서 RGB static-background capture이면 segmentation policy source와 SHA-256을 필수로 검증하도록 planar/temporal runner를 수정했다. Source를 무시하는 compatibility fallback은 추가하지 않았다.</td></tr>
+<tr><td>단일-bundle FoundPose benchmark가 잘못된 source revision도 report에 기록했다.</td><td><code>--source-revision</code> 문자열을 실제 checkout, tracked status, imported package와 비교하지 않았다.</td><td><code>e790570</code>에서 resolved checkout을 import path 앞에 두고 exact HEAD, tracked-clean 상태와 <code>beltbench.__file__</code>을 model load 전에 검증한다. 기존 r396은 timing reconnaissance로 강등하고 source-closed r398로 대체했다.</td></tr>
+</tbody></table>
+
+<h2>RTX 3090 개발 결과</h2>
+<table><thead><tr><th>Run</th><th>직접 관찰</th><th>판정</th></tr></thead><tbody>
+<tr><td><code>r393</code></td><td>V3 two-view rig, reference 72개와 query 120개, raw modality는 RGB뿐이고 depth request/use는 false다. Static-background segmentation p95는 7.397 ms였다. Simulation reference matcher는 development 11/24만 수락했고 accepted yaw p95가 0.072325 rad였다.</td><td>실패. Cast shadow가 Pepsi body와 하나의 connected component로 합쳐졌다. Holdout temporal index 1-4는 열지 않았다.</td></tr>
+<tr><td><code>r394</code></td><td>Achromatic shadow attenuation이 upstream object를 전부 지우고 downstream 970 pixel만 남겼다.</td><td>실패. Camera-dependent object erosion 때문에 production에서 제거했다.</td></tr>
+<tr><td><code>r395</code></td><td>더 약한 residual 설정도 view별 347-4,145 pixel만 남기고 segmentation p95를 26.929 ms로 높였다. Gradient core의 yaw max/p95는 2.6728/2.5345 rad였다.</td><td>실패. Handcrafted fallback을 누적하지 않고 전부 제거했다.</td></tr>
+<tr><td><code>r397</code></td><td>현재 r393 development 24 yaw 전체에 FoundPose correspondence와 planar solver를 실행했다. Acceptance 0/24, provider p95 275.234 ms, solver p95 128.818 ms였다. 모든 sample이 view inlier count/fraction을 실패했고 diagnostic yaw median/max는 1.0916/2.9893 rad, position median/max는 46.22/52.36 mm였다.</td><td>명확한 accuracy 실패. Gate 또는 0.975 s event budget을 넓혀 해결할 수 없다. Holdout은 계속 닫아 둔다.</td></tr>
+<tr><td><code>r398</code></td><td>Exact clean <code>e790570</code>에서 동일 RGB+mask bundle을 다시 실행했다. 세 warm two-view total은 308.924, 279.131, 303.332 ms이고 observed depth는 false다.</td><td>Source-closed timing diagnostic. One-shot 0.975 s budget 안이지만 15/30/60 Hz 반복 stage가 아니며 pose accuracy를 승인하지 않는다.</td></tr>
+</tbody></table>
+
+<h2>왜 SAM3를 그대로 online에 넣지 않는가</h2>
+<p>AutoDex의 새 init 구조도 SAM3 mask와 FoundPose를 episode 초기에 한 번 실행하고 GoTrack으로 이어간다. 그러나 AutoDex 문서의 SAM3 mask stage는 약 2.5 s이고 전체 과거 init은 수십 초였다. BeltBench의 현재 upstream acquisition budget은 0.975 s이므로 동일 코드를 직렬로 복사하면 실제시간 event를 놓친다.</p>
+<p>SAM3는 native RGB의 offline label 생성과 품질 비교에 활용할 수 있다. Online 후보는 resident batched YOLOE/FastSAM 또는 Pepsi용 compact segmenter로 제한하고, 두 camera를 한 batch로 처리한다. 선택 기준은 보기 좋은 mask가 아니라 mask IoU/경계 오차, downstream pose acceptance와 x/y/yaw error, cross-view 일관성, p95 latency와 source/weight digest다.</p>
+
+<h2>다음 구현 및 승격 순서</h2>
+<ol>
+<li>R393의 공개 development RGB에 대해 object-only evaluator mask를 offline diagnostic으로 만들어 static-background shadow와 pose failure를 요인 분리한다. 이 mask는 runtime authority로 사용하지 않는다.</li>
+<li>SAM3 teacher와 YOLOE/FastSAM/compact model 후보가 같은 <code>RgbSegmentationBackend</code> contract를 구현하도록 별도 environment worker를 만든다. Model weight와 source hash, camera batch identity, latency를 report에 결박한다.</li>
+<li>Development RGB에서 mask quality와 downstream FoundPose/planar error를 함께 비교한다. Empty, duplicate object, out-of-belt, insufficient support와 cross-view disagreement는 fail-closed한다.</li>
+<li>Development가 기존 yaw/position/acceptance/latency gate를 통과한 뒤에만 sealed simulation holdout을 한 번 연다. Physical camera는 조명, motion blur, exposure, calibration drift와 capture skew를 포함한 별도 native holdout을 요구한다.</li>
+<li>통과한 segmentation, pose, encoder, event command와 runtime profile로 새 perception admission과 command admission을 만든다. 이전 revision admission은 재사용하지 않는다.</li>
+<li>RTX 3090에서 raw RGB acquisition부터 D1 color transition, D2 collision/lease, D3 contact/release/containment까지 1.0x trial과 영상을 생성한다. Report가 통과한 trajectory만 표시한다.</li>
+</ol>
+
+<h2>검증</h2>
+<ul>
+<li><code>660beb8</code>: RGB segmentation provenance 대상 테스트 8개, 전체 1,455개 통과, 22개 skipped.</li>
+<li><code>e790570</code>: provider-neutral segmentation/source-closure 대상 24개, 전체 1,459개 통과, 22개 skipped.</li>
+<li>RTX checkout을 incremental bundle로 exact fast-forward한 뒤 대상 24개 테스트를 다시 통과했다.</li>
+<li>r397 qualification은 의도대로 exit 2와 <code>qualified=false</code>를 냈다. 실패 report를 성공 영상 재료로 사용하지 않는다.</li>
+</ul>
+
+<div class="callout"><strong>교수님께 설명할 현재 상태:</strong> “물리 카메라가 RGB이므로 depth 기반 위치 추정은 제거했습니다. Calibrated RGB와 known belt plane/stable pose로 초기 planar pose를 만들고 encoder로 이동을 전파하는 구조는 닫혔습니다. 다만 현재 background mask+FoundPose는 개발 세트에서 실패했기 때문에, 지금 보여드릴 기존 영상은 simulation integration diagnostic이며 physical RGB perception 성공 영상이라고 주장하지 않습니다. 다음 영상은 qualified learned mask를 실제 raw RGB causal edge에 연결한 뒤 생성하겠습니다.”</div>
+
+<p><a href="isaac-guarded-contact-actual-time-r153.html">ISSUE-088 actual-time RGB integration</a> · <a href="realtime-perception-single-gpu-plan.html">ISSUE-074 single-GPU plan</a> · <a href="planar-yaw-backend-promotion.html">ISSUE-085 pose promotion</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
