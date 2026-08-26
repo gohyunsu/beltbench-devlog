@@ -16,7 +16,7 @@
 <h1>깊이를 대체하는 fallback이 아니라, RGB-only 관측 계약과 검증 순서를 다시 닫는다.</h1>
 <p class="lede">실제 장비의 카메라가 RGB라는 사실을 기준으로 전체 D1 경계를 다시 감사했다. Metric 위치는 depth image가 아니라 알려진 CAD scale, stable tabletop pose, camera calibration과 belt plane에서 얻고, 초기 pose 이후의 이동은 encoder가 전파한다. Isaac RGB background mask와 FoundPose를 바로 연결한 방법은 개발 분할에서 실패했으므로 threshold를 느슨하게 하지 않고, qualified YOLOE mask와 source-matched RGB yaw backend로 simulation diagnostic을 다시 구성했다.</p>
 
-<div class="callout"><strong>현재 판정, 2026-08-27:</strong> <code>6add70c</code>에서 physical camera metadata를 RGB-only로 fail-closed하고 camera timestamp uncertainty와 causal encoder alignment를 계약에 추가했다. 새 source admission <code>r551-r554</code>를 거쳐 RTX 3090 actual-time <code>r555</code>를 재실행했다. Raw RGB만 사용한 two-view YOLOE, known-plane position, source-matched yaw가 selection을 구동했고 contact, guarded attachment, release와 terminal containment를 완료했다. RTF는 0.999998이지만 deadline-monitored soft realtime이며 one-period lateness 608회가 남았다. <code>professor_demo_ready=false</code>와 hardware authority false를 유지하며 stop route, immutable hand target, physical RGB native qualification과 drop 반복성이 아직 열려 있다.</div>
+<div class="callout"><strong>현재 판정, 2026-08-27:</strong> <code>6add70c</code>에서 physical camera metadata를 RGB-only로 fail-closed하고 camera timestamp uncertainty와 causal encoder alignment를 계약에 추가했다. 새 source admission <code>r551-r554</code>를 거쳐 RTX 3090 actual-time <code>r555</code>를 재실행했다. Raw RGB만 사용한 two-view YOLOE, known-plane position, source-matched yaw가 selection을 구동했고 contact, guarded attachment, release와 terminal containment를 완료했다. RTF는 0.999998이지만 deadline-monitored soft realtime이며 one-period lateness 608회가 남았다. 이후 <code>8537b70</code>은 physical RGB의 channel order, exposure와 rolling-shutter 시간 폭 및 publication latency를 fail-closed했다. 이 source 변경을 r555에 소급 적용하지 않으며 <code>professor_demo_ready=false</code>와 hardware authority false를 유지한다.</div>
 
 <h2>고정한 실제 시스템 계약</h2>
 <pre>synchronized raw RGB cameras
@@ -153,6 +153,16 @@
 
 <div class="callout"><strong>반복성 경계:</strong> guarded finger force는 현재 command rate에서 6/6 통과했지만 drop containment는 3/6이다. 성공 영상 하나를 선택해 반복성 성공으로 설명하지 않는다. r535는 actual-time integrated diagnostic으로는 유효하지만 <code>professor_demo_ready=false</code>이며 terminal drop과 hardware authority를 승인하지 않는다.</div>
 
+<h2>2026-08-27: physical RGB exposure와 publication 시간을 fail-closed</h2>
+<table><thead><tr><th>발견한 문제</th><th>원인</th><th>수정 및 결과</th></tr></thead><tbody>
+<tr><td>Physical SDK가 BGR 배열을 넘겨도 shape과 dtype만 맞으면 RGB로 해석될 수 있었다.</td><td>공통 adapter가 색상 순서를 명시하지 않고 driver의 변환을 신뢰했다. RGB-only feature·segmentation backend에서 channel swap은 mask와 pose를 동시에 오염시키지만 depth consistency로 발견할 수도 없다.</td><td><a href="https://github.com/gohyunsu/beltbench/commit/8537b70"><code>8537b70</code></a>에서 physical frame을 explicit <code>rgb8</code>로 고정했다. Bayer/BGR 변환은 SDK driver 책임으로 유지하되 공통 경계는 다른 encoding을 즉시 거부한다.</td></tr>
+<tr><td>Moving object의 camera timestamp가 한 점으로만 취급돼 exposure blur와 rolling-shutter row skew가 위치 불확실성에서 빠졌다.</td><td>Device-to-host clock mapping uncertainty만 전달했고 한 frame이 실제로 빛을 적분하는 시간 구간을 모델링하지 않았다.</td><td>모든 physical frame에 <code>frame_mid_exposure</code>, global/rolling shutter, exposure duration, readout duration과 photometric profile ID를 요구한다. Effective uncertainty는 clock bound + exposure/2 + readout/2이며 multi-camera skew gate와 encoder-aligned track covariance에 그대로 전파한다. Unknown shutter나 policy 초과 frame은 segmentation 전에 거부한다.</td></tr>
+<tr><td><code>published_monotonic_s</code>가 rectification과 GPU segmentation 전에 기록됐다.</td><td>Timestamp를 output publication 시각이 아니라 처리 시작 marker로 사용해 D1 end-to-end latency를 축소 기록했다.</td><td>Rectification, one batched segmentation과 mask ancestry 검사가 끝난 뒤에만 publish clock을 읽는다. Exposure부터 post-segmentation publication까지가 physical D1 timing evidence가 된다.</td></tr>
+<tr><td>RGB-only 카메라가 일반 장애물 depth map도 제공하는 것처럼 collision 설명이 남을 수 있었다.</td><td>Target pose와 scene obstacle sensing을 분리하지 않으면 monocular depth fallback을 추가하려는 압력이 생긴다.</td><td>Planning collision authority를 source-closed workcell CAD, calibrated robot/belt/bin frame, tracked target model과 uncertainty inflation으로 제한했다. 예상하지 못한 장애물은 별도 safety sensor/controller stop 문제이며 RGB에서 depth를 합성해 승인하지 않는다.</td></tr>
+</tbody></table>
+
+<div class="callout"><strong>검증과 한계:</strong> RTX 3090의 exact <code>8537b70</code> checkout에서 전체 <code>Ran 1,577 tests</code>, OK, 15 skipped를 확인했다. 이는 입력 계약과 기존 simulation/planning 회귀가 닫혔다는 뜻이지 physical camera accuracy가 검증됐다는 뜻이 아니다. 실제 rig의 trigger, clock mapping, exposure/readout, lens calibration, lighting, blur와 occlusion holdout이 없으므로 physical RGB 및 hardware authority는 계속 false다.</div>
+
 <h2>RTX 3090 개발 결과</h2>
 <table><thead><tr><th>Run</th><th>직접 관찰</th><th>판정</th></tr></thead><tbody>
 <tr><td><code>r393</code></td><td>V3 two-view rig, reference 72개와 query 120개, raw modality는 RGB뿐이고 depth request/use는 false다. Static-background segmentation p95는 7.397 ms였다. Simulation reference matcher는 development 11/24만 수락했고 accepted yaw p95가 0.072325 rad였다.</td><td>실패. Cast shadow가 Pepsi body와 하나의 connected component로 합쳐졌다. Holdout temporal index 1-4는 열지 않았다.</td></tr>
@@ -171,7 +181,7 @@
 <li><strong>완료:</strong> YOLOE learned mask, source-matched simulation yaw, exact weight/source admission과 actual-time D1-D3 lifecycle을 연결했다.</li>
 <li><strong>완료:</strong> One-shot r489 실패를 보존하고 independent off-grid-yaw/four-position r507에서 bounded fresh-frame simulation planar pose를 48/48 event로 qualification했다.</li>
 <li><strong>완료:</strong> r507 report를 source-closed event admission에 결박하고 D2/D3 gate를 바꾸지 않은 r519 actual-time integrated simulation을 재실행했다.</li>
-<li><strong>다음:</strong> Physical RGB rig에서 hardware synchronization, in-memory rectification, exposure/blur/occlusion, segmentation과 x/y/yaw를 별도 native holdout으로 qualification한다.</li>
+<li><strong>다음:</strong> Physical RGB rig에서 explicit RGB8 channel check, hardware synchronization, frame-mid-exposure/readout logging, in-memory rectification, blur/occlusion, segmentation과 x/y/yaw를 별도 native holdout으로 qualification한다.</li>
 <li><strong>다음:</strong> Camera clock mapping uncertainty와 encoder alignment horizon을 실제 trigger/PTP 로그에서 측정하고, 이 bound가 selector slack과 capture-to-decision budget 안에 드는지 검증한다.</li>
 <li><strong>다음:</strong> CPU startup certificate만 사용하는 현재 collision 경계를 resident GPU collision gate와 비교 qualification하고, 실제 decision latency 감소가 있을 때만 승격한다.</li>
 <li><strong>다음:</strong> Guarded contact의 run-to-run force와 containment repeatability를 multi-seed/multi-run protocol로 측정하고 admission 이후 target 수정이 없는 controller command를 만든다.</li>
@@ -197,6 +207,7 @@
 <li><code>6add70c</code>: physical metadata RGB-only gate, timestamp uncertainty, causal encoder alignment와 covariance propagation을 추가했다. Local 전체 <code>Ran 1,574 tests</code>, OK, 27개 skipped. RTX Isaac Python 대상 108개 통과.</li>
 <li>r551-r554가 source command, stationary splice, collision evidence와 RGB perception을 <code>6add70c</code>에 다시 결박했다. r555는 <code>--require-ready</code> exit 0, <code>integrated_simulation_ready=true</code>, guarded retention과 terminal containment를 통과했다.</li>
 <li>r555는 동시에 <code>professor_demo_ready=false</code>, hardware authority false다. Deadline lateness 608회, stop route 부재, feedback-modified hand target과 physical RGB native qualification을 미해결 blocker로 보존한다.</li>
+<li><code>8537b70</code>: implicit BGR, unknown exposure/shutter timing과 pre-inference publication timestamp를 제거했다. Local focused 41개 통과. RTX 3090 exact checkout 전체 <code>Ran 1,577 tests</code>, OK, 15개 skipped.</li>
 </ul>
 
 <div class="callout"><strong>교수님께 설명할 현재 상태:</strong> “물리 카메라가 RGB이므로 observed depth 기반 위치 추정은 제거했습니다. 두 synchronized RGB의 learned segmentation, known belt plane 기반 x/y와 source-matched yaw를 48-event simulation campaign에서 검증했고, camera identity와 timestamp uncertainty 및 causal encoder ancestry까지 fail-closed 계약으로 묶었습니다. 새 source admission으로 RTX 3090을 재실행해 이 RGB pose가 selection, collision/handoff와 measured PhysX contact, attachment, release, containment를 실제 시간으로 구동하는 영상을 확보했습니다. 다만 이는 soft-realtime simulation diagnostic입니다. Stop route와 immutable hand target이 없어 professor-ready gate는 false이고, physical RGB domain, deadline lateness, drop 반복성과 hardware safety도 아직 승인하지 않았습니다.”</div>
