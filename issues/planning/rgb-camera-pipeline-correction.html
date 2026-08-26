@@ -16,7 +16,7 @@
 <h1>깊이를 대체하는 fallback이 아니라, RGB-only 관측 계약과 검증 순서를 다시 닫는다.</h1>
 <p class="lede">실제 장비의 카메라가 RGB라는 사실을 기준으로 전체 D1 경계를 다시 감사했다. Metric 위치는 depth image가 아니라 알려진 CAD scale, stable tabletop pose, camera calibration과 belt plane에서 얻고, 초기 pose 이후의 이동은 encoder가 전파한다. Isaac RGB background mask와 FoundPose를 바로 연결한 방법은 개발 분할에서 실패했으므로 threshold를 느슨하게 하지 않고, qualified YOLOE mask와 source-matched RGB yaw backend로 simulation diagnostic을 다시 구성했다.</p>
 
-<div class="callout"><strong>현재 판정, 2026-08-27:</strong> r507에서 raw RGB → qualified two-view YOLOE → known-plane position → source-matched RGB yaw의 simulation sensor planar pose를 48/48 event와 bounded fresh-frame retry로 독립 검증했다. 다만 이 새 authority를 사용한 integrated grasp/drop rerun, unmodified hand target, physical-camera qualification과 hardware safety는 아직 남았다. 따라서 r488은 최신 actual-time 영상이지만 계속 <code>professor_demo_ready=false</code>이고 hardware authority도 false다.</div>
+<div class="callout"><strong>현재 판정, 2026-08-27:</strong> r507에서 raw RGB → qualified two-view YOLOE → known-plane position → source-matched RGB yaw의 simulation sensor planar pose를 48/48 event와 bounded fresh-frame retry로 독립 검증했다. 이 authority를 source-closed admission에 결박한 r519가 RGB perception, encoder propagation, selection, collision gate, controller handoff, guarded grasp와 bin containment를 RTF 0.999998로 완료했다. 다만 <code>professor_demo_ready=false</code>와 hardware authority false를 유지한다. Stop route, admission 이후 hand-target 수정, physical-camera 검증과 guarded-retention 반복성이 아직 열려 있기 때문이다.</div>
 
 <h2>고정한 실제 시스템 계약</h2>
 <pre>synchronized raw RGB cameras
@@ -57,6 +57,9 @@
 <tr><td><code>r482 @ 3a5f678</code></td><td>동일 admission 재실행에서 containment까지 통과했지만 영상 mask label이 실제 source와 달랐다.</td><td>Runtime diagnostic은 통과했으나 교수 설명용 최신 영상으로 채택하지 않았다.</td></tr>
 <tr><td><code>r487 @ a541e28</code></td><td>D1, collision certificate, controller handoff와 initial contact는 통과했지만 guarded retention의 5 N 한도를 넘었다. Maximum thumb force는 19.93 N이었다.</td><td>실패 보존. Force limit이나 trajectory를 조정하지 않았다.</td></tr>
 <tr><td><code>r488 @ a541e28</code></td><td>동일 immutable admissions 재실행. Correct <code>RGB / YOLOE MASK</code> label, contact, guarded retention, attachment, release와 containment가 모두 통과했다.</td><td>Declared simulation diagnostic verified. Physical camera와 hardware authority는 여전히 차단한다.</td></tr>
+<tr><td><code>r514 @ 66b3160</code></td><td>r507 planar authority가 selection을 구동했지만 ring의 0.01 N latch가 한 control tick 늦어 bounded refinement가 더 진행됐다. Index/middle/ring/thumb maximum force는 4.804/10.529/11.009/14.106 N이었다.</td><td><code>maximum_contact_normal_force_exceeded</code> 실패를 보존했다. 5 N gate를 완화하지 않았고 영상을 성공 자료로 채택하지 않았다.</td></tr>
+<tr><td><code>r515 @ 66b3160</code></td><td>동일 policy와 trajectory에서 0.575 N maximum force로 attachment, release와 containment를 완료했다. RTF는 0.997306, planar acquisition은 38.157 ms였다.</td><td>기술적 성공 증거지만 영상 overlay가 position을 diagnostic으로 잘못 표시해 최종 발표 자료에서는 제외했다.</td></tr>
+<tr><td><code>r519 @ e506b05</code></td><td>Admission에서 simulation yaw/position authority를 읽어 <code>YAW+POSITION QUALIFIED</code>를 표시한다. RGB perception이 실제 selection을 구동했고 guarded retention, attachment, release와 containment가 모두 통과했다.</td><td>현재 source의 professor-facing simulation diagnostic. Hardware 또는 robust-retention 성공으로 승격하지 않는다.</td></tr>
 </tbody></table>
 
 <h2>r488 측정 결과</h2>
@@ -88,9 +91,22 @@
 <tr><td>Report SHA-256</td><td><code>ac54b2a944585682b383a7064a305e37d9d92a411c407714553c18cd19d71418</code></td></tr>
 </tbody></table>
 
-<div class="callout"><strong>권한 경계:</strong> r507은 exact simulation camera rig, YOLOE weights, yaw bank, calibration, stable pose, known-plane estimator와 retry policy의 결합만 승인한다. Physical RGB camera의 synchronization·calibration·lighting·blur·occlusion과 hardware execution은 검증하지 않았다. Integrated video도 새 admission으로 다시 실행하기 전에는 r507 결과를 소급 적용하지 않는다.</div>
+<div class="callout"><strong>권한 경계:</strong> r507은 exact simulation camera rig, YOLOE weights, yaw bank, calibration, stable pose, known-plane estimator와 retry policy의 결합만 승인한다. <code>375ee72</code>가 이 report와 모든 transitive source를 event admission에 결박했고 r519가 그 admission을 실제 사용했다. 이 결합은 physical RGB camera의 synchronization·calibration·lighting·blur·occlusion 또는 hardware execution을 승인하지 않는다.</div>
 
-<div class="callout"><strong>영상 공개 경계:</strong> r488 MP4는 로컬 evidence에 보존했지만 report가 <code>professor_demo_ready=false</code>이므로 public devlog asset으로 게시하지 않았다. 교수님께는 “실제 RGB-only simulation module chain과 measured lifecycle을 보여 주는 diagnostic”으로 재생하고, physical-camera 성공 또는 hardware-ready demo라고 설명하지 않는다.</div>
+<h2>r519 source-closed integrated simulation</h2>
+<table><thead><tr><th>항목</th><th>측정값</th></tr></thead><tbody>
+<tr><td>Source / authority</td><td><code>e506b054a3ae33e8fa3a09333c00be33790f43e8</code>, <code>source_closed_qualified_simulation_rgb_planar_pose_bounded_retry</code></td></tr>
+<tr><td>Simulation / wall / RTF</td><td>27.083333 s / 27.083399 s / 0.999998</td></tr>
+<tr><td>RGB sensor read / perception compute / planar acquisition</td><td>19.777 ms / 41.914 ms / 40.558 ms</td></tr>
+<tr><td>Collision gate / controller handoff</td><td>1.074 ms / 5.433 ms</td></tr>
+<tr><td>Evaluator-only error</td><td>Translation 0.113 mm, longitudinal 0.110 mm, lateral 0.028 mm, yaw 0.021456 rad; simulator truth는 selector에 입력되지 않음</td></tr>
+<tr><td>Guarded retention</td><td>Contact set thumb-middle-ring, completion 8.847259 s, maximum normal force 0.650656 N, attachment/release/containment 통과</td></tr>
+<tr><td>Video</td><td>1280×720, 15 FPS, 407/407 encoded, drop/error 0, 27.134 s, SHA-256 <code>7ff72777eb70bb626a5f3412d5a2b089f8b283c4b18edbaa177539b9b5f3bdd5</code></td></tr>
+</tbody></table>
+
+<div class="callout"><strong>영상 공개 경계:</strong> r519 MP4는 로컬 evidence에 보존했지만 report가 <code>professor_demo_ready=false</code>이므로 public devlog asset으로 게시하지 않았다. 교수님께는 “qualified simulation RGB planar pose가 selection을 구동하고 measured PhysX lifecycle까지 연결한 actual-time diagnostic”으로 재생한다. Physical-camera 성공, hardware-ready demo 또는 robust guarded grasp라고 설명하지 않는다.</div>
+
+<div class="callout"><strong>반복성 경계:</strong> 동일하게 유지한 guarded policy와 trajectory에서 r514는 force limit 초과로 실패했고 r515와 r519는 통과했다. Presentation-only 변경 뒤 r519가 다시 통과한 것은 유용하지만 2/3 성공을 qualification으로 볼 수 없다. Multi-run·multi-seed force/containment protocol 전까지 guarded retention은 diagnostic이다.</div>
 
 <h2>RTX 3090 개발 결과</h2>
 <table><thead><tr><th>Run</th><th>직접 관찰</th><th>판정</th></tr></thead><tbody>
@@ -109,10 +125,11 @@
 <ol>
 <li><strong>완료:</strong> YOLOE learned mask, source-matched simulation yaw, exact weight/source admission과 actual-time D1-D3 lifecycle을 연결했다.</li>
 <li><strong>완료:</strong> One-shot r489 실패를 보존하고 independent off-grid-yaw/four-position r507에서 bounded fresh-frame simulation planar pose를 48/48 event로 qualification했다.</li>
-<li><strong>다음:</strong> r507 report를 source-closed event admission에 결박하고 D2/D3 gate를 바꾸지 않은 actual-time integrated simulation을 재실행한다.</li>
+<li><strong>완료:</strong> r507 report를 source-closed event admission에 결박하고 D2/D3 gate를 바꾸지 않은 r519 actual-time integrated simulation을 재실행했다.</li>
 <li><strong>다음:</strong> Physical RGB rig에서 hardware synchronization, in-memory rectification, exposure/blur/occlusion, segmentation과 x/y/yaw를 별도 native holdout으로 qualification한다.</li>
 <li><strong>다음:</strong> CPU startup certificate만 사용하는 현재 collision 경계를 resident GPU collision gate와 비교 qualification하고, 실제 decision latency 감소가 있을 때만 승격한다.</li>
-<li><strong>다음:</strong> Guarded contact의 run-to-run force와 containment repeatability를 multi-seed/multi-run protocol로 측정한 뒤 controller/stop route와 supervised hardware safety를 검증한다.</li>
+<li><strong>다음:</strong> Guarded contact의 run-to-run force와 containment repeatability를 multi-seed/multi-run protocol로 측정하고 admission 이후 target 수정이 없는 controller command를 만든다.</li>
+<li><strong>다음:</strong> Prevalidated stop route, controller lease 취소와 supervised hardware safety를 검증한 뒤에만 professor/hardware readiness를 승격한다.</li>
 </ol>
 
 <h2>검증</h2>
@@ -125,9 +142,12 @@
 <li>r488은 <code>--require-ready</code> exit 0, <code>declared_scope_ready=true</code>, <code>complete_soft_realtime_pipeline=true</code>다. 동시에 <code>integrated_simulation_ready=false</code>, <code>professor_demo_ready=false</code>, hardware authority false를 유지한다.</li>
 <li><code>9c7fa7c</code>: local 전체 1,541개 통과, 26개 skipped. RTX 관련 33개 통과.</li>
 <li>r507은 48/48 event, position/yaw/retry qualification을 모두 통과했다. Report는 simulation component authority만 발급하며 physical-camera와 hardware authority는 false다.</li>
+<li><code>66b3160</code>: readiness를 blocker-derived로 수정했다. Local 전체 1,549개 통과, 26개 skipped.</li>
+<li><code>e506b05</code>: 영상 yaw/position label을 admitted RGB authority에서 파생한다. Local 전체 1,554개 통과, 26개 skipped.</li>
+<li>r519은 <code>integrated_simulation_ready=true</code>, <code>complete_soft_realtime_pipeline=true</code>, trace complete와 containment를 통과했다. 동시에 <code>professor_demo_ready=false</code>, hardware authority false이며 blocker는 stop route 부재와 admission 이후 hand-target 수정이다.</li>
 </ul>
 
-<div class="callout"><strong>교수님께 설명할 현재 상태:</strong> “물리 카메라가 RGB이므로 depth 기반 위치 추정은 제거했습니다. 두 synchronized RGB의 learned segmentation, known belt plane 기반 x/y와 source-matched yaw를 별도 48-event campaign에서 검증했고, 첫 frame 이상치 두 건은 같은 backend의 다음 fresh frame에서 90.4 ms 이내 복구했습니다. 기존 영상은 encoder, selection, collision/handoff, PhysX grasp와 bin drop까지 약 1× actual time으로 연결한 diagnostic입니다. 새 perception authority를 결박한 integrated rerun과 physical-camera domain, unmodified hand command, hardware safety는 아직 남아 있습니다.”</div>
+<div class="callout"><strong>교수님께 설명할 현재 상태:</strong> “물리 카메라가 RGB이므로 depth 기반 위치 추정은 제거했습니다. 두 synchronized RGB의 learned segmentation, known belt plane 기반 x/y와 source-matched yaw를 48-event campaign에서 검증했고, 첫 frame 이상치 두 건은 같은 backend의 다음 fresh frame에서 90.4 ms 이내 복구했습니다. 이 qualified pose가 encoder, selection, collision/handoff, PhysX grasp와 bin drop을 실제로 구동하는 27초 simulation을 RTX 3090에서 RTF 0.999998로 재실행했습니다. 다만 물리 RGB domain, stop route와 admission 이후 hand-target 수정, guarded grasp 반복성 및 hardware safety는 아직 승인하지 않았습니다.”</div>
 
 <p><a href="isaac-guarded-contact-actual-time-r153.html">ISSUE-088 actual-time RGB integration</a> · <a href="realtime-perception-single-gpu-plan.html">ISSUE-074 single-GPU plan</a> · <a href="planar-yaw-backend-promotion.html">ISSUE-085 pose promotion</a></p>
 </main>
