@@ -16,7 +16,7 @@
 <h1>깊이를 대체하는 fallback이 아니라, RGB-only 관측 계약과 검증 순서를 다시 닫는다.</h1>
 <p class="lede">실제 장비의 카메라가 RGB라는 사실을 기준으로 전체 D1 경계를 다시 감사했다. Metric 위치는 depth image가 아니라 알려진 CAD scale, stable tabletop pose, camera calibration과 belt plane에서 얻고, 초기 pose 이후의 이동은 encoder가 전파한다. Isaac RGB background mask와 FoundPose를 바로 연결한 방법은 개발 분할에서 실패했으므로 threshold를 느슨하게 하지 않고, qualified YOLOE mask와 source-matched RGB yaw backend로 simulation diagnostic을 다시 구성했다.</p>
 
-<div class="callout"><strong>현재 판정, 2026-08-27:</strong> <code>6add70c</code>에서 physical camera metadata를 RGB-only로 fail-closed하고 camera timestamp uncertainty와 causal encoder alignment를 계약에 추가했다. 새 source admission <code>r551-r554</code>를 거쳐 RTX 3090 actual-time <code>r555</code>를 재실행했다. Raw RGB만 사용한 two-view YOLOE, known-plane position, source-matched yaw가 selection을 구동했고 contact, guarded attachment, release와 terminal containment를 완료했다. RTF는 0.999998이지만 deadline-monitored soft realtime이며 one-period lateness 608회가 남았다. 이후 <code>8537b70</code>은 physical RGB의 channel order, exposure와 rolling-shutter 시간 폭 및 publication latency를 fail-closed했다. 이 source 변경을 r555에 소급 적용하지 않으며 <code>professor_demo_ready=false</code>와 hardware authority false를 유지한다.</div>
+<div class="callout"><strong>현재 판정, 2026-08-27:</strong> <code>6add70c</code>에서 physical camera metadata를 RGB-only로 fail-closed하고 camera timestamp uncertainty와 causal encoder alignment를 계약에 추가했다. 새 source admission <code>r551-r554</code>를 거쳐 RTX 3090 actual-time <code>r555</code>를 재실행했다. Raw RGB만 사용한 two-view YOLOE, known-plane position, source-matched yaw가 selection을 구동했고 contact, guarded attachment, release와 terminal containment를 완료했다. RTF는 0.999998이지만 deadline-monitored soft realtime이며 one-period lateness 608회가 남았다. 이후 <code>8537b70</code>은 physical RGB의 channel order, exposure와 rolling-shutter 시간 폭 및 publication latency를 fail-closed했고, <code>590632d</code>는 FoundationPose와 모든 depth-capable entry point를 explicit legacy acknowledgement 뒤로 격리했다. 이 source 변경을 r555에 소급 적용하지 않으며 <code>professor_demo_ready=false</code>와 hardware authority false를 유지한다.</div>
 
 <h2>고정한 실제 시스템 계약</h2>
 <pre>synchronized raw RGB cameras
@@ -163,6 +163,16 @@
 </tbody></table>
 
 <div class="callout"><strong>검증과 한계:</strong> RTX 3090의 exact <code>8537b70</code> checkout에서 전체 <code>Ran 1,577 tests</code>, OK, 15 skipped를 확인했다. 이는 입력 계약과 기존 simulation/planning 회귀가 닫혔다는 뜻이지 physical camera accuracy가 검증됐다는 뜻이 아니다. 실제 rig의 trigger, clock mapping, exposure/readout, lens calibration, lighting, blur와 occlusion holdout이 없으므로 physical RGB 및 hardware authority는 계속 false다.</div>
+
+<h2>2026-08-27: depth-capable 진입점을 실행 단계에서 격리</h2>
+<table><thead><tr><th>발견한 문제</th><th>원인</th><th>수정 및 결과</th></tr></thead><tbody>
+<tr><td>GoTrack 사용 절차가 FoundationPose로 초기 pose를 만드는 명령을 현재 방법처럼 제시했다.</td><td>FoundationPose와 FoundPose의 이름이 유사하고, 과거 generic pose artifact 절차가 물리 RGB 타깃 결정 이후에도 남아 있었다. FoundationPose는 runtime observed metric depth가 필요하므로 RGB 카메라의 초기 metric pose를 만들 수 없다.</td><td><a href="https://github.com/gohyunsu/beltbench/commit/590632d"><code>590632d</code></a>에서 현재 GoTrack 절차에서 FoundationPose 명령을 제거했다. RGB의 stable-pose/belt-plane constrained <code>x/y/yaw</code>로 초기화한 뒤 encoder를 주 추적원으로 사용하고, GoTrack은 native physical-RGB qualification 이후의 선택적 저주기 correction으로만 남겼다.</td></tr>
+<tr><td>Legacy script라는 설명만 읽지 않으면 depth-capable Isaac scene이나 FoundationPose를 직접 실행할 수 있었다.</td><td>문서상 권한과 실행 가능한 code path 사이에 강제 경계가 없었다. <code>sensor_contract="legacy_rgbd"</code> 문자열 하나가 재현 경로를 열었다.</td><td>Shared <code>legacy-rgbd-diagnostic-only</code> acknowledgement contract를 추가했다. FoundationPose, legacy FoundPose yaw qualification, 과거 Isaac D0/D1 runner 네 개 모두 exact token을 요구하고, Isaac factory도 token 없이 legacy scene을 만들지 않는다. 모든 새 report는 <code>physical_rgb_target_compatible=false</code>를 기록한다.</td></tr>
+<tr><td>Historical RGB-D 파일이 저장소에 존재한다는 사실과 active RGB pipeline의 dependency가 혼동될 수 있었다.</td><td>전역 text search는 재현용 모듈, vendored DINOv2의 depth head, collision penetration depth까지 모두 검색한다.</td><td>실제 depth 소비 Python entry point를 정적 추출하니 네 개뿐이었고 모두 guard를 갖췄다. Canonical perception API는 RGB-D type을 export하지 않고, active physical/admitted RGB 모듈은 RGB-D observation, depth translation, legacy pose pipeline을 import하지 않는다.</td></tr>
+<tr><td>처음 전체 test 실행이 대량 실패했다.</td><td>코드 결함이 아니라 read-only sandbox에 usable temp directory가 없고 calibration 환경에 <code>trimesh</code> 등 planning dependency가 없었다.</td><td>Dependency를 한 환경에 덧붙이지 않고 기존 <code>beltbench-planning</code> 환경과 writable <code>/tmp</code>에서 전체 회귀를 재실행했다. <code>Ran 1,585 tests</code>, OK, 27 skipped였다. Focused RGB/legacy/pacing 검증 35개도 별도로 통과했다.</td></tr>
+</tbody></table>
+
+<div class="callout"><strong>남은 실제 장비 경계:</strong> 이번 수정은 physical SDK driver나 카메라 정확도를 만들어 내지 않는다. RGB8 변환, hardware trigger/PTP clock mapping, lens/rig/belt-plane calibration, photometric profile, blur·occlusion·yaw holdout을 실제 카메라로 측정해야 한다. RGB-only target은 unknown obstacle point cloud도 제공하지 않으므로 source-closed workcell CAD 밖의 장애물은 별도 safety sensor와 controller stop이 qualification되기 전까지 hardware authority를 막는다.</div>
 
 <h2>RTX 3090 개발 결과</h2>
 <table><thead><tr><th>Run</th><th>직접 관찰</th><th>판정</th></tr></thead><tbody>
