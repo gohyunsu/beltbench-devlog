@@ -16,14 +16,14 @@
 <h1>깊이를 대체하는 fallback이 아니라, RGB-only 관측 계약과 검증 순서를 다시 닫는다.</h1>
 <p class="lede">실제 장비의 카메라가 RGB라는 사실을 기준으로 전체 D1 경계를 다시 감사했다. Metric 위치는 depth image가 아니라 알려진 CAD scale, stable tabletop pose, camera calibration과 belt plane에서 얻고, 초기 pose 이후의 이동은 encoder가 전파한다. Isaac RGB background mask와 FoundPose를 바로 연결한 방법은 개발 분할에서 실패했으므로 threshold를 느슨하게 하지 않고, qualified YOLOE mask와 source-matched RGB yaw backend로 simulation diagnostic을 다시 구성했다.</p>
 
-<div class="callout"><strong>현재 판정, 2026-08-27:</strong> r507에서 raw RGB → qualified two-view YOLOE → known-plane position → source-matched RGB yaw의 simulation sensor planar pose를 48/48 event와 bounded fresh-frame retry로 독립 검증했다. r524-r529는 guarded retention을 6/6 통과했지만, terminal containment를 현재 상태로 다시 판정한 r535-r540은 3/6만 통과했다. 최신 <code>63f72f0</code>은 RGB mask를 camera ID에 결박했으므로 새 source admission과 RTX 재실행이 필요하다. <code>professor_demo_ready=false</code>와 hardware authority false를 유지하며 stop route, immutable hand target, physical RGB qualification과 drop 반복성이 아직 열려 있다.</div>
+<div class="callout"><strong>현재 판정, 2026-08-27:</strong> <code>6add70c</code>에서 physical camera metadata를 RGB-only로 fail-closed하고 camera timestamp uncertainty와 causal encoder alignment를 계약에 추가했다. 새 source admission <code>r551-r554</code>를 거쳐 RTX 3090 actual-time <code>r555</code>를 재실행했다. Raw RGB만 사용한 two-view YOLOE, known-plane position, source-matched yaw가 selection을 구동했고 contact, guarded attachment, release와 terminal containment를 완료했다. RTF는 0.999998이지만 deadline-monitored soft realtime이며 one-period lateness 608회가 남았다. <code>professor_demo_ready=false</code>와 hardware authority false를 유지하며 stop route, immutable hand target, physical RGB native qualification과 drop 반복성이 아직 열려 있다.</div>
 
 <h2>고정한 실제 시스템 계약</h2>
 <pre>synchronized raw RGB cameras
   -> calibration-bound in-memory rectification
   -> one batched object-mask backend
   -> one-shot RGB-to-CAD planar [x, y, yaw] acquisition
-  -> exact measurement-time encoder registration
+  -> causal measurement-time encoder registration
   -> 60 Hz constant-yaw translation propagation
   -> prevalidated intercept family selection
   -> collision gate -> future-start controller lease
@@ -113,7 +113,36 @@
 <tr><td>가속화 문서가 여전히 online stage를 image/depth inference로 표기하고 초기 roadmap이 GoTrack을 기본 측정원으로 두었다.</td><td>RGB-only architecture 결정 이후 legacy 표현이 남아 실제 dependency와 문서가 어긋났다.</td><td>Online stage를 batched RGB segmentation과 constrained planar pose로 정정했다. Encoder가 constant-yaw translation의 primary authority이고 GoTrack은 physical RGB accuracy/latency qualification 뒤에만 가능한 low-rate correction 후보로 제한했다.</td></tr>
 </tbody></table>
 
-<div class="callout"><strong>새 revision의 증거 경계:</strong> <code>63f72f0</code>은 local 1,561 tests를 통과했고 27개가 environment-dependent로 skipped됐다. 그러나 source hash가 바뀌었으므로 r507 qualification 자체를 소급 변경하지 않으며, r519/r535 admission을 새 코드의 실행 증거로 재사용하지 않는다. 새 source-closed admission을 생성한 뒤 RTX RGB actual-time trial을 다시 수행해야 한다.</div>
+<div class="callout"><strong>당시 revision의 증거 경계:</strong> <code>63f72f0</code>은 local 1,561 tests를 통과했고 27개가 environment-dependent로 skipped됐다. 그러나 source hash가 바뀌었으므로 r507 qualification 자체를 소급 변경하지 않았고, r519/r535 admission도 새 코드의 실행 증거로 재사용하지 않았다. 이 결함을 닫은 <code>6add70c</code> source admission과 RTX 재실행 결과는 바로 아래에 기록한다.</div>
+
+<h2>2026-08-27: physical RGB 시간 계약과 source-closed 재실행</h2>
+<table><thead><tr><th>발견한 문제</th><th>원인</th><th>수정 및 결과</th></tr></thead><tbody>
+<tr><td>Canonical Isaac scene은 RGB-only였지만 공용 camera metadata가 <code>physical_camera</code>의 RGB-D modality도 허용했다.</td><td>Legacy replay 호환 schema와 현재 physical deployment 계약을 같은 허용 목록으로 검사했다. Edge adapter만 RGB를 내보내므로 충분하다고 가정해 잘못된 physical payload가 generic ingress까지 들어올 여지가 남았다.</td><td><a href="https://github.com/gohyunsu/beltbench/commit/6add70c853ec12532837f228786af13e4088a964"><code>6add70c</code></a>에서 current RGB profiles와 legacy RGB-D profile을 분리하고, <code>physical_camera</code>는 <code>["rgb"]</code> 또는 <code>["rgb", "object_mask"]</code>만 허용한다. Physical depth payload는 metadata construction에서 즉시 거부된다.</td></tr>
+<tr><td>두 RGB frame의 capture timestamp를 점값으로만 비교했다.</td><td>PTP/trigger/driver timestamp mapping의 오차가 표현되지 않아 nominal skew가 작아도 실제 measurement interval이 synchronization budget을 넘을 수 있었다.</td><td>각 frame에 conservative <code>measurement_timestamp_uncertainty_s</code>를 추가하고 uncertainty interval을 포함한 effective multi-camera skew를 검사한다. Physical adapter는 mapping uncertainty와 skew upper bound를 모두 넘으면 segmentation 전에 fail-closed한다.</td></tr>
+<tr><td>Simulation은 RGB capture와 같은 시각의 encoder state를 직접 만들 수 있지만 physical camera에는 그 상태가 항상 존재한다고 볼 수 없었다.</td><td>Camera와 encoder의 서로 다른 clock/transport를 명시적인 causal alignment module 없이 adapter 내부 exact-match 가정으로 처리했다.</td><td><code>ConveyorStateTimeAligner</code>를 추가했다. Strictly monotonic encoder history에서 RGB reference timestamp 이전의 최신 state만 선택하고, bounded constant-acceleration로 짧게 전파하며 covariance를 증가시킨다. Future sample, no-prior state와 horizon 초과는 거부한다. Acquisition generation은 camera, calibration, mask, clock과 aligned encoder ancestry를 함께 결박한다.</td></tr>
+<tr><td>FoundPose와 FoundationPose의 runtime sensor 요구가 문서에서 혼동될 가능성이 있었다.</td><td>이름이 비슷하지만 FoundPose는 single RGB query 기반이고 FoundationPose의 runtime은 observed RGB-D다.</td><td>Physical RGB 후보는 FoundPose, GigaPose, MegaPose-RGB를 같은 provider contract와 native holdout에서 비교한다. FoundationPose는 observed depth를 요구하므로 physical target의 runtime 후보에서 제외한다. 현재 mask-centroid known-plane 구현은 계속 simulation diagnostic일 뿐 physical pose authority가 아니다.</td></tr>
+</tbody></table>
+
+<h2>r551-r555 RGB-only source closure와 actual-time 결과</h2>
+<table><thead><tr><th>단계</th><th>직접 검증한 내용</th><th>판정</th></tr></thead><tbody>
+<tr><td><code>r551</code></td><td>기존 BODex grasp <code>bodex-193463c5eabd9911</code>, 1,590-frame source command, arm/assembly collision semantics와 object/robot/playback digests를 <code>6add70c</code>에서 재감사했다. Startup 0.921 s, resident selector p95 0.052 ms다.</td><td>Source runtime admission 발급. Physics grasp와 hardware execution은 승인하지 않음.</td></tr>
+<tr><td><code>r552-r553</code></td><td>Stationary pre-stage를 2.4 s, 210-waypoint guarded splice로 재생성하고 attach 9.0 s의 1,265-frame full task로 materialize했다. Independent full-frame collision validation과 exact artifact reproduction을 다시 통과했다.</td><td>Isaac event runtime admission 발급. Collision evidence를 새 source revision과 command lineage에 결박.</td></tr>
+<tr><td><code>r554</code></td><td>두 camera, exact YOLOE/model weights, known-plane position, source-matched RGB yaw, bounded retry와 r507 qualification을 하나의 perception admission으로 고정했다.</td><td>Simulation RGB yaw/position authority만 승인. Physical camera와 hardware authority는 false.</td></tr>
+<tr><td><code>r555</code></td><td>RTX 3090에서 <code>--require-ready</code> exit 0. RGB perception이 selection을 구동했고 contact 5회, guarded retention, attachment, release와 terminal containment를 완료했다.</td><td><code>integrated_simulation_ready=true</code>, <code>complete_soft_realtime_pipeline=true</code>. Stop route 부재와 admission 이후 hand target 수정 때문에 <code>professor_demo_ready=false</code>.</td></tr>
+</tbody></table>
+
+<table><thead><tr><th>r555 항목</th><th>측정값</th></tr></thead><tbody>
+<tr><td>Simulation / wall / RTF</td><td>27.083333 s / 27.083396 s / 0.999998, 60 Hz control, 480 Hz physics, 15 Hz RGB processing</td></tr>
+<tr><td>RGB contract</td><td>Camera 2대, raw modality <code>["rgb"]</code>, derived product <code>object_mask</code>, observed depth request/use 모두 false</td></tr>
+<tr><td>Sensor / perception / planar acquisition</td><td>22.166 ms / 35.990 ms / 34.924 ms; YOLOE inference 19.379 ms, yaw matching 29.930 ms</td></tr>
+<tr><td>Decision / control edge</td><td>Motion prediction 0.085 ms, resident decision 0.026 ms, collision gate 1.052 ms, controller handoff 5.445 ms</td></tr>
+<tr><td>Evaluator-only error</td><td>Translation 0.127 mm, longitudinal 0.116 mm, lateral 0.052 mm, yaw 0.021136 rad. Simulator truth는 selector에 입력되지 않음.</td></tr>
+<tr><td>Soft-realtime 경계</td><td>Hard realtime claim=false, one-period lateness 608회. RTF 1.0만으로 deadline 안정성을 주장하지 않음.</td></tr>
+<tr><td>Video</td><td>1280×720, 15 FPS, 407 frames, 27.134 s, SHA-256 <code>92674dbf16a05ff9ef364c4e5a8007849486dcc25cd1d9d3ef5d772c6ef4081e</code></td></tr>
+<tr><td>Report</td><td>SHA-256 <code>256e6fc7a78b2ed573a5f12062a25263f6647120b183017d878f49d8a7d0929f</code></td></tr>
+</tbody></table>
+
+<div class="callout"><strong>영상과 증거 위치:</strong> 서버는 <code>/home/hyunsu/.agile/projects/runs/isaac-rgb-event-6add70c-guarded-r555/trial</code>, 로컬은 BeltBench checkout의 <code>evidence/isaac-rgb-event-6add70c-guarded-r555</code>에 MP4와 report를 보존했다. Public site asset으로 승격하지 않았다. 교수님께는 “admitted simulation RGB가 실제 selection을 구동한 actual-time integrated diagnostic”으로 보여주며 physical-camera 또는 hardware-ready demo라고 설명하지 않는다.</div>
 
 <h2>2026-08-27: guarded force는 닫혔지만 drop 반복성은 실패</h2>
 <table><thead><tr><th>단계</th><th>발생한 문제와 원인</th><th>해결 및 결과</th></tr></thead><tbody>
@@ -143,6 +172,7 @@
 <li><strong>완료:</strong> One-shot r489 실패를 보존하고 independent off-grid-yaw/four-position r507에서 bounded fresh-frame simulation planar pose를 48/48 event로 qualification했다.</li>
 <li><strong>완료:</strong> r507 report를 source-closed event admission에 결박하고 D2/D3 gate를 바꾸지 않은 r519 actual-time integrated simulation을 재실행했다.</li>
 <li><strong>다음:</strong> Physical RGB rig에서 hardware synchronization, in-memory rectification, exposure/blur/occlusion, segmentation과 x/y/yaw를 별도 native holdout으로 qualification한다.</li>
+<li><strong>다음:</strong> Camera clock mapping uncertainty와 encoder alignment horizon을 실제 trigger/PTP 로그에서 측정하고, 이 bound가 selector slack과 capture-to-decision budget 안에 드는지 검증한다.</li>
 <li><strong>다음:</strong> CPU startup certificate만 사용하는 현재 collision 경계를 resident GPU collision gate와 비교 qualification하고, 실제 decision latency 감소가 있을 때만 승격한다.</li>
 <li><strong>다음:</strong> Guarded contact의 run-to-run force와 containment repeatability를 multi-seed/multi-run protocol로 측정하고 admission 이후 target 수정이 없는 controller command를 만든다.</li>
 <li><strong>다음:</strong> Prevalidated stop route, controller lease 취소와 supervised hardware safety를 검증한 뒤에만 professor/hardware readiness를 승격한다.</li>
@@ -163,10 +193,13 @@
 <li>r519은 <code>integrated_simulation_ready=true</code>, <code>complete_soft_realtime_pipeline=true</code>, trace complete와 containment를 통과했다. 동시에 <code>professor_demo_ready=false</code>, hardware authority false이며 blocker는 stop route 부재와 admission 이후 hand-target 수정이다.</li>
 <li><code>3980f11</code>: local 전체 1,556개 통과, 26개 skipped. r524-r529 guarded retention 6/6, maximum force 0.955 N 이하.</li>
 <li><code>3e431a9</code>: local 전체 1,557개 통과, 26개 skipped. r535-r540 terminal containment 3/6이므로 drop 반복성은 실패.</li>
-<li><code>63f72f0</code>: camera-bound RGB mask ancestry와 mixed-size rig startup rejection을 추가했다. 대상 38개와 local 전체 1,561개 통과, 27개 skipped. 새 revision의 RTX admission/trial은 아직 수행하지 않았다.</li>
+<li><code>63f72f0</code>: camera-bound RGB mask ancestry와 mixed-size rig startup rejection을 추가했다. 대상 38개와 local 전체 1,561개 통과, 27개 skipped. 당시 admission은 source change 때문에 폐기했고 이후 <code>6add70c</code>에서 새로 발급했다.</li>
+<li><code>6add70c</code>: physical metadata RGB-only gate, timestamp uncertainty, causal encoder alignment와 covariance propagation을 추가했다. Local 전체 <code>Ran 1,574 tests</code>, OK, 27개 skipped. RTX Isaac Python 대상 108개 통과.</li>
+<li>r551-r554가 source command, stationary splice, collision evidence와 RGB perception을 <code>6add70c</code>에 다시 결박했다. r555는 <code>--require-ready</code> exit 0, <code>integrated_simulation_ready=true</code>, guarded retention과 terminal containment를 통과했다.</li>
+<li>r555는 동시에 <code>professor_demo_ready=false</code>, hardware authority false다. Deadline lateness 608회, stop route 부재, feedback-modified hand target과 physical RGB native qualification을 미해결 blocker로 보존한다.</li>
 </ul>
 
-<div class="callout"><strong>교수님께 설명할 현재 상태:</strong> “물리 카메라가 RGB이므로 observed depth 기반 위치 추정은 제거했습니다. 두 synchronized RGB의 learned segmentation, known belt plane 기반 x/y와 source-matched yaw를 48-event simulation campaign에서 검증했고 첫 frame 이상치 두 건은 90.4 ms 이내의 bounded fresh-frame retry로 복구했습니다. 이 pose가 encoder, selection, collision/handoff와 measured PhysX lifecycle을 구동하는 actual-time diagnostic까지 연결했습니다. 다만 strict terminal drop은 반복 6회 중 3회만 통과했고, 최신 코드는 camera-mask swap을 fail-closed로 막았기 때문에 새 admission으로 RTX 재실행해야 합니다. Physical RGB domain, stop route, immutable hand target과 hardware safety는 아직 승인하지 않았습니다.”</div>
+<div class="callout"><strong>교수님께 설명할 현재 상태:</strong> “물리 카메라가 RGB이므로 observed depth 기반 위치 추정은 제거했습니다. 두 synchronized RGB의 learned segmentation, known belt plane 기반 x/y와 source-matched yaw를 48-event simulation campaign에서 검증했고, camera identity와 timestamp uncertainty 및 causal encoder ancestry까지 fail-closed 계약으로 묶었습니다. 새 source admission으로 RTX 3090을 재실행해 이 RGB pose가 selection, collision/handoff와 measured PhysX contact, attachment, release, containment를 실제 시간으로 구동하는 영상을 확보했습니다. 다만 이는 soft-realtime simulation diagnostic입니다. Stop route와 immutable hand target이 없어 professor-ready gate는 false이고, physical RGB domain, deadline lateness, drop 반복성과 hardware safety도 아직 승인하지 않았습니다.”</div>
 
 <p><a href="isaac-guarded-contact-actual-time-r153.html">ISSUE-088 actual-time RGB integration</a> · <a href="realtime-perception-single-gpu-plan.html">ISSUE-074 single-GPU plan</a> · <a href="planar-yaw-backend-promotion.html">ISSUE-085 pose promotion</a></p>
 </main>
