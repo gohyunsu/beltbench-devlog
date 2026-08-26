@@ -16,7 +16,7 @@
 <h1>깊이를 대체하는 fallback이 아니라, RGB-only 관측 계약과 검증 순서를 다시 닫는다.</h1>
 <p class="lede">실제 장비의 카메라가 RGB라는 사실을 기준으로 전체 D1 경계를 다시 감사했다. Metric 위치는 depth image가 아니라 알려진 CAD scale, stable tabletop pose, camera calibration과 belt plane에서 얻고, 초기 pose 이후의 이동은 encoder가 전파한다. Isaac RGB background mask와 FoundPose를 바로 연결한 방법은 개발 분할에서 실패했으므로 threshold를 느슨하게 하지 않고, qualified YOLOE mask와 source-matched RGB yaw backend로 simulation diagnostic을 다시 구성했다.</p>
 
-<div class="callout"><strong>현재 판정, 2026-08-27:</strong> r507에서 raw RGB → qualified two-view YOLOE → known-plane position → source-matched RGB yaw의 simulation sensor planar pose를 48/48 event와 bounded fresh-frame retry로 독립 검증했다. 이 authority를 source-closed admission에 결박한 r519가 RGB perception, encoder propagation, selection, collision gate, controller handoff, guarded grasp와 bin containment를 RTF 0.999998로 완료했다. 다만 <code>professor_demo_ready=false</code>와 hardware authority false를 유지한다. Stop route, admission 이후 hand-target 수정, physical-camera 검증과 guarded-retention 반복성이 아직 열려 있기 때문이다.</div>
+<div class="callout"><strong>현재 판정, 2026-08-27:</strong> r507에서 raw RGB → qualified two-view YOLOE → known-plane position → source-matched RGB yaw의 simulation sensor planar pose를 48/48 event와 bounded fresh-frame retry로 독립 검증했다. r524-r529는 guarded retention을 6/6 통과했지만, terminal containment를 현재 상태로 다시 판정한 r535-r540은 3/6만 통과했다. 최신 <code>63f72f0</code>은 RGB mask를 camera ID에 결박했으므로 새 source admission과 RTX 재실행이 필요하다. <code>professor_demo_ready=false</code>와 hardware authority false를 유지하며 stop route, immutable hand target, physical RGB qualification과 drop 반복성이 아직 열려 있다.</div>
 
 <h2>고정한 실제 시스템 계약</h2>
 <pre>synchronized raw RGB cameras
@@ -106,7 +106,23 @@
 
 <div class="callout"><strong>영상 공개 경계:</strong> r519 MP4는 로컬 evidence에 보존했지만 report가 <code>professor_demo_ready=false</code>이므로 public devlog asset으로 게시하지 않았다. 교수님께는 “qualified simulation RGB planar pose가 selection을 구동하고 measured PhysX lifecycle까지 연결한 actual-time diagnostic”으로 재생한다. Physical-camera 성공, hardware-ready demo 또는 robust guarded grasp라고 설명하지 않는다.</div>
 
-<div class="callout"><strong>반복성 경계:</strong> 동일하게 유지한 guarded policy와 trajectory에서 r514는 force limit 초과로 실패했고 r515와 r519는 통과했다. Presentation-only 변경 뒤 r519가 다시 통과한 것은 유용하지만 2/3 성공을 qualification으로 볼 수 없다. Multi-run·multi-seed force/containment protocol 전까지 guarded retention은 diagnostic이다.</div>
+<h2>2026-08-27: RGB mask를 camera identity에 결박</h2>
+<table><thead><tr><th>문제</th><th>원인</th><th>수정 및 검증 결과</th></tr></thead><tbody>
+<tr><td>두 camera의 segmentation 결과 순서가 뒤바뀌어도 RGB와 mask가 그대로 <code>zip</code>될 수 있었다.</td><td><code>RgbSegmentation</code>은 <code>mask_source</code>와 배열만 가지고 있었다. Batch 길이와 공통 model source 검사는 “어느 camera에서 나온 mask인가”를 증명하지 못한다. RGB-only 경로에는 depth consistency fallback도 없으므로 잘못된 결합이 planar pose를 직접 오염시킨다.</td><td><a href="https://github.com/gohyunsu/beltbench/commit/63f72f0"><code>63f72f0</code></a>에서 모든 mask가 <code>camera_id</code>를 갖도록 계약을 변경했다. 공용 validator는 반환 camera tuple이 요청 tuple과 정확히 같고 mask source가 일관된 경우에만 RGB와 결합한다. Physical adapter, Isaac composition, in-process YOLOE와 external resident worker가 같은 검사를 사용한다.</td></tr>
+<tr><td>서로 다른 rectified 해상도의 camera를 고정 ndarray batch로 처리하려 했다.</td><td>Backend protocol은 <code>N×H×W×3</code> 한 배열을 요구하지만 adapter construction에서 H/W 동일성을 확인하지 않아 <code>np.stack</code> 시점에 일반 shape 오류가 발생했다.</td><td>현재 지원 범위를 “두 대 이상, 동일 rectified output size”로 명시하고 mixed-size rig를 startup에 거부한다. 암묵적 resize·padding이나 view별 inference fallback은 추가하지 않았다.</td></tr>
+<tr><td>가속화 문서가 여전히 online stage를 image/depth inference로 표기하고 초기 roadmap이 GoTrack을 기본 측정원으로 두었다.</td><td>RGB-only architecture 결정 이후 legacy 표현이 남아 실제 dependency와 문서가 어긋났다.</td><td>Online stage를 batched RGB segmentation과 constrained planar pose로 정정했다. Encoder가 constant-yaw translation의 primary authority이고 GoTrack은 physical RGB accuracy/latency qualification 뒤에만 가능한 low-rate correction 후보로 제한했다.</td></tr>
+</tbody></table>
+
+<div class="callout"><strong>새 revision의 증거 경계:</strong> <code>63f72f0</code>은 local 1,561 tests를 통과했고 27개가 environment-dependent로 skipped됐다. 그러나 source hash가 바뀌었으므로 r507 qualification 자체를 소급 변경하지 않으며, r519/r535 admission을 새 코드의 실행 증거로 재사용하지 않는다. 새 source-closed admission을 생성한 뒤 RTX RGB actual-time trial을 다시 수행해야 한다.</div>
+
+<h2>2026-08-27: guarded force는 닫혔지만 drop 반복성은 실패</h2>
+<table><thead><tr><th>단계</th><th>발생한 문제와 원인</th><th>해결 및 결과</th></tr></thead><tbody>
+<tr><td><a href="https://github.com/gohyunsu/beltbench/commit/3980f111af314bd046fa193af802b3334af83a86"><code>3980f11</code></a></td><td>Force observation이 한 control tick 늦게 도착해 ring finger에 full-rate command가 한 번 더 적용됐고 r514/r520에서 10-14 N spike가 발생했다.</td><td>Pre-contact ring search rate만 source-bound 0.1로 제한하고 latched refinement 0.06과 5 N gate는 유지했다. 60 Hz, 8 substep r524-r529가 guarded retention 6/6, maximum force 0.955 N 이하, RTF 0.998 이상으로 통과했다.</td></tr>
+<tr><td><a href="https://github.com/gohyunsu/beltbench/commit/3e431a946e13ace3b5025788e85ebc8da9dbcabe"><code>3e431a9</code></a></td><td>기존 ready 판정은 과거 한 번 <code>contained</code>가 된 latch만 보고 task 종료 시 object가 bin 밖으로 벗어나도 성공으로 남겼다.</td><td>종료 순간 source-hull containment, bin contact와 속도를 다시 요구하도록 fail-closed로 수정했다. r535-r540은 force 0.902 N 이하와 RTF 0.999966 이상을 유지했지만 strict terminal containment는 3/6만 통과했다. 따라서 drop은 qualification 실패다.</td></tr>
+<tr><td><code>r545 positive-rest-offset candidate</code></td><td>Object 전체에 positive PhysX rest offset을 주어 floor penetration을 보정하려 했으나, 이 설정은 drop floor만이 아니라 upstream belt contact까지 바꾸고 event trace snapshot을 invalid하게 만들었다.</td><td>후보를 승격하지 않았다. Tracked policy는 rest offset 0을 유지한다. 다음 수정은 terminal gate 완화가 아니라 source hull과 cooked collision geometry의 orientation별 support 차이를 진단하고 conservative collision proxy 또는 bin 전용 collision 표현을 검증하는 것이다.</td></tr>
+</tbody></table>
+
+<div class="callout"><strong>반복성 경계:</strong> guarded finger force는 현재 command rate에서 6/6 통과했지만 drop containment는 3/6이다. 성공 영상 하나를 선택해 반복성 성공으로 설명하지 않는다. r535는 actual-time integrated diagnostic으로는 유효하지만 <code>professor_demo_ready=false</code>이며 terminal drop과 hardware authority를 승인하지 않는다.</div>
 
 <h2>RTX 3090 개발 결과</h2>
 <table><thead><tr><th>Run</th><th>직접 관찰</th><th>판정</th></tr></thead><tbody>
@@ -145,9 +161,12 @@
 <li><code>66b3160</code>: readiness를 blocker-derived로 수정했다. Local 전체 1,549개 통과, 26개 skipped.</li>
 <li><code>e506b05</code>: 영상 yaw/position label을 admitted RGB authority에서 파생한다. Local 전체 1,554개 통과, 26개 skipped.</li>
 <li>r519은 <code>integrated_simulation_ready=true</code>, <code>complete_soft_realtime_pipeline=true</code>, trace complete와 containment를 통과했다. 동시에 <code>professor_demo_ready=false</code>, hardware authority false이며 blocker는 stop route 부재와 admission 이후 hand-target 수정이다.</li>
+<li><code>3980f11</code>: local 전체 1,556개 통과, 26개 skipped. r524-r529 guarded retention 6/6, maximum force 0.955 N 이하.</li>
+<li><code>3e431a9</code>: local 전체 1,557개 통과, 26개 skipped. r535-r540 terminal containment 3/6이므로 drop 반복성은 실패.</li>
+<li><code>63f72f0</code>: camera-bound RGB mask ancestry와 mixed-size rig startup rejection을 추가했다. 대상 38개와 local 전체 1,561개 통과, 27개 skipped. 새 revision의 RTX admission/trial은 아직 수행하지 않았다.</li>
 </ul>
 
-<div class="callout"><strong>교수님께 설명할 현재 상태:</strong> “물리 카메라가 RGB이므로 depth 기반 위치 추정은 제거했습니다. 두 synchronized RGB의 learned segmentation, known belt plane 기반 x/y와 source-matched yaw를 48-event campaign에서 검증했고, 첫 frame 이상치 두 건은 같은 backend의 다음 fresh frame에서 90.4 ms 이내 복구했습니다. 이 qualified pose가 encoder, selection, collision/handoff, PhysX grasp와 bin drop을 실제로 구동하는 27초 simulation을 RTX 3090에서 RTF 0.999998로 재실행했습니다. 다만 물리 RGB domain, stop route와 admission 이후 hand-target 수정, guarded grasp 반복성 및 hardware safety는 아직 승인하지 않았습니다.”</div>
+<div class="callout"><strong>교수님께 설명할 현재 상태:</strong> “물리 카메라가 RGB이므로 observed depth 기반 위치 추정은 제거했습니다. 두 synchronized RGB의 learned segmentation, known belt plane 기반 x/y와 source-matched yaw를 48-event simulation campaign에서 검증했고 첫 frame 이상치 두 건은 90.4 ms 이내의 bounded fresh-frame retry로 복구했습니다. 이 pose가 encoder, selection, collision/handoff와 measured PhysX lifecycle을 구동하는 actual-time diagnostic까지 연결했습니다. 다만 strict terminal drop은 반복 6회 중 3회만 통과했고, 최신 코드는 camera-mask swap을 fail-closed로 막았기 때문에 새 admission으로 RTX 재실행해야 합니다. Physical RGB domain, stop route, immutable hand target과 hardware safety는 아직 승인하지 않았습니다.”</div>
 
 <p><a href="isaac-guarded-contact-actual-time-r153.html">ISSUE-088 actual-time RGB integration</a> · <a href="realtime-perception-single-gpu-plan.html">ISSUE-074 single-GPU plan</a> · <a href="planar-yaw-backend-promotion.html">ISSUE-085 pose promotion</a></p>
 </main>
