@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Shared AutoDex hand transfer audit · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-098 · 2026-08-28 · shared AutoDex hand transfer audit</div>
+<h1>NAS grasp를 버리지 않되 Inspire Right pose를 Inspire Left 실행 pose로 오인하지 않는다.</h1>
+<p class="lede">Object ID만 주어진 실시간 이벤트에서 NAS를 검색하는 대신, shared AutoDex 후보를 offline에 source-close하고 target-hand 재최적화 seed로만 승격하는 경계를 구현했다. 오른손과 왼손의 6개 command 의미가 같다는 사실은 wrist와 contact geometry가 같다는 뜻이 아니다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> BeltBench <a href="https://github.com/gohyunsu/beltbench/commit/4fca11f"><code>4fca11f</code></a>에서 hand compatibility 감사기를 구현했다. 실제 Pepsi pool 100개의 wrist·pregrasp·grasp 총 300개 파일은 원본 BODex archive와 모두 일치했다. 그러나 archive에 producer revision과 hand manifest가 내장되지 않았고 audited source는 Inspire Right를 가리키며 Right/Left URDF kinematics도 다르다. 따라서 <code>proposal_seed_eligible=true</code>지만 <code>direct_grasp_transfer_eligible=false</code>, <code>runtime_eligible=false</code>, <code>execution_authorized=false</code>다.</div>
+
+<h2>발생한 문제와 위험</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>잘못 처리할 때의 위험</th></tr>
+<tr><td>Pool hand ID가 단순히 <code>inspire</code>다.</td><td>Candidate directory와 zip에는 chirality 및 exact producer manifest가 없다.</td><td>오른손 object-relative wrist를 왼손 grasp로 직접 실행할 수 있다.</td></tr>
+<tr><td>두 hand의 command DOF와 관절 한계가 같다.</td><td>Right/Left 모두 thumb 2축과 네 finger 1축의 같은 semantic order를 사용한다.</td><td>배열 호환성을 전체 hand geometry 호환성으로 오인한다.</td></tr>
+<tr><td><code>wrist_se3.npy</code>의 이름이 frame authority처럼 보인다.</td><td>BODex는 robot config의 floating <code>base_link</code> pose를 저장하고 파일명만 wrist라고 부른다.</td><td>Provider root와 target hand root 사이 고정 transform을 누락할 수 있다.</td></tr>
+<tr><td>NAS에 후보가 있으므로 event에서 바로 찾기 쉽다.</td><td>Offline source와 online deployment bundle의 역할이 분리되지 않으면 구현이 짧아 보인다.</td><td>NFS 지연, file parse, open-ended search와 source drift가 control deadline에 들어온다.</td></tr>
+</table>
+
+<h2>선택한 해결 구조</h2>
+<ol>
+<li>Shared candidate pool과 모든 원본 artifact를 먼저 재해시한다.</li>
+<li>442,211,743 byte 원본 zip 자체를 SHA-256으로 고정하고, 선택된 각 candidate의 세 payload를 zip member와 byte digest로 비교한다.</li>
+<li>동시기 AutoDex source revision과 vendored BODex Right config·URDF를 기록하되 producer revision이 archive에 내장되지 않았다는 결함을 보존한다.</li>
+<li>Provider와 target URDF에서 6개 independent command, mimic limit과 <code>wrist → base_link</code> fixed joint를 직접 읽는다.</li>
+<li>Side prefix를 제거한 command semantic order와 radian limit이 같을 때만 Left 재최적화 seed로 허용한다.</li>
+<li>Side 이름을 정규화한 URDF joint tree의 origin, axis, parent/child, limit과 mimic signature를 비교한다. Signature가 다르면 direct root/contact transfer를 거부한다.</li>
+<li>Target-left wrist/contact 재최적화, intrinsic grasp, robot/workcell yaw-horizon, moving retention/release를 별도 필수 action으로 기록한다.</li>
+</ol>
+
+<h2>실제 NAS 결과</h2>
+<table class="table">
+<tr><th>항목</th><th>결과</th></tr>
+<tr><td>Candidate pool</td><td><code>pepsi_light / inspire / selected_100</code>, 100개</td></tr>
+<tr><td>Archive</td><td>442,211,743 byte, SHA-256 <code>21e6fa377f7988...</code></td></tr>
+<tr><td>Payload 비교</td><td><code>wrist_se3.npy</code>, <code>pregrasp_pose.npy</code>, <code>grasp_pose.npy</code> 300/300 exact match</td></tr>
+<tr><td>Command 의미</td><td>Right→Left 6개 semantic mapping과 radian limit 일치, seed-only</td></tr>
+<tr><td>Root frame</td><td>양쪽 URDF에서 <code>wrist → base_link</code> fixed identity 확인</td></tr>
+<tr><td>Kinematic signature</td><td>Right <code>407e83b36e8b...</code>, Left <code>c59b1f571341...</code>, 서로 다름</td></tr>
+<tr><td>Audit report</td><td>SHA-256 <code>f196be35c69e2b4eb6507d3c7a7e27beda81e4f18b1990868e46183e1b2e590b</code></td></tr>
+<tr><td>Replay</td><td>첫 실행 <code>created=true</code>, exact replay <code>created=false</code></td></tr>
+<tr><td>Local regression</td><td>인접 21개 및 전체 1,752개 통과, conditional skip 28개, 158.513 s</td></tr>
+<tr><td>Server regression</td><td>BODex 전용 환경에서 hand audit·frame adapter 17개 통과</td></tr>
+</table>
+
+<h2>BODex import frame 계약 수정</h2>
+<p>감사 과정에서 기존 importer가 <code>wrist_se3.npy</code>를 곧바로 <code>object_from_hand_root</code>로 저장하는 문제를 발견했다. <a href="https://github.com/gohyunsu/beltbench/commit/2ca4251"><code>2ca4251</code></a>에서 import schema를 갱신해 <code>provider_saved_root_link</code>, <code>target_hand_root_link</code>, <code>provider_saved_root_from_target_hand_root</code>를 필수 입력으로 만들었다. Adapter는 이제 <code>object_from_saved_root @ saved_root_from_target_root</code>를 명시적으로 계산하며 identity fallback을 두지 않는다.</p>
+
+<h2>실행 중 문제, 원인과 해결</h2>
+<table class="table">
+<tr><th>증상</th><th>원인</th><th>해결 및 결과</th></tr>
+<tr><td>기본 Python에서 단위 테스트 import 실패</td><td>Base 환경에 NumPy가 없었다.</td><td>고정된 planning 환경으로 전환해 frame adapter 14개, hand audit 인접 회귀 총 21개를 통과했다.</td></tr>
+<tr><td>서버가 GitHub commit을 fetch하지 못함</td><td>비대화형 서버 checkout에 private remote credential이 없고 origin은 과거 bundle이었다.</td><td>기존 checkout commit을 prerequisite로 하는 incremental Git bundle을 전송하고 검증한 뒤 clean detached checkout을 정확한 commit으로 이동했다.</td></tr>
+<tr><td>SFTP 기반 전송 실패</td><td>서버의 SFTP subsystem이 비활성화돼 있었다.</td><td>SSH stdin으로 bundle을 전달하고 <code>git bundle verify</code>와 prerequisite 검사를 통과했다.</td></tr>
+<tr><td>첫 audit CLI에서 BeltBench module import 실패</td><td>Isaac Python에 checkout이 editable install돼 있지 않아 script directory만 import path에 들어갔다.</td><td>Source root를 명시한 <code>PYTHONPATH</code>로 재실행했고 실제 report 생성과 exact replay가 통과했다.</td></tr>
+<tr><td>Isaac Python에서 BODex importer test import 실패</td><td>Sensor simulation 환경에는 의도적으로 planning 의존성인 <code>trimesh</code>가 설치되지 않았다.</td><td>Isaac 환경을 오염시키지 않고 기존 BODex 전용 환경으로 분리해 17/17을 통과했다.</td></tr>
+</table>
+
+<h2>실시간 파이프라인에 미치는 영향</h2>
+<p>Online 경로는 바뀌지 않는다. NAS audit과 Right→Left 재최적화는 offline이다. Stable-pose별 Left grasp가 독립 gate를 통과하면 최소 deployment bundle만 local NVMe에 stage하고 시작 시 메모리/GPU에 올린다. RGB event는 stable-pose class와 <code>(x,y,yaw)</code>를 추정해 resident atlas를 O(1)로 선택하고, encoder가 translation만 전파한다. 지원하지 않는 pose 또는 qualified Left grasp가 없는 pose는 다른 atlas나 NAS 후보로 fallback하지 않고 no-pick이다.</p>
+
+<h2>남은 작업</h2>
+<ol>
+<li>기존 Left upside-down 2,000 proposal의 정확한 pose/frame ancestry를 새 frame contract로 재검증한다.</li>
+<li><code>source-000/001</code>에는 Right command를 seed로 사용해 Left wrist/contact를 재최적화하고, <code>source-002</code>는 기존 Left batch를 먼저 평가한다.</li>
+<li>각 stable pose에서 intrinsic contact·support·approach·closure·retention·release gate를 통과시킨다.</li>
+<li>xArm/connector/workcell의 yaw×intercept-horizon deployment를 평가해 pose별 resident atlas를 컴파일한다.</li>
+<li>RGB pose latch가 서로 다른 atlas와 command family를 선택하는 actual-time Isaac trace와 영상을 생성한다.</li>
+</ol>
+
+<p><a href="shared-autodex-tested-pose-resolution.html">ISSUE-097 tested pose resolution</a> · <a href="object-only-multi-stable-pose-runtime.html">ISSUE-096 object-only runtime</a> · <a href="bodex-reproducible-generation.html">ISSUE-011 BODex generation</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
