@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Multi-pose grasp generation and support-normal approach · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-103 · 2026-08-28 · multi-pose grasp generation and support-normal approach</div>
+<h1>NAS grasp를 runtime에 검색하지 않고 pose별 resident 후보로 만들며, 접근 방향은 target support normal에서 파생한다.</h1>
+<p class="lede">Object ID만 주어지고 stable pose·yaw·위치를 RGB가 측정하는 runtime을 준비하려면 모든 허용 stable-pose class에 비어 있지 않은 grasp set이 필요하다. 보존된 512개 Inspire Left proposal을 먼저 재사용하고, 비어 있는 class에만 BODex를 실행했다. 이 과정에서 grasp 부족처럼 보인 0개 결과가 실제로는 canonical pose의 고정 접근 방향을 다른 pose에 복사한 오류였음을 확인했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> BeltBench <a href="https://github.com/gohyunsu/beltbench/commit/da0eda5"><code>da0eda5</code></a>에서 pose별 guarded retreat를 target support normal로 교정했다. 동일한 후보와 동일한 threshold에서 <code>source-001</code>은 full-path geometry-clear 0/47에서 44/47로 회복했고, <code>source-002</code>도 44/46을 재현했다. <code>source-000</code>은 settling class 자체가 탈락했고 grasp도 0/3이므로 runtime label set에서 제외한다. 전체 stable-pose campaign과 validation protocol은 여전히 rejected/provisional이어서 runtime·execution 권한은 없다.</div>
+
+<h2>Online과 offline 경계</h2>
+<table class="table">
+<tr><th>단계</th><th>채택한 동작</th><th>금지한 동작</th></tr>
+<tr><td>Offline ingest</td><td><code>(object, stable-pose class, hand)</code>별 proposal·pose·outcome을 source-close하고 독립 gate를 통과시킨다.</td><td>Provider success만으로 grasp를 승격하지 않는다.</td></tr>
+<tr><td>Startup</td><td>허용 class의 bounded shortlist와 yaw/context atlas를 local NVMe와 GPU resident buffer에 검증 후 적재한다.</td><td>Event 처리 중 NAS를 순회하거나 alias를 추론하지 않는다.</td></tr>
+<tr><td>Online RGB</td><td>Stable-pose class, belt-frame x/y와 초기 yaw를 함께 추정하고 confidence hold를 통과시킨다.</td><td>사용자가 stable pose를 입력한다고 가정하지 않는다.</td></tr>
+<tr><td>Selection</td><td>Resident key로 O(1) 조회한 뒤 측정 yaw·위치·예측 시간에 transform하고 robot/workcell/time gate를 적용한다.</td><td>Grasp 생성, full intrinsic evaluation, NAS query를 deadline 안에 넣지 않는다.</td></tr>
+</table>
+
+<h2>먼저 재사용한 shared data</h2>
+<p><code>bbd42b5</code>부터 <code>0cd9a3a</code>까지 canonical <code>source-002</code>에 결속된 512개 object-relative proposal을 세 provisional fixture에 그대로 투영했다. Pose·hand command·provider metric·outcome은 바꾸지 않고 target object/hand asset과 fixture ancestry만 명시적으로 추가했다. 기존 원본은 read-only로 유지하고 파생 artifact만 <code>paradex2://hyunsu/beltbench/</code> 아래에 append-only로 기록했다.</p>
+<table class="table">
+<tr><th>Target class</th><th>Endpoint 결과</th><th>초기 full-path 결과</th><th>판정</th></tr>
+<tr><td><code>source-000</code></td><td>512 → 0</td><td>평가 대상 없음</td><td>새 proposal 검토 필요로 분류</td></tr>
+<tr><td><code>source-001</code></td><td>512 → 0</td><td>평가 대상 없음</td><td>새 proposal 검토 필요로 분류</td></tr>
+<tr><td><code>source-002</code></td><td>512 → 46</td><td>46 → 44 geometry-clear</td><td>Canonical proposal 재사용 가능</td></tr>
+</table>
+<p>이 단계에서는 원 threshold를 낮추지 않았다. Support clearance는 <code>source-000</code>에서 501/512, <code>source-001</code>에서 512/512가 실패했고 <code>source-002</code>에서는 7/512만 실패했다. 결과에 맞춘 threshold tuning 대신 빈 class만 생성하는 결정을 내렸다.</p>
+
+<h2>Pose별 BODex 생성</h2>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/5ff4afa"><code>5ff4afa</code></a>는 source import config의 generator·schema·manipulator config·environment·stable pose 입력을 한 immutable bundle에 복사하는 compiler를 추가했다. Object GLB manifest에서 BODex-native OBJ/URDF bundle을 한 번 만들고 pose별 scene만 staging했다. RTX 3090, Torch 2.5.1+cu121 환경의 GPU preflight는 두 pose 모두 <code>ready</code>였다.</p>
+<table class="table">
+<tr><th>Run</th><th>실제 시간</th><th>Provider success</th><th>독립 endpoint</th><th>초기 full path</th></tr>
+<tr><td><code>source-000</code> smoke 64</td><td>39.9초, optimizer 26.0초</td><td>0/64</td><td>3/64</td><td>0/3</td></tr>
+<tr><td><code>source-001</code> smoke 64</td><td>37.4초, optimizer 21.7초</td><td>0/64</td><td>3/64</td><td>0/3</td></tr>
+<tr><td><code>source-001</code> 512</td><td>152.9초, optimizer 38.5초</td><td>0/512</td><td>47/512</td><td>0/47</td></tr>
+</table>
+<p>BODex native success가 모두 false여도 BeltBench endpoint gate는 47개를 남겼다. 반대로 provider success가 true여도 실행 권한을 주지 않는다. Generator metric은 proposal evidence이고 contact, wrench, support, hand self-collision, approach, closure, retention과 release는 BeltBench가 다시 계산한다.</p>
+
+<h2>0/47의 실제 원인</h2>
+<p>초기 intrinsic config는 canonical <code>source-002</code>의 <code>approach_direction_object=[0,-1,0]</code>을 모든 pose에 복사했다. 이 방향은 <code>source-002</code>의 object-frame support normal과 거의 같지만 <code>source-001</code>의 support normal <code>[0.000636, 1.000000, 0.000567]</code>과는 반대다. 따라서 유효한 side grasp도 pregrasp를 belt 아래쪽으로 이동시켜 approach support collision으로 탈락했다. 512개를 더 생성해도 이 오류는 해결되지 않는다.</p>
+<p>BODex의 <code>pregrasp_wrist_se3.npy</code>는 checksum evidence로 보존하지만 runtime approach authority로 사용하지 않는다. 최종 object-relative grasp를 재사용하면서 BeltBench가 다음 식으로 pose별 guarded retreat를 생성하고 sampled collision을 다시 검사한다.</p>
+<pre><code>approach_direction_object = R_support_from_object.T @ [0, 0, 1]
+pregrasp_translation = grasp_translation + direction * offset</code></pre>
+<p>Contact geometry, offset 0.06 m, support/object/self clearance, closure, retention, wrench, capability와 release 기준은 바꾸지 않았다. Derived direction과 stable-pose evidence는 새 manifest identity에 포함된다.</p>
+
+<h2>교정 후 결과</h2>
+<table class="table">
+<tr><th>Class</th><th>후보 source</th><th>Endpoint</th><th>Geometry-clear</th><th>Stable-pose 상태</th></tr>
+<tr><td><code>source-000</code></td><td>새 BODex smoke</td><td>3/64</td><td>0/3</td><td>return 0.667, unresolved 0.333으로 class 탈락</td></tr>
+<tr><td><code>source-001</code></td><td>새 BODex 512</td><td>47/512</td><td>44/47</td><td>class별 수치는 통과하지만 campaign 전체 rejected</td></tr>
+<tr><td><code>source-002</code></td><td>보존 proposal 512</td><td>46/512</td><td>44/46</td><td>global observation 4&lt;5, campaign 전체 rejected</td></tr>
+</table>
+<p><code>failure_free=0</code>은 geometry 실패가 아니다. 남은 공통 blocker는 <code>validation_protocol_not_approved</code>, <code>stable_pose_not_measured</code>, <code>required_capability_not_validated</code>다. 따라서 현재 88개는 offline diagnostic shortlist 후보이지 resident runtime atlas나 실행 grasp가 아니다.</p>
+
+<h2>발생한 문제와 해결</h2>
+<table class="table">
+<tr><th>증상</th><th>원인</th><th>해결·결과</th></tr>
+<tr><td>서버 CLI가 새 API를 찾지 못함</td><td>Planning environment의 editable install이 이전 checkout을 가리켰다.</td><td>공유 environment를 임의 수정하지 않고 exact checkout을 <code>PYTHONPATH</code> 최우선으로 두었다. 이후 server tests와 artifact source가 현재 revision을 가리켰다.</td></tr>
+<tr><td>처음 pose-reuse manifest가 fixture와 adapter revision을 하나로 기록</td><td>서로 다른 producer revision을 같은 의미로 취급했다.</td><td><code>dc024dc</code>에서 두 revision과 adapter digest를 분리했다.</td></tr>
+<tr><td>Target synthesis가 checkout-relative object manifest를 보존</td><td>원 producer path가 현재 server checkout에 존재하지 않았다.</td><td><code>0cd9a3a</code>에서 target object/hand asset manifest와 digest를 명시적으로 결속했다. Symlink fallback은 사용하지 않았다.</td></tr>
+<tr><td>첫 GPU preflight가 2분 이상 지연</td><td>현재 checkout의 cuRobo CUDA extension 최초 JIT compile이었다.</td><td>Vendored BODex Git tree가 설치 checkout과 같은 tree digest인지 확인하고 현재 source를 우선했다. Cache 이후 preflight는 수초에 완료됐다.</td></tr>
+<tr><td>512개를 늘려도 full path 0</td><td>Pose-independent <code>-Y</code> retreat가 <code>source-001</code>에서 support normal의 반대였다.</td><td><code>da0eda5</code>에서 target support normal 파생으로 교체했다. 동일 47개 중 44개가 geometry-clear가 됐다.</td></tr>
+</table>
+
+<h2>검증</h2>
+<ul>
+<li><code>5ff4afa</code> portable BODex pose-config: local/server 관련 32/32 통과.</li>
+<li><code>da0eda5</code> support-normal approach: local 전체 1,750 passed, 28 skipped, 92 subtests passed, 194.92초.</li>
+<li>RTX 관련 intrinsic tests: 22 passed, 3 subtests passed.</li>
+<li><code>source-001</code> 전후 비교: 같은 512 proposals, endpoint 47 유지, geometry-clear 0 → 44.</li>
+<li><code>source-002</code> 재현: endpoint 46, geometry-clear 44.</li>
+</ul>
+
+<h2>다음 작업</h2>
+<ol>
+<li>Stable-pose settling campaign을 다시 실행해 허용 class set을 승인한다. <code>source-000</code>은 현재 label set에서 제외하고, <code>source-002</code> global observation 부족과 전체 unresolved 원인을 해결한다.</li>
+<li><code>source-001/002</code> 44개씩에 retention·drop capability와 object/hand/robot deployment gate를 적용해 bounded shortlist를 만든다.</li>
+<li>Pose×yaw×intercept horizon atlas를 offline compile하고 local NVMe/GPU startup verifier를 추가한다.</li>
+<li>RGB simulation sensor가 pose class·x/y·yaw를 추정하면 resident atlas를 O(1) 조회하고, unsupported/unknown class는 drop/skip으로 fail closed한다.</li>
+</ol>
+
+<p><a href="provisional-stable-pose-routing-fixtures.html">ISSUE-102 provisional fixtures</a> · <a href="object-only-multi-stable-pose-runtime.html">ISSUE-096 object-only runtime</a> · <a href="retained-bodex-left-batch-reuse.html">ISSUE-099 retained BODex batch</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
