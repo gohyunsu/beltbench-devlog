@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Provisional stable-pose routing fixtures · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-102 · 2026-08-28 · provisional stable-pose routing fixtures</div>
+<h1>기각된 settling 결과도 버리지 않고 세 pose의 offline screening fixture로 제한해 재사용한다.</h1>
+<p class="lede">264-trial campaign을 통과한 것처럼 바꾸지 않고, candidate orientation과 실제 관찰된 support-height 통계만 source-closed provisional pose로 materialize했다. 이 fixture는 기존 512개 Inspire Left proposal을 세 class에 cross-screen하기 위한 입력이며 runtime atlas는 아니다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> BeltBench <a href="https://github.com/gohyunsu/beltbench/commit/e6c48a3"><code>e6c48a3</code></a>에서 settling report 재현부터 pose JSON 생성·검증까지 하나의 offline compiler로 닫았다. 실제 fixture set digest는 <code>928e1734e3eb...24b21</code>이고 exact replay는 <code>created=false</code>였다. Manifest는 <code>qualification_accepted=false</code>, <code>runtime_eligible=false</code>, <code>execution_authorized=false</code>를 유지한다.</div>
+
+<h2>왜 새 pose를 임의로 만들지 않았나</h2>
+<table class="table">
+<tr><th>선택지</th><th>문제</th><th>채택 여부</th></tr>
+<tr><td>Legacy <code>upside_down</code> covariance를 세 class에 복사</td><td><code>source-000/001</code>의 실제 settling 분산과 무관한 수치가 된다.</td><td>기각</td></tr>
+<tr><td>Candidate transform에 임의 1 mm·1° uncertainty 부여</td><td>재현 가능한 관찰 근거가 없고 threshold가 결과에 맞춰질 수 있다.</td><td>기각</td></tr>
+<tr><td>Rejected report 전체 폐기</td><td>Orientation class, support height와 dispersion이라는 유효한 diagnostic evidence까지 잃는다.</td><td>기각</td></tr>
+<tr><td>Report를 그대로 재현하고 provisional fixture만 생성</td><td>Qualification 실패를 보존하면서 cross-pose screening 입력을 확보한다.</td><td>채택</td></tr>
+</table>
+
+<h2>재사용한 실제 수치</h2>
+<table class="table">
+<tr><th>Class</th><th>Support height</th><th>Height std</th><th>p95 tilt proxy</th><th>Pose digest</th></tr>
+<tr><td><code>source-000</code></td><td>0.035119577544 m</td><td>2.619657e-7 m</td><td>0.217314485°</td><td><code>4620cec5...be26f</code></td></tr>
+<tr><td><code>source-001</code></td><td>0.062000019071 m</td><td>1.536916e-8 m</td><td>0.001259592°</td><td><code>db873a16...18b6</code></td></tr>
+<tr><td><code>source-002</code></td><td>0.062000018855 m</td><td>1.668313e-8 m</td><td>0.016579751°</td><td><code>b16ef184...aeb8</code></td></tr>
+</table>
+<p>Pose orientation은 staged candidate set에서 가져오고 z support height는 class metrics로 교체했다. Covariance는 z dispersion과 p95 tilt를 diagonal proxy로 기록한다. 이 값은 통계적으로 보정된 physical covariance가 아니며 manifest limitation에 그 사실을 고정했다. Planar x/y/yaw는 stable pose에 넣지 않고 RGB observation이 측정한다.</p>
+
+<h2>Source와 권한 경계</h2>
+<ol>
+<li>Qualification report의 모든 source digest를 다시 확인한다.</li>
+<li>Raw 264 trials로 report의 class/global metrics와 rejection을 재현한다.</li>
+<li>Candidate set과 report의 class ID, object, digest가 정확히 같은지 확인한다.</li>
+<li>세 pose와 compiler source·Git revision을 content-addressed manifest에 기록한다.</li>
+<li>Pose가 바뀌거나 runtime 권한이 true로 위조되면 verifier가 거부한다.</li>
+</ol>
+<p>Artifact는 <code>paradex2://hyunsu/beltbench/stable-poses/v1/provisional-fixtures/pepsi_light/928e1734e3eb...24b21/</code>에 있다. Runtime은 이 NAS 경로를 읽지 않는다. 이후 cross-screening 결과가 있더라도 measured pose와 physical execution 승격은 별도 gate다.</p>
+
+<h2>발생한 문제와 해결</h2>
+<table class="table">
+<tr><th>증상</th><th>원인</th><th>해결·결과</th></tr>
+<tr><td>서버에서 신규 test 4개가 setup 단계에서 실패</td><td>기존 settling test helper가 rigid-object config를 repository root가 아니라 process CWD 기준으로 찾았다.</td><td><a href="https://github.com/gohyunsu/beltbench/commit/ecc08e2"><code>ecc08e2</code></a>에서 <code>__file__</code> 기준 root로 교체했다. 서버 기본 CWD에서 fixture·settling 8/8 통과.</td></tr>
+<tr><td>처음 manifest 설계는 compiler digest만 기록</td><td>향후 코드 변경 시 어느 Git checkout으로 재현할지 부족했다.</td><td>40자 source revision을 생성·검증 API의 필수 입력과 manifest identity로 추가했다.</td></tr>
+<tr><td>Campaign accepted 여부를 pose status와 결합할 위험</td><td>Isaac acceptance도 physical measured pose를 뜻하지 않는다.</td><td>Report acceptance는 별도 필드로 보존하고 모든 fixture status는 항상 <code>provisional</code>로 고정했다.</td></tr>
+</table>
+
+<h2>검증</h2>
+<ul>
+<li>Local 전체 suite: 1,765 tests 통과, conditional skip 28개, 159.155초.</li>
+<li>Repository 외부 CWD: fixture·settling 8/8 통과.</li>
+<li>RTX 기본 CWD: fixture·settling 8/8 통과.</li>
+<li>실제 rejected report materialization과 exact replay 통과.</li>
+</ul>
+
+<h2>다음 작업</h2>
+<p>원 생성 pose와 target fixture를 조용히 같다고 만들지 않고, object-relative proposal reuse adapter가 두 ancestry를 모두 기록하도록 한다. 그 adapter로 512개 Inspire Left proposal을 <code>source-000/001/002</code>에 전수 screening하고, 각 class의 qualified set이 비어 있을 때만 새 proposal을 생성한다.</p>
+
+<p><a href="grasp-proposal-stable-pose-binding.html">ISSUE-101 canonical pose binding</a> · <a href="object-only-multi-stable-pose-runtime.html">ISSUE-096 object-only runtime</a> · <a href="nas-left-proposal-snapshot-replay.html">ISSUE-100 NAS proposal snapshot</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
