@@ -16,7 +16,7 @@
 <h1>Object ID만 주어진 이벤트에서 stable pose, yaw와 위치를 함께 추정해 resident grasp로 라우팅한다.</h1>
 <p class="lede">기존 demo는 <code>pepsi_light/upside_down</code>처럼 stable-pose ID가 startup과 event에 이미 주어진다고 가정했다. 목표 작업에서는 물체 종류만 주어지고, 물체는 belt 위의 임의의 물리적 stable pose와 초기 yaw·위치로 들어온다. 따라서 pose를 입력으로 받는 경계를 폐기하고 RGB 관측이 pose class와 평면 상태를 함께 결정하도록 바꿨다.</p>
 
-<div class="callout"><strong>현재 판정:</strong> revision <a href="https://github.com/gohyunsu/beltbench/commit/91505f5"><code>91505f5</code></a>에서 global known/open-set qualification, source-closed affine calibrator, complete-pose deployment compiler와 path-free resident load를 추가했다. 전체 회귀 1,703개는 통과했지만 실제 Pepsi Light 3-pose qualification, Inspire Left grasp atlas와 multi-pose Isaac 영상은 아직 검증 전이다.</div>
+<div class="callout"><strong>현재 판정:</strong> revision <a href="https://github.com/gohyunsu/beltbench/commit/df26485"><code>df26485</code></a>에서 Pepsi Light source pose 3개를 Git HEAD, exact catalog와 canonical mesh 2종에 결속한 비권한 onboarding bundle을 만들었다. 전체 회귀 1,708개는 통과했지만 3-pose Isaac settling qualification, Inspire Left grasp atlas와 multi-pose 실제시간 영상은 아직 검증 전이다.</div>
 
 <h2>발생한 문제와 영향</h2>
 <table class="table">
@@ -57,6 +57,8 @@
 <h2>공유 데이터에 대한 현재 증거</h2>
 <p>현재 catalog에서 source-verified된 Pepsi provider record는 세 개이며 모두 provider pose <code>008</code>, Allegro hand 조건이다. 성공 2개와 실패 1개는 유용한 제안 근거지만 <code>pepsi_light</code> mesh identity, BeltBench stable-pose 의미와 Inspire Left command가 아직 해소되지 않았다. 따라서 공유 데이터는 처음부터 다시 만들지 않기 위한 적극적 입력이지만, 지금 당장 runtime에서 선택할 수 있는 완성된 multi-pose grasp database는 아니다.</p>
 <p>별도로 <code>object_processing</code> commit <code>9aaa4ce</code>의 <code>pepsi_light</code> gallery에는 MuJoCo settling으로 얻은 후보 3개가 있다. 형상상 side 1개와 양쪽 end 2개이며, 기존 upside-down fixture의 support height는 세 번째 후보와 일치한다. 그러나 gallery JSON은 source mesh digest와 settling trial 원본을 함께 봉인하지 않으므로 이 기록만으로 <code>status=measured</code>를 부여하지 않는다. Canonical mesh digest를 결속하고 Isaac settling 재검증을 통과한 뒤에만 deployment pose로 승격한다.</p>
+<p><code>df26485</code>의 stager는 repository URL과 revision을 Git에서 직접 읽고 catalog가 tracked 상태이며 <code>HEAD</code>와 동일한지 확인한다. 그 뒤 exact info JSON, object manifest, visual GLB와 collision GLB만 임시 디렉터리에 복사하고 모든 digest·transform을 재검증한 후 원자적으로 publish한다. 실제 v2 bundle은 15 MB, 후보 3개, payload SHA-256 <code>200c745e…263a2</code>이며 <code>execution_authorized=false</code>다.</p>
+<p>Canonical cylinder axis에 대한 세 후보의 world-up projection은 약 <code>0</code>, <code>+0.99998</code>, <code>-0.99999</code>로 side·upright·upside-down class를 분리한다. 기존 upside-down fixture는 세 번째 source pose와 직접 회전 오차 약 <code>0.0168°</code>로 일치한다. 이 결과는 기존 single-pose demo frame을 보존할 근거지만, 다른 두 pose의 grasp나 random-drop completeness를 증명하지 않는다.</p>
 
 <h2>구현과 검증 결과</h2>
 <table class="table">
@@ -64,7 +66,8 @@
 <tr><td><a href="https://github.com/gohyunsu/beltbench/commit/a9e7c92"><code>a9e7c92</code></a></td><td>Source-closed multi-pose deployment, known+unknown hypothesis, stable-pose admission/latch와 path-free resident index</td><td>정책·계약·fail-closed routing</td></tr>
 <tr><td><a href="https://github.com/gohyunsu/beltbench/commit/4a36f42"><code>4a36f42</code></a></td><td>One-inference backend, bounded parallel solve, RGB pose/track builder와 latched planner router</td><td>관련 회귀 72개 통과, conditional skip 5개</td></tr>
 <tr><td><a href="https://github.com/gohyunsu/beltbench/commit/91505f5"><code>91505f5</code></a></td><td>Sealed global qualification, exact calibrator binding, complete measured-pose compiler, local-root confined transitive verification</td><td>Provisional·partial·open-set failure와 lexical·symlink escape를 모두 fail-closed</td></tr>
-<tr><td><code>91505f5</code> full suite</td><td>전체 BeltBench 회귀</td><td>1,703개 통과, conditional skip 28개, 206.695 s</td></tr>
+<tr><td><a href="https://github.com/gohyunsu/beltbench/commit/df26485"><code>df26485</code></a></td><td>Git-bound external pose catalog와 canonical object meshes의 atomic local staging</td><td>실제 Pepsi 후보 3개 재현, overwrite·dirty source·tamper·forged transform 거부</td></tr>
+<tr><td><code>df26485</code> full suite</td><td>전체 BeltBench 회귀</td><td>1,708개 통과, conditional skip 28개, 177.403 s</td></tr>
 </table>
 <p>이 검증은 인터페이스 ancestry, 상태 전이, bounded scheduling과 실패 폐쇄를 확인한다. 실제 모델 정확도, open-set false accept rate, pose별 latency나 moving grasp 성공률을 검증한 결과는 아니다.</p>
 
