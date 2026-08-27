@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>cuRobo moving-contact MPC 기각 · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-092 · 2026-08-27 · moving-contact MPC source audit and rejection</div>
+<h1>빠르지만 목표를 따르지 않는 cuRobo MPC 경로를 producer에서 제외한다.</h1>
+<p class="lede">Moving-contact prefix를 매 camera correction마다 GPU에서 갱신하려고 pinned cuRobo MPC를 연결했다. 초기 결과는 warm p99 약 5.9 ms였지만 target position error가 118.9 mm였고 모든 vendor success가 false였다. 단순 weight tuning보다 먼저 objective, constraint와 source identity를 분해해 이 수치가 무엇을 의미하는지 검증했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> <code>MPCSolver + lbfgs_retarget_mpc</code>는 BeltBench moving-command producer로 기각한다. Goal, weight, preview, graph mode와 source joint goal을 바꿔도 consumed action tensor가 변하지 않았다. cuRobo는 resident GPU collision과 candidate/IK evaluation에 유지하되, latency만으로 command authority를 부여하지 않는다.</div>
+
+<h2>발생한 문제</h2>
+<table class="table">
+<tr><th>관찰</th><th>잘못 내릴 수 있는 결론</th></tr>
+<tr><td>Warm solve가 6 ms 이내였다.</td><td>30 Hz moving correction에 충분하므로 실시간 producer라고 판단할 수 있다.</td></tr>
+<tr><td><code>vendor_result.success</code>가 0/60이었다.</td><td>Tracking 또는 scene collision이 전 구간 실패했다고 오인할 수 있다.</td></tr>
+<tr><td>Regularization을 낮춰도 최대 pose error가 같았다.</td><td>Weight가 중요하지 않다고 결론 내고 임의 tuning을 계속할 수 있다.</td></tr>
+<tr><td>Preview pose는 solver-reported error를 바꿨다.</td><td>Action도 target에 반응했다고 착각할 수 있다.</td></tr>
+</table>
+
+<h2>Source에서 확인한 원인</h2>
+<ul>
+<li>Upstream <code>_get_result</code>는 pose convergence를 계산하지만 <code>success</code>에는 넣지 않고 constraint aggregate만 반환한다.</li>
+<li><code>self_collision_check=false</code>는 optimizer rollout에만 적용되고 metrics rollout에는 적용되지 않아 self-collision이 vendor success에 남는다.</li>
+<li>Metrics의 <code>cspace</code> tensor는 joint-limit 항과 squared-L2 regularization을 합친다. 따라서 <code>&lt;=0</code> 결과를 순수 dynamics feasibility로 사용할 수 없다.</li>
+<li>Scene, self, cspace를 이름별로 분리하고 exact output에는 별도 position·velocity·acceleration·jerk limit validator를 적용해야 한다.</li>
+</ul>
+
+<h2>단계별 실험 결과</h2>
+<table class="table">
+<tr><th>실험</th><th>결과</th><th>판정</th></tr>
+<tr><td>Exact baseline, explicit source/weight</td><td>118.940 mm, endpoint 6/60, warm p99 5.75 ms</td><td>Reject</td></tr>
+<tr><td>Pre-registered 5-variant sweep</td><td>Acceleration weight 10,000→10 및 position weight 10x에도 action digest 동일</td><td>Weight-only tuning 중단</td></tr>
+<tr><td>Extreme sensitivity probe</td><td>Position <code>1e8</code>, regularization 0, 100 iterations에도 action 동일; p99 19.27 ms</td><td>Objective-action sensitivity 실패</td></tr>
+<tr><td>CUDA graph off</td><td>Action 동일, p99 193.71 ms</td><td>Graph capture 원인 배제</td></tr>
+<tr><td>4-target preview</td><td>Solver-reported initial error 2.7→10.7 mm, action digest 동일</td><td>Goal은 metrics에만 반영</td></tr>
+<tr><td>Per-frame IK seed</td><td>Source FK로 만든 reachable target에서 IK fail closed</td><td>Runtime 경로로 부적합</td></tr>
+<tr><td>Source-joint preview goal</td><td>Total warm p99 7.21 ms, update 1.36 ms, optimizer 5.98 ms, action 동일</td><td>Producer 최종 기각</td></tr>
+</table>
+
+<p>모든 action-invariant run의 consumed tensor SHA-256은 <code>ce8cbdc2902bf88070481eebca1f41d58d58e95c76d4c98012b80f843a55408f</code>였다. 마지막 run의 maximum source-joint deviation은 0.257010 rad, maximum target error는 0.118940 m다. Motion-limit ratio는 낮았지만 이는 목표를 충분히 따라가지 않은 결과이므로 장점이 아니다.</p>
+
+<h2>잘못된 입력도 보존한다</h2>
+<p>첫 source 재실행에서는 기존 report와 다른 event request를 선택해 200 mm error가 나왔다. File/canonical digest가 기존 <code>bf23.../d98...</code>와 다름을 발견해 결과를 덮어쓰지 않고 별도 run으로 보존한 뒤 exact request로 재실행해 118.940 mm를 재현했다. Directory 이름이나 최근 파일을 source identity로 사용하지 않고 canonical digest를 결속해야 하는 이유다.</p>
+
+<h2>교체 방향</h2>
+<ol>
+<li>Offline compiler가 grasp와 complete command family, stop route, collision·timing·uncertainty certificate를 만든다.</li>
+<li>Online event path는 RGB pose와 encoder prediction으로 fixed-capacity family를 조회하고, bounded correction tube 안에서 intercept time을 갱신한다.</li>
+<li>cuRobo는 candidate change와 final commit에서 represented scene collision과 batched IK/candidate evaluation을 수행한다. Vendor aggregate를 generic feasibility로 사용하지 않는다.</li>
+<li>Arm/hand/object/connector의 self·world·moving-object·attached-object collision과 motion limits는 각각 명시된 independent validator가 담당한다.</li>
+<li>Correction tube 밖, stale track, missed deadline이나 invalid contact는 unbounded replan이 아니라 no-pick 또는 certified stop으로 전환한다.</li>
+</ol>
+
+<h2>재도입 조건</h2>
+<p>새 moving optimizer는 latency 측정 전에 action-sensitivity test를 통과해야 한다. Goal pose, objective weight와 seed를 독립적으로 바꿨을 때 command tensor가 예상 방향으로 변하고, exact endpoint tracking·motion limits·named collision scopes·stop coverage를 통과해야 한다. 그 전에는 Viser나 Isaac animation에 optimizer output이라는 label을 붙이지 않는다.</p>
+
+<p><a href="curobo-arm-prefix-producer-validation.html">cuRobo arm-prefix producer</a> · <a href="shared-autodex-episode-registry.html">shared AutoDex registry</a> · <a href="rgb-camera-pipeline-correction.html">RGB-only pipeline correction</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
