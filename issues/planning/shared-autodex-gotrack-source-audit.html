@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>공유 AutoDex·GoTrack source audit · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-090 · 2026-08-27 · shared AutoDex/GoTrack source audit</div>
+<h1>공유 RGB episode를 확인해 GoTrack과 grasp 기록의 실제 권한을 다시 분류한다.</h1>
+<p class="lede">프로젝트-site repository만 보면 AutoDex에서 GoTrack이 실제로 어떻게 쓰였는지, 선택 데이터가 RGB-only인지, 실행 grasp가 어떤 hand의 것인지 확정하기 어려웠다. 읽기 전용 공유 archive의 manifest, raw tracking log, pose record와 executed-grasp metadata를 서로 대조해 재사용할 수 있는 요소와 버려야 할 가정을 분리했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> GoTrack은 실제 24-view RGB tracking 산출물을 만든 AutoDex processing 단계다. 그러나 대표 Pepsi episode는 약 <code>5.15 s/frame</code>, <code>0.20 inference FPS</code>이므로 BeltBench의 online per-frame tracker로 채택하지 않는다. 공유 데이터는 offline evidence와 replay 입력으로만 읽고 원본에는 쓰지 않는다.</div>
+
+<h2>발생한 문제</h2>
+<table class="table">
+<tr><th>관찰</th><th>위험</th></tr>
+<tr><td>Public project site와 구현 repository만으로는 실제 episode의 GoTrack 실행 여부가 불명확했다.</td><td>사용한 적 없는 tracker를 AutoDex 방법으로 오인하거나, 반대로 실제 source lineage를 버릴 수 있다.</td></tr>
+<tr><td>상위 result에는 tracking elapsed가 0초로 기록돼 있었다.</td><td>Cached result를 실시간 측정으로 잘못 읽으면 latency 판단이 완전히 뒤집힌다.</td></tr>
+<tr><td>Executed grasp 파일은 존재하지만 hand와 success 의미가 확인되지 않았다.</td><td>Allegro command를 Inspire Left에 직접 재사용하거나 unlabeled trial을 검증 성공으로 승격할 수 있다.</td></tr>
+<tr><td>FoundationPose 이름의 산출물과 FoundPose 방법을 혼동하기 쉬웠다.</td><td>RGB-only physical pipeline에 RGB-D 전제를 몰래 다시 넣게 된다.</td></tr>
+</table>
+
+<h2>확인한 source와 결과</h2>
+<ul>
+<li>선택 archive에는 이름과 달리 현재 99개 object directory가 있으며 Pepsi episode는 3개다.</li>
+<li>대표 manifest는 24개 camera와 <code>has_depth=false</code>를 명시하고 initial world pose, calibration lineage, FoundationPose-labelled output과 GoTrack output을 가리킨다.</li>
+<li>GoTrack raw log는 one-GPU model load 1.7초, renderer setup 0.7초 후 24/24 camera initial pose를 읽고 256-anchor bank로 198/198 world pose를 생성했다.</li>
+<li>같은 log의 frame loop는 약 1,019초로, 평균 약 5.15초/frame이다. Cached wrapper의 <code>tracking_elapsed_s=0.0</code>은 timing evidence에서 제외했다.</li>
+<li>세 executed grasp는 모두 Allegro hand, pose ID <code>008</code>, executed-FK wrist pose를 기록하지만 success label은 비어 있다.</li>
+<li>공유 processing source snapshot은 <code>8b50af8</code>로 고정해 조사했다.</li>
+</ul>
+
+<h2>원인과 해석</h2>
+<p>GoTrack은 이전·현재 RGB 대응점, object anchor, multi-view triangulation과 rigid fitting으로 연속 pose를 만든다. 즉 실제 AutoDex processing 아이디어를 확인하는 데 유용하다. 하지만 24-view 구성의 계산량은 BeltBench의 15~30 Hz camera correction이나 60 Hz control loop와 두 자릿수 이상 맞지 않는다. 이름의 <code>online</code>은 API 동작 형태이지 현재 hardware에서 deadline을 만족했다는 증거가 아니다.</p>
+<p>또한 공유 episode의 FoundationPose-labelled artifact는 FoundPose가 아니다. Manifest가 RGB-only source를 기술하더라도 해당 artifact가 어떤 중간 입력으로 생성됐는지는 별도 producer audit 없이는 알 수 없다. 따라서 현재 RGB-only runtime provider 권한으로 가져오지 않는다.</p>
+
+<h2>채택·폐기·교체 결정</h2>
+<table class="table">
+<tr><th>요소</th><th>결정</th><th>적용 범위</th></tr>
+<tr><td>GoTrack world-pose record와 per-view quality</td><td>채택</td><td>Offline replay, pose error·drift 분석, adapter schema와 backend 비교</td></tr>
+<tr><td>GoTrack 24-view per-frame runtime</td><td>폐기</td><td>실시간 loop에 넣지 않으며 latency fallback으로도 사용하지 않음</td></tr>
+<tr><td>초기 object-relative wrist와 candidate lineage</td><td>조건부 채택</td><td>Frame 변환과 grasp provenance 검증; hand command와 success 권한은 제외</td></tr>
+<tr><td>Allegro hand command</td><td>교체</td><td>Inspire Left command를 다시 생성하고 독립 collision·contact·path gate 통과</td></tr>
+<tr><td>Cached elapsed와 provider success 가정</td><td>폐기</td><td>Raw timer와 independent outcome만 timing·reliability evidence로 사용</td></tr>
+</table>
+
+<h2>실시간 pipeline 반영</h2>
+<ol>
+<li>Known object와 stable-pose ID를 입력으로 받고, synchronized RGB에서 초기 <code>x/y/yaw</code>와 covariance를 한 번 획득한다.</li>
+<li>물체 yaw는 고정하고 calibrated belt 방향 translation만 encoder로 60 Hz 전파한다.</li>
+<li>RGB correction은 5~10 Hz 목표 안에서 별도 qualification을 통과한 provider만 사용한다. GoTrack은 현재 그 provider가 아니다.</li>
+<li>Planning core는 provider 이름이 아니라 같은 <code>FusedPlanarObjectTrack</code>만 소비한다.</li>
+<li>공유 grasp는 proposal source일 뿐이다. Exact hand·connector·robot·workcell에 대해 complete path와 moving-contact gate를 다시 통과해야 한다.</li>
+</ol>
+
+<h2>보존 규칙과 검증</h2>
+<p>공유 archive는 mount permission과 무관하게 읽기 전용으로 취급한다. 전체 dataset을 checkout에 복제하거나 archive 안에 cache를 만들지 않는다. 실제 소비할 최소 파일만 private data root로 stage하고 source snapshot, object·stable-pose·camera·hand·frame identity, symlink lineage와 SHA-256을 import manifest에 남긴다. Public 기록에는 내부 주소와 raw calibration을 공개하지 않는다.</p>
+
+<h2>다음 작업</h2>
+<ol>
+<li>세 Pepsi episode의 world pose를 belt-frame planar track으로 import하는 read-only adapter fixture를 만든다.</li>
+<li>Raw RGB timestamp와 world pose를 사용해 GoTrack의 drift·dropout·multi-view residual을 offline 기준선으로 평가한다.</li>
+<li>현재 RGB-only planar backend와 같은 episode/split에서 정확도와 end-to-end latency를 비교한다.</li>
+<li>Executed wrist pose를 object-relative frame으로 재구성하되 Allegro hand command는 제거하고 Inspire Left grasp generation 입력으로만 사용한다.</li>
+<li>초기 pose producer가 RGB-only 경계를 만족했는지 별도 추적하기 전까지 FoundationPose-labelled 산출물을 runtime evidence로 승격하지 않는다.</li>
+</ol>
+
+<p><a href="rgb-camera-pipeline-correction.html">RGB-only pipeline correction</a> · <a href="planar-yaw-backend-promotion.html">planar backend promotion</a> · <a href="../setup/initial-pose-tracking.html">historical initial-pose/GoTrack integration</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
