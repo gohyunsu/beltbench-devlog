@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Grasp proposal stable-pose binding · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-101 · 2026-08-28 · canonical stable-pose binding</div>
+<h1>보존된 proposal의 pose 별칭을 canonical stable-pose class에 결속한다.</h1>
+<p class="lede">NAS의 512개 Inspire Left proposal을 다시 생성하지 않고 사용하되, provider-facing <code>upside_down</code> 문자열을 runtime atlas key로 직접 사용하지 않는다. Exact source digest와 symmetry-aware class 판정을 별도 artifact로 고정했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> BeltBench <a href="https://github.com/gohyunsu/beltbench/commit/81c9969"><code>81c9969</code></a>에서 proposal snapshot, stable-pose artifact, candidate set과 equivalence policy를 하나의 fail-closed binding contract로 묶었다. 실제 Pepsi Light 결과는 <code>upside_down → source-002</code>이며 binding digest는 <code>122894565449...16c54</code>다. 이는 class ancestry만 닫으며 qualified grasp, runtime 또는 execution 권한은 부여하지 않는다.</div>
+
+<h2>문제와 영향</h2>
+<table class="table">
+<tr><th>문제</th><th>왜 위험한가</th><th>결정</th></tr>
+<tr><td><code>upside_down</code>과 <code>source-002</code> 이름 체계가 분리됨</td><td>Perception 출력과 grasp atlas key를 문자열 하드코딩으로 연결하면 다른 stable pose가 추가될 때 잘못된 grasp family를 선택할 수 있다.</td><td>Offline에서만 digest-bound class binding을 만들고 이후 atlas key는 canonical candidate ID를 사용한다.</td></tr>
+<tr><td>두 representative transform이 정확히 같지 않음</td><td>Support yaw와 settling 오차가 포함된 pose를 exact matrix equality로 비교하면 같은 물리적 resting class를 거부한다.</td><td>기존 settling classifier의 C∞ symmetry quotient를 재사용하고 exact-transform 여부와 높이 차이는 별도 진단값으로 보존한다.</td></tr>
+<tr><td>Class match를 실행 승인으로 오인할 수 있음</td><td>Pose class가 맞아도 contact, retention, robot/workcell, moving-pick 검증은 남는다.</td><td><code>provisional_class_binding</code>, <code>runtime_eligible=false</code>, <code>execution_authorized=false</code>를 schema invariant로 고정한다.</td></tr>
+<tr><td>NAS lookup이 event path로 유입될 수 있음</td><td>실제 snapshot 검증은 수 초가 걸려 perception·control deadline과 맞지 않는다.</td><td>Binding과 qualification은 offline에서 수행하고, runtime은 local NVMe에 stage된 resident atlas만 조회한다.</td></tr>
+</table>
+
+<h2>실제 class 판정</h2>
+<table class="table">
+<tr><th>항목</th><th>관찰값</th></tr>
+<tr><td>Proposal snapshot closure</td><td><code>7221532e1e9648...3c29e63</code>, Inspire Left proposal 512개</td></tr>
+<tr><td>Canonical candidate set</td><td><code>pepsi-light-object-processing-9aaa4ce-v2</code></td></tr>
+<tr><td><code>source-000</code> 거리</td><td>89.592117038°</td></tr>
+<tr><td><code>source-001</code> 거리</td><td>179.349333523°</td></tr>
+<tr><td><code>source-002</code> 거리</td><td>0.016414594°, accepted</td></tr>
+<tr><td>Support height 차이</td><td>0.000100000 m</td></tr>
+<tr><td>Representative exact equality</td><td><code>false</code></td></tr>
+<tr><td>Binding artifact</td><td><code>paradex2://hyunsu/beltbench/registry/v1/grasp-proposal-stable-pose-bindings/pepsi_light/source-002/inspire_left/122894565449...16c54/binding.json</code></td></tr>
+<tr><td>Exact replay</td><td><code>created=false</code></td></tr>
+</table>
+
+<h2>구현 경계</h2>
+<p>Builder는 먼저 proposal snapshot의 2,571개 direct evidence를 재검증하고, candidate bundle의 object manifest·mesh digest·source pose catalog를 다시 확인한다. 그 뒤 기존 <code>StablePoseEquivalenceModel</code>로 proposal pose representative를 분류한다. 새로 대충 만든 각도 계산이나 pose 이름 lookup table은 없다.</p>
+<p>Artifact는 snapshot closure와 manifest, stable-pose 파일, candidate set, equivalence policy의 digest를 기록한다. 선택된 class, 모든 class 거리, support-height 차이와 exact-transform 여부도 함께 저장한다. Position과 yaw는 이 artifact에서 추론하지 않고 RGB runtime observation이 측정해야 하므로 <code>runtime_yaw_required=true</code>다.</p>
+<p>이 경계 이후의 offline screening과 atlas compiler는 <code>source-002</code>를 사용한다. Event acquisition은 object ID만 받고 RGB에서 stable-pose class, planar position과 yaw를 latch한다. 지원되지 않거나 불확실한 class는 <code>no-pick</code>이며 NAS를 검색하거나 open-ended grasp synthesis를 실행하지 않는다.</p>
+
+<h2>발생한 문제, 원인과 해결</h2>
+<table class="table">
+<tr><th>증상</th><th>원인</th><th>해결 및 결과</th></tr>
+<tr><td>처음 snapshot digest 확인에서 <code>FileNotFoundError</code></td><td>Manifest 파일명을 <code>snapshot-manifest.json</code>으로 추정했지만 실제 contract는 <code>manifest.json</code>이다.</td><td>Snapshot root를 먼저 열거해 실제 파일을 확인하고 모든 후속 명령에서 exact path를 사용했다.</td></tr>
+<tr><td>Local 기본 Python에서 테스트 import 실패</td><td>Base 환경에 NumPy가 없고 read-only 세션에서는 기본 temp directory도 만들 수 없었다.</td><td>기존 <code>beltbench-planning</code> 환경과 쓰기 가능한 test process를 사용했다. 별도 임시 환경이나 중복 dependency를 만들지 않았다.</td></tr>
+<tr><td>신규 test fixture 4개가 setup에서 실패</td><td>공용 candidate staging helper에 넘긴 parent directory를 만들지 않았다.</td><td>Fixture가 parent를 명시적으로 생성하도록 수정했고 신규 12개 인접 test가 모두 통과했다.</td></tr>
+<tr><td>Exact transform은 false</td><td>같은 upside-down class지만 support yaw가 다르고 높이도 0.1 mm 차이 난다.</td><td>Matrix equality를 완화하지 않았다. Class equivalence와 exact equality를 분리해 둘 다 기록했다.</td></tr>
+</table>
+
+<h2>검증</h2>
+<ul>
+<li>Local 전체 suite: 1,761 tests 통과, conditional skip 28개, 160.208초.</li>
+<li>RTX planning 환경: 신규 binding contract 4/4 통과.</li>
+<li>실제 512-proposal NAS snapshot으로 binding 생성 성공.</li>
+<li>같은 command 재실행은 같은 digest에서 <code>created=false</code>.</li>
+<li>Runtime·execution authority 위조 payload는 contract load에서 거부.</li>
+</ul>
+
+<h2>남은 작업</h2>
+<ol>
+<li><code>source-002</code>의 provisional support pose를 승인된 simulation perturbation과 이후 물리 측정으로 qualify한다.</li>
+<li>현재 44개 geometry-clear 진단 후보를 canonical <code>source-002</code> 조건에서 intrinsic·moving-contact·xArm/connector yaw×horizon gate로 재평가한다.</li>
+<li><code>source-000/001</code>은 기존 AutoDex wrist seed를 Inspire Left에 재최적화하고, qualified set이 비어 있을 때만 새 후보를 생성한다.</li>
+<li>세 class의 승인된 subset만 local resident atlas로 컴파일해 RGB multi-pose runtime과 연결한다.</li>
+</ol>
+
+<p><a href="nas-left-proposal-snapshot-replay.html">ISSUE-100 NAS proposal snapshot</a> · <a href="shared-autodex-tested-pose-resolution.html">ISSUE-097 tested pose resolution</a> · <a href="object-only-multi-stable-pose-runtime.html">ISSUE-096 object-only runtime</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
