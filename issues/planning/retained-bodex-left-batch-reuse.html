@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Retained BODex Left batch reuse · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-099 · 2026-08-28 · retained BODex Left batch reuse</div>
+<h1>처음부터 다시 생성하지 않고 보존된 512개 Inspire Left seed를 source-close한다.</h1>
+<p class="lede">Shared AutoDex Right 후보는 Left 재최적화 seed로 활용하고, 이미 RTX 서버에 남아 있는 Inspire Left raw seed는 현재 frame 계약으로 재수입한다. 두 경로 모두 offline이며 event-time runtime은 NAS를 검색하지 않는다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> BeltBench <a href="https://github.com/gohyunsu/beltbench/commit/27e84be"><code>27e84be</code></a>에서 synthesis request와 import config 자체를 proposal source evidence로 추가했다. 서버의 512개 raw seed를 다시 생성하지 않고 전량 재수입했으며 2,571개 source reference를 재해시했다. 512개 proposal ID, object-relative root, hand command와 metric은 이전 artifact와 동일했다. 아직 qualified grasp는 아니며 NAS 정식 snapshot과 현 protocol 재평가가 남았다.</div>
+
+<h2>발견한 데이터 상태</h2>
+<table class="table">
+<tr><th>항목</th><th>실제 보존 상태</th></tr>
+<tr><td>Shared AutoDex source</td><td>NAS의 Pepsi/Inspire Right 후보 100개와 원본 archive payload 300/300 exact match</td></tr>
+<tr><td>Left smoke batch</td><td>64개, endpoint screen 64 → full evaluation 4 → geometry-clear diagnostic 4</td></tr>
+<tr><td>Largest Left batch</td><td>512개, endpoint screen 512 → full evaluation 46 → geometry-clear diagnostic 44</td></tr>
+<tr><td>xArm/connector endpoint 진단</td><td>44 grasp × 3 horizon 중 106/132 pair feasible, continuous moving-pick 권한 없음</td></tr>
+<tr><td>Provider status</td><td>512/512 <code>provider_success=false</code>; 별도 BeltBench geometry 평가 대상으로만 보존</td></tr>
+<tr><td>2,000개 주장</td><td>실행 예시와 과거 문서 수치만 있고 proposal artifact와 generation manifest는 서버·NAS에 없음</td></tr>
+</table>
+
+<h2>문제, 원인, 해결</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결 및 결과</th></tr>
+<tr><td>Proposal만으로 root-frame 변환을 재현할 수 없음</td><td>기존 batch는 staging과 preflight를 묶었지만 import config와 synthesis request 파일 자체는 source evidence에서 빠졌다.</td><td>Importer가 두 파일을 다시 로드해 전달 객체와 비교하고 SHA-256 evidence에 포함하도록 변경했다.</td></tr>
+<tr><td>문서에는 2,000/140/117이 current baseline처럼 기록됨</td><td>계획 seed count와 보존되지 않은 과거 worktree 결과가 실제 retained artifact와 혼재했다.</td><td>서버와 NAS의 모든 proposal JSON을 집계해 최대 보존 batch가 512개임을 확인하고 문서를 512/46/44/106으로 교정했다.</td></tr>
+<tr><td>새 artifact와 과거 proposal payload가 전체 비교에서 다름</td><td>출력 위치가 달라 각 raw source의 상대 경로 문자열이 달라졌다.</td><td>필드별 비교 결과 512건 모두 차이는 <code>source_files.reference</code>뿐이었다. ID, root, command, metric과 source SHA는 동일했다.</td></tr>
+<tr><td>Local conda test launcher 실패</td><td>Read-only sandbox에서 conda가 사용할 임시 디렉터리를 만들 수 없었다.</td><td>쓰기 승인 환경에서 인접 BODex 회귀 40/40을 통과했고 RTX BODex 환경에서도 importer 16/16을 통과했다.</td></tr>
+</table>
+
+<h2>실제 재수입 결과</h2>
+<table class="table">
+<tr><th>항목</th><th>결과</th></tr>
+<tr><td>Proposal count</td><td>512</td></tr>
+<tr><td>Provider success</td><td>0</td></tr>
+<tr><td>검증된 source references</td><td>2,571</td></tr>
+<tr><td>추가된 contract evidence</td><td><code>synthesis_request</code>, <code>import_config</code></td></tr>
+<tr><td>Artifact SHA-256</td><td><code>d8d2d97fef8227ab0e6880339c31d3c98b1aa3ef65e52b1d31853f5c6b7c6682</code></td></tr>
+<tr><td>Execution authority</td><td><code>false</code>; validation required</td></tr>
+</table>
+
+<h2>재사용 정책</h2>
+<ol>
+<li><code>source-002</code> upside-down은 보존된 Left 512개 raw seed를 우선 사용한다.</li>
+<li><code>source-000/001</code>은 AutoDex Right 100개를 Left 최적화 seed로 사용하고 부족할 때만 새 proposal을 생성한다.</li>
+<li>모든 pose는 current intrinsic, support, closure, release, xArm/connector, yaw×horizon, moving-pick gate를 독립적으로 통과해야 한다.</li>
+<li>통과한 최소 subset만 local NVMe/GPU resident atlas로 stage하며 online event는 NAS에 접근하지 않는다.</li>
+</ol>
+
+<h2>남은 작업</h2>
+<p>서버-local 512 raw seed와 transitive contracts를 <code>/mnt/paradex2/hyunsu/beltbench</code> 아래 content-addressed snapshot으로 보존하고 exact replay를 확인해야 한다. 그 뒤 새 proposal artifact로 current intrinsic screening을 재실행한다. 현재 44개 geometry-clear 수치는 과거 provisional protocol의 진단일 뿐 승격 권한이 아니다.</p>
+
+<p><a href="shared-autodex-hand-transfer-audit.html">ISSUE-098 hand transfer audit</a> · <a href="shared-autodex-tested-pose-resolution.html">ISSUE-097 tested pose resolution</a> · <a href="object-only-multi-stable-pose-runtime.html">ISSUE-096 object-only runtime</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
