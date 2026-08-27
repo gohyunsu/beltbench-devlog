@@ -32,11 +32,48 @@
 <p>GitHub CLI의 active account가 <code>gohyunsu</code>이고 private repository 접근 scope를 갖는지 확인했다. BeltBench와 devlog의 로컬 HEAD가 각각 원격 기본 branch와 정확히 일치하는 것도 확인했다. 서버에서는 공용 Conda 경로를 명시하고, Conda 실행에 한해서만 문제가 있는 system 명령을 PATH에서 제외하자 metadata 해석과 Python 3.10 dependency solve가 통과했다.</p>
 <div class="callout"><strong>검증 경계:</strong> 2026-08-06에 서버 공용 Python 3.10, 기존 NumPy·SciPy, 임시 directory에 격리 설치한 OpenCV 4.8.1로 unit test 18개를 실행해 모두 통과했다. 이는 core CPU code와 artifact adapter의 구조 검증이다. GoTrack GPU 정확도, conveyor prediction, collision-aware planning은 아직 검증하지 않았다.</div>
 
-<h2>재구축할 모듈 경계</h2>
+<h2>2026-08-27 재감사: 실제 연결과 문서 구조를 다시 분리했다</h2>
+<p>초기 계획 이후 구현 규모가 크게 증가했지만, 최상위 architecture 문서는 여전히 offline reference라고 설명하고 일부 시연 문서는 과거 RGB-D 경로에서 끝나 있었다. 반대로 실제 최신 runner는 RGB-only event acquisition부터 collision admission, future-start handoff, PhysX feedback와 rigid-object lifecycle까지 연결돼 있었다. 문서가 실제 실행보다 뒤처진 상태에서는 새 기능의 역할과 readiness blocker를 판단할 단일 기준이 없었다.</p>
+<p>선행 코드도 원격 source identity를 다시 고정했다. AutoDex는 <code>willi19/autodex-code@3dcb5ef</code>, ParaDex는 <code>willi19/paradex@312e5c5</code>를 기준으로 읽었다. ParaDex의 공개 branch 17개를 head 단위로 비교했지만 최신 main보다 크게 뒤처진 실험 branch를 통째로 병합할 근거는 없었다. AutoDex의 object-relative grasp와 offline filtering, ParaDex의 timestamped distributed RGB I/O와 calibration 원리는 유지하되, static episode runner, first-success planning, whole-mesh 제거, hard-coded robot 조합, legacy Isaac Gym simulator는 runtime 구현으로 채택하지 않았다.</p>
+
+<div class="callout"><strong>최신 실제 증거:</strong> RTX 3090의 r627은 revision <code>0d7171a</code>에서 RGB topology 15단계를 모두 실행했다. RGB observation이 selection을 구동했고 simulator truth는 evaluator에만 남았다. Contact, attachment, release, containment와 407/407 영상 frame은 확인됐다. 그러나 <code>professor_demo_ready=false</code>다. 1,625 control tick 중 38개가 한 주기 이상 늦었고 approach에서 최대 23개가 연속 지연됐으며, controller에 실행 가능한 prevalidated stop route가 설치되지 않았다. 따라서 영상은 공개 성공 자료로 승격하지 않았다.</div>
+
+<h2>문제, 원인, 수정 방향</h2>
+<table class="table">
+<tr><th>문제</th><th>직접 원인</th><th>결정</th></tr>
+<tr><td>문서와 실제 runtime 불일치</td><td>실험 이력이 ADR과 contributor guide에 누적되고 concise current architecture가 없었음</td><td>최상위 architecture를 현재 RGB-only hybrid runtime 기준으로 재작성하고, 상세 rule은 ADR, chronological evidence는 devlog가 소유하도록 분리</td></tr>
+<tr><td>Legacy RGB-D가 generic stage alias였음</td><td>초기 topology의 <code>REQUIRED_STAGE_IDS</code> 이름이 그대로 남음</td><td>Legacy builder와 test가 <code>LEGACY_RGBD_STAGE_IDS</code>를 명시하도록 변경하고 current default 의미를 RGB topology로 제한</td></tr>
+<tr><td>모든 module이 실행됐지만 실제 시간 ready가 아님</td><td>최종 RTF는 거의 1이어도 approach에서 PhysX와 command preparation active work가 16.67 ms를 반복 초과함</td><td>평균/최종 RTF가 아니라 tick lateness, consecutive burst와 phase-local component를 acceptance authority로 유지. 정책 완화 대신 병목 제거 후 반복 측정</td></tr>
+<tr><td>Stop artifact와 controller stop capability가 분리됨</td><td>Offline path-family에는 stop 관련 자료가 있으나 현재 Isaac future-start worker는 nominal command만 sampling하며 report에 stop 미설치를 고정함</td><td>Phase-aware stop/safe-completion catalog를 command lease와 함께 bind하고 controller adapter가 fault 시 실제로 전환·보고하도록 구현</td></tr>
+<tr><td>Collision stage가 일반 online authority처럼 보일 수 있음</td><td>현재 시연은 변경되지 않은 singleton command의 startup HPP-FCL certificate를 상수 시간으로 재확인함</td><td>현재 shortcut을 simulation source-closed 범위로 제한하고, 변경 command에는 resident cuRobo exact remaining-command gate와 HPP-FCL holdout parity를 요구</td></tr>
+</table>
+
+<h2>확정한 모듈과 시간 계층</h2>
+<ol>
+<li><strong>Offline compiler:</strong> grasp 생성·정규화, intrinsic/deployment 검증, complete command family, uncertainty tube와 phase-aware stop을 만든다.</li>
+<li><strong>Startup residency:</strong> source digest와 calibration을 확인하고 segmentation·pose·collision backend, fixed-capacity catalog와 controller route를 한 번만 load·warmup한다.</li>
+<li><strong>Event acquisition:</strong> 충분히 upstream에서 synchronized RGB를 받아 segmentation과 stable-pose-conditioned planar pose를 한 번 bounded solve한다.</li>
+<li><strong>Event decision:</strong> encoder-aligned prediction, resident command-family query, robust-slack ranking, exact remaining-command collision과 future-start lease를 commit 전에 완료한다.</li>
+<li><strong>Periodic state/control:</strong> 60 Hz에서는 encoder propagation, admitted correction, command sampling, feedback, guarded contact와 lifecycle/stop monitor만 수행한다.</li>
+<li><strong>Asynchronous evidence:</strong> JSON serialization, video와 Viser는 control tick 밖에서 measured state를 소비한다.</li>
+</ol>
+<p>FoundPose는 physical RGB initial pose 후보지만 매 frame tracker로 사용하지 않는다. 현재 source-closed physical candidate는 accuracy holdout을 통과하지 못했다. GoTrack은 두 카메라 topology에서 latency와 error를 새로 측정한 뒤 optional low-rate correction 또는 reacquisition backend로만 판단한다. Nominal 상태 전파는 object yaw가 변하지 않는 task 가정과 independent encoder를 사용하므로 GoTrack이 기본 control-state owner일 필요가 없다.</p>
+
+<h2>다음 구현 순서</h2>
+<ol>
+<li>Nominal command와 동일한 source·assembly·collision lineage를 가진 phase-aware stop route를 controller lease에 포함하고 fault injection으로 실제 전환을 검증한다.</li>
+<li>r627의 approach 구간을 재현해 command preparation과 CPU PhysX substep 비용을 분리 최적화하고, 동일 pacing policy로 여러 독립 run을 통과시킨다.</li>
+<li>Resident cuRobo collision gate를 exact remaining arm/hand/object command에 연결하고, HPP-FCL mesh oracle holdout에서 false accept 0과 target deadline을 동시에 확인한다.</li>
+<li>물리 RGB rig가 준비되면 native frame만으로 synchronization, clock mapping, undistortion, segmentation과 planar pose sealed holdout을 수행한다.</li>
+<li>Camera·encoder live/controller disabled shadow mode를 거친 뒤 낮은 belt 속도에서 supervised execution으로 넘어간다.</li>
+</ol>
+<p>이 순서는 professor용 영상 품질을 먼저 꾸미는 계획이 아니다. Stop과 pacing을 닫지 않은 영상은 functional diagnostic으로만 남기고, 실제 실행 가능한 module authority가 하나씩 연결될 때 같은 real-time visualization을 다시 생성한다.</p>
+
+<h2>2026-08-06 당시 정의한 초기 모듈 경계</h2>
 <p><code>ObservationBatch → ObjectMeasurement → ObjectTrack → InterceptRequest → InterceptPlan → ExecutionEvent → TrialRecord</code> 순서의 typed contract를 기준으로 삼는다. 모든 contract는 source timestamp, clock domain, 좌표계 방향, SI unit, uncertainty, provenance를 명시한다. FoundationPose, GoTrack, BODex, simulator, xArm과 camera transport는 이 core 바깥의 adapter가 된다.</p>
 <p>첫 단계는 기존 scene·pose·observation 표현을 하나로 통합하고 recorded replay와 synthetic multi-camera generator를 만드는 것이다. 다음으로 tracker와 독립적인 동적 상태 추정, belt-constrained prediction, time-indexed collision-aware interception planning을 순서대로 구현한다. 실제 로봇이 없어도 occlusion, frame drop, timestamp skew, depth noise, latency, infeasible IK와 missed window를 simulation에서 주입해 안전 상태와 trial record를 검증할 수 있다.</p>
 
-<h2>완료 조건과 다음 행동</h2>
+<h2>2026-08-06 당시 완료 조건</h2>
 <p>한 번 실행되는 script는 완료로 보지 않는다. CPU unit test, deterministic offline replay, GPU 또는 simulator smoke, failure injection 결과가 revision 및 environment identity와 함께 남아야 한다. 다음 작업은 core contract migration의 첫 acceptance test를 작성하고, compute node의 짧은 GPU allocation에서 driver·CUDA·checkpoint smoke를 별도로 수행하는 것이다.</p>
 <p><a href="initial-pose-tracking.html">초기 pose와 GoTrack 연결</a>, <a href="gpu-runtime.html">GPU runtime</a>, <a href="../benchmark/tabletop-protocol.html">M0 평가 계약</a>이 이 작업의 선행 기록이다.</p>
 </main>
