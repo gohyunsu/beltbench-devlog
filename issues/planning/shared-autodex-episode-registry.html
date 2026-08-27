@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>공유 AutoDex episode registry · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-091 · 2026-08-27 · append-only pose/grasp/outcome registry</div>
+<h1>공유 AutoDex pose·grasp·결과를 출처가 닫힌 불변 레코드로 연결한다.</h1>
+<p class="lede">공유 archive의 pose, tracking, executed grasp, candidate와 outcome은 서로 다른 파일과 producer 경로에 흩어져 있었다. 파일을 직접 찾아 쓰는 방식은 어떤 pose와 grasp가 어떤 결과를 냈는지 재현하기 어렵고, Allegro 결과를 Inspire Left의 검증된 명령으로 오인할 위험이 있다. 원본은 읽기 전용으로 유지하고 사용자 namespace에 append-only registry를 구현했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> Pepsi 세 episode의 episode record와 candidate-resolution record를 실제 공유 source의 SHA-256으로 검증했다. Provider outcome은 success 2건, failure 1건이며 candidate result와 모두 일치한다. 그러나 stable-pose 의미, provider world frame, Allegro→Inspire 전이는 미해결이므로 모든 레코드는 <code>runtime_eligible=false</code>, <code>hardware_reliability_eligible=false</code>다.</div>
+
+<h2>발생한 문제</h2>
+<table class="table">
+<tr><th>문제</th><th>실패 가능성</th></tr>
+<tr><td>Episode manifest, pose, GoTrack, grasp와 outcome이 별도 tree에 저장돼 있다.</td><td>파일명과 디렉터리 관례에 의존해 서로 다른 trial을 잘못 결합할 수 있다.</td></tr>
+<tr><td>Executed-grasp metadata의 success는 null이고 outcome은 companion label에 있다.</td><td>성공 결과를 누락하거나 candidate 결과를 새 robot의 성공률로 과장할 수 있다.</td></tr>
+<tr><td>Candidate 경로는 producer host의 절대경로로 남아 있다.</td><td>다른 machine에서 재현할 수 없고 source가 바뀌어도 감지하기 어렵다.</td></tr>
+<tr><td>NFS를 actual-time loop에서 직접 탐색할 가능성이 있다.</td><td>Directory scan과 I/O jitter가 perception·planning deadline에 들어온다.</td></tr>
+</table>
+
+<h2>설계 결정</h2>
+<ol>
+<li><code>registry/v1/episodes/&lt;dataset&gt;/&lt;object&gt;/&lt;episode&gt;/record.json</code>은 raw episode inventory다. Camera calibration, object mesh, initial/recomputed pose, GoTrack 기록, executed wrist/hand metadata와 outcome source를 URI·resolved URI·size·SHA-256으로 결속한다.</li>
+<li><code>registry/v1/resolutions/autodex-candidate/&lt;object&gt;/&lt;episode&gt;/record.json</code>은 후속 source resolution이다. 기존 episode를 고치지 않고 candidate wrist, pregrasp, grasp와 result를 episode record ID와 digest에 연결한다.</li>
+<li>Candidate의 episode ID와 success가 companion outcome과 정확히 같아야 record를 생성한다. 하나라도 다르면 fail closed한다.</li>
+<li>동일 내용 재색인은 no-op이고 같은 경로의 내용 변경은 거부한다. 임시 파일, <code>fsync</code>와 hard link로 NFS에서도 덮어쓰기 없는 atomic create를 사용한다.</li>
+<li>원본 source tree에는 쓰지 않는다. 사용자 namespace에는 registry와 derived evidence만 쓰며, runtime에는 승인된 최소 bundle만 local NVMe로 stage한다.</li>
+</ol>
+
+<h2>실제 NAS 검증</h2>
+<table class="table">
+<tr><th>Episode</th><th>Outcome</th><th>World poses</th><th>Candidate digest</th></tr>
+<tr><td><code>20260206_232243</code></td><td>success</td><td>198</td><td><code>a0fab93b963e...</code></td></tr>
+<tr><td><code>20260206_232525</code></td><td>success</td><td>406</td><td><code>a393f908654a...</code></td></tr>
+<tr><td><code>20260206_232818</code></td><td>failure</td><td>252</td><td><code>73880e71a967...</code></td></tr>
+</table>
+<p>구현 commit <code>414fecb</code>의 clean server checkout에서 단위 테스트 3개를 통과했다. 세 episode는 기존 불변 record와 digest가 유지돼 <code>created=false</code>였고 candidate resolution만 최초 생성됐다. 전체 query에서 episode·candidate source re-hash와 join이 모두 통과했으며 동일 episode 재색인은 양쪽 모두 <code>created=false</code>였다.</p>
+
+<h2>의도적으로 부여하지 않은 권한</h2>
+<ul>
+<li>Provider stable-pose ID <code>008</code>을 BeltBench의 <code>upside_down</code>으로 자동 매핑하지 않는다.</li>
+<li>깨진 selected <code>C2R</code> link와 존재하는 <code>R2C</code> 파일명만 보고 frame transform을 추론하지 않는다.</li>
+<li>Allegro hand command를 Inspire Left command로 재사용하지 않는다. Object-relative wrist proposal만 별도 retarget·collision·contact 검증의 입력 후보가 된다.</li>
+<li>Provider의 2/3 성공을 moving-belt, xArm, Inspire, 현재 calibration에서의 reliability로 사용하지 않는다.</li>
+<li>약 5.15초/frame인 24-view GoTrack 결과를 online tracker로 승격하지 않는다.</li>
+</ul>
+
+<h2>Pipeline 사용 방식</h2>
+<ol>
+<li>Offline query가 known object, provider pose, hand와 outcome으로 episode를 찾고 source digest를 검증한다.</li>
+<li>명시적 stable-pose/frame mapping이 승인된 뒤 object-relative wrist proposal을 추출한다.</li>
+<li>Target end effector용 hand command를 다시 생성하고 complete approach·close·lift·transfer·release path를 독립 검증한다.</li>
+<li>승인된 mesh, grasp proposal과 calibration snapshot만 content-addressed runtime bundle로 local NVMe에 stage한다.</li>
+<li>Runtime은 registry나 NFS를 조회하지 않고 bundle ID만 trace에 남긴다. 실행 결과는 새 BeltBench trial record로 기록하며 provider outcome과 섞지 않는다.</li>
+</ol>
+
+<h2>다음 작업</h2>
+<ol>
+<li>Pose ID <code>008</code>의 canonical stable-pose source와 world-frame 정의를 producer source에서 닫는다.</li>
+<li>Object-relative wrist proposal adapter와 Inspire Left retarget 결과를 별도 derived record로 설계한다.</li>
+<li>cuRobo에서 moving-contact tracking, collision, dynamics와 timing feasibility를 component별로 기록한다.</li>
+<li>Independent validator를 통과한 bundle만 simulation runtime에 승격하고 actual-time trace와 실행 outcome을 새 trial namespace에 저장한다.</li>
+</ol>
+
+<p><a href="shared-autodex-gotrack-source-audit.html">AutoDex/GoTrack source audit</a> · <a href="curobo-arm-prefix-producer-validation.html">cuRobo arm-prefix producer</a> · <a href="rgb-camera-pipeline-correction.html">RGB-only pipeline correction</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>

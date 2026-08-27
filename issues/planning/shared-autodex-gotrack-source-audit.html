@@ -23,7 +23,7 @@
 <tr><th>관찰</th><th>위험</th></tr>
 <tr><td>Public project site와 구현 repository만으로는 실제 episode의 GoTrack 실행 여부가 불명확했다.</td><td>사용한 적 없는 tracker를 AutoDex 방법으로 오인하거나, 반대로 실제 source lineage를 버릴 수 있다.</td></tr>
 <tr><td>상위 result에는 tracking elapsed가 0초로 기록돼 있었다.</td><td>Cached result를 실시간 측정으로 잘못 읽으면 latency 판단이 완전히 뒤집힌다.</td></tr>
-<tr><td>Executed grasp 파일은 존재하지만 hand와 success 의미가 확인되지 않았다.</td><td>Allegro command를 Inspire Left에 직접 재사용하거나 unlabeled trial을 검증 성공으로 승격할 수 있다.</td></tr>
+<tr><td>Executed grasp metadata의 success는 null이지만 별도 outcome label이 존재했다.</td><td>두 source를 결합하지 않으면 결과를 누락하고, 반대로 provider label을 exact-context reliability로 과장할 수 있다.</td></tr>
 <tr><td>FoundationPose 이름의 산출물과 FoundPose 방법을 혼동하기 쉬웠다.</td><td>RGB-only physical pipeline에 RGB-D 전제를 몰래 다시 넣게 된다.</td></tr>
 </table>
 
@@ -33,7 +33,9 @@
 <li>대표 manifest는 24개 camera와 <code>has_depth=false</code>를 명시하고 initial world pose, calibration lineage, FoundationPose-labelled output과 GoTrack output을 가리킨다.</li>
 <li>GoTrack raw log는 one-GPU model load 1.7초, renderer setup 0.7초 후 24/24 camera initial pose를 읽고 256-anchor bank로 198/198 world pose를 생성했다.</li>
 <li>같은 log의 frame loop는 약 1,019초로, 평균 약 5.15초/frame이다. Cached wrapper의 <code>tracking_elapsed_s=0.0</code>은 timing evidence에서 제외했다.</li>
-<li>세 executed grasp는 모두 Allegro hand, pose ID <code>008</code>, executed-FK wrist pose를 기록하지만 success label은 비어 있다.</li>
+<li>세 executed grasp는 모두 Allegro hand, pose ID <code>008</code>, executed-FK wrist pose를 기록한다. Companion outcome label은 success 2건, failure 1건이며 reviewer는 robot, source는 candidate result다.</li>
+<li>세 producer candidate 경로도 NAS에서 해석되며 각각 wrist, pregrasp, grasp와 result를 포함한다. Candidate result의 episode/success는 companion outcome과 모두 일치한다.</li>
+<li>Processed manifest는 <code>has_C2R=true</code>지만 선택 <code>C2R.npy</code> symlink는 깨져 있고 source에는 <code>R2C.npy</code>만 있다. 파일명만 보고 역행렬을 추론하지 않는다.</li>
 <li>공유 processing source snapshot은 <code>8b50af8</code>로 고정해 조사했다.</li>
 </ul>
 
@@ -46,7 +48,7 @@
 <tr><th>요소</th><th>결정</th><th>적용 범위</th></tr>
 <tr><td>GoTrack world-pose record와 per-view quality</td><td>채택</td><td>Offline replay, pose error·drift 분석, adapter schema와 backend 비교</td></tr>
 <tr><td>GoTrack 24-view per-frame runtime</td><td>폐기</td><td>실시간 loop에 넣지 않으며 latency fallback으로도 사용하지 않음</td></tr>
-<tr><td>초기 object-relative wrist와 candidate lineage</td><td>조건부 채택</td><td>Frame 변환과 grasp provenance 검증; hand command와 success 권한은 제외</td></tr>
+<tr><td>초기 wrist, candidate와 outcome lineage</td><td>조건부 채택</td><td>Frame·grasp·episode 결과 join 검증; hand command와 reliability 권한은 제외</td></tr>
 <tr><td>Allegro hand command</td><td>교체</td><td>Inspire Left command를 다시 생성하고 독립 collision·contact·path gate 통과</td></tr>
 <tr><td>Cached elapsed와 provider success 가정</td><td>폐기</td><td>Raw timer와 independent outcome만 timing·reliability evidence로 사용</td></tr>
 </table>
@@ -61,7 +63,7 @@
 </ol>
 
 <h2>보존 규칙과 검증</h2>
-<p>공유 archive는 mount permission과 무관하게 읽기 전용으로 취급한다. 전체 dataset을 checkout에 복제하거나 archive 안에 cache를 만들지 않는다. 실제 소비할 최소 파일만 private data root로 stage하고 source snapshot, object·stable-pose·camera·hand·frame identity, symlink lineage와 SHA-256을 import manifest에 남긴다. Public 기록에는 내부 주소와 raw calibration을 공개하지 않는다.</p>
+<p>공유 source tree는 읽기 전용으로 유지하고 사용자 namespace에만 append-only registry와 derived evidence를 쓴다. Registry는 source·resolved URI, object·episode·provider pose·camera·hand·outcome·source defect와 SHA-256을 결속한다. Actual-time runtime은 검증된 최소 bundle을 local storage에 stage해 NFS를 critical path에서 제외한다. Public 기록에는 내부 주소와 raw calibration을 공개하지 않는다.</p>
 
 <h2>다음 작업</h2>
 <ol>
