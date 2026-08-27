@@ -71,6 +71,15 @@
 <tr><td>NAS ownership</td><td><code>hyunsu:users</code>, mode <code>0644</code></td></tr>
 </table>
 
+<h2>2026-08-27 후속: 기존 경로를 보존한 채 새 write namespace를 고정</h2>
+<p>실제 <code>/mnt/paradex2/hyunsu/beltbench</code>를 다시 조사하니 초기 실험에서 만든 root-level <code>bodex/</code>, <code>candidates/</code>, <code>trajectories/</code>와 현재 규약의 <code>grasps/*</code>, <code>plans/*</code>가 함께 존재했다. 기존 디렉터리를 보기 좋게 재배치하면 과거 artifact의 상대 참조와 checksum lineage를 깨뜨릴 수 있으므로 이동하지 않는다.</p>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>선택한 해결</th><th>결과</th></tr>
+<tr><td>초기 경로와 canonical 경로 혼재</td><td>데이터 레이아웃 계약이 생기기 전에 BODex 후보와 trajectory가 root에 기록됨</td><td>세 기존 root를 legacy read-only evidence로 동결하고 새 run은 <code>grasps/bodex-runs</code>, <code>grasps/proposals</code>, <code>plans/deployment-bundles</code>에만 기록</td><td>기존 lineage를 보존하면서 이후 artifact의 의미와 수명주기가 분리됨</td></tr>
+<tr><td>Provider success와 BeltBench success 혼동 가능</td><td>같은 catalog 행에서 pose, grasp와 outcome을 함께 조회할 수 있음</td><td>Catalog는 provider evidence만 유지하고 intrinsic, deployment, moving reliability를 별도 digest-linked record로 누적</td><td>성공 2개는 우선 검증 후보가 되지만 Inspire moving-pick 권한은 계속 false</td></tr>
+</table>
+<p>Runtime은 이 NAS 구조를 직접 조회하지 않는다. Offline bundle compiler가 선택된 object mesh, stable-pose resolution, exact object-relative grasp, hand command, qualification와 calibration의 digest를 검증해 local NVMe에 최소 bundle을 만들고, startup 이후 event와 60 Hz loop는 그 resident bundle만 사용한다.</p>
+
 <h2>실행 중 발생한 환경 문제</h2>
 <p>서버의 새 checkout은 package가 editable-install되지 않아 script 파일을 직접 실행했을 때 <code>ModuleNotFoundError: beltbench</code>가 발생했다. Unit test는 같은 revision에서 이미 통과했고 원인은 source tree import path 누락이었다. 검증 명령에는 <code>PYTHONPATH=.</code>를 명시해 동일 checkout을 사용했다. 실제 배포에서는 ad-hoc path 대신 pinned environment에 BeltBench revision을 설치해야 한다.</p>
 
