@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Resident C2 abort brake · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-094 · 2026-08-27 · source-bound resident C2 braking</div>
+<h1>Hold fixture를 비영속 경계조건에서 출발하는 검증 가능한 제동 후보로 교체한다.</h1>
+<p class="lede">Phase-aware slot과 controller는 구현됐지만 route 내용은 첫 sample 뒤 속도와 가속도를 0으로 바꾸는 unit fixture였다. 이 구조로는 실제 moving command에서 C2 연속성, jerk와 정지 위치를 설명할 수 없으므로 online fallback 없이 offline deterministic brake producer를 추가했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> revision <code>46fcb97</code>에서 exact latch <code>q/qd/qdd</code>를 보존하는 shortest-feasible C2 brake를 구현했고 local 및 RTX 회귀 32/32를 통과했다. 이 결과는 motion-limit-valid candidate이며 collision·terminal-region 또는 실행 권한이 아니다.</div>
+
+<h2>발생한 문제와 영향</h2>
+<table class="table">
+<tr><th>문제</th><th>영향</th></tr>
+<tr><td>기존 abort command는 hold fixture였다.</td><td>Selector와 slot 전환은 시험할 수 있지만 실제 이동 중 정지를 계획했다는 증거가 없었다.</td></tr>
+<tr><td>Nominal suffix를 자르거나 즉시 hold하는 방안이 남아 있었다.</td><td>Latch 속도·가속도가 0이 아니면 command 경계가 끊기고 controller impulse를 숨기게 된다.</td></tr>
+<tr><td>Fault 시 online global planning을 호출할 가능성이 있었다.</td><td>Perception이나 tracking이 이미 불안정한 시점에 가변 latency와 새 failure mode가 추가된다.</td></tr>
+<tr><td>실제 r627 command는 최신 resident source chain으로 컴파일되지 않았다.</td><td>새 planner가 있어도 production Pepsi route를 바로 생성하거나 설치할 수 없다.</td></tr>
+</table>
+
+<h2>선택한 방법</h2>
+<ol>
+<li>Nominal latch의 arm position, velocity와 acceleration을 첫 boundary로 그대로 사용한다.</li>
+<li>Terminal velocity, acceleration과 jerk가 모두 0이 되는 normalized-time quintic의 나머지 계수를 해석적으로 푼다. Terminal position은 강제로 home을 지정하지 않고 이 제동 해에서 결정한다.</li>
+<li>정책에 선언된 duration grid를 짧은 순서로 탐색한다. 가능한 첫 후보만 선택하므로 생성 latency와 정지 시간을 불필요하게 늘리지 않는다.</li>
+<li>각 polynomial의 critical root를 구해 연속시간 joint position, velocity, acceleration과 jerk peak를 계산한다. Sample 점만 통과하는 후보는 승인하지 않는다.</li>
+<li>Hand는 latch에서 이미 stationary여야 하며 exact position을 유지한다. Arm뿐 아니라 고정 hand position도 joint-limit margin에 포함한다.</li>
+<li>Policy, template, motion-limit profile, terminal state, extrema와 exact sample digest를 planner result에 결속하고 기존 abort command가 그 result digest를 참조하게 한다.</li>
+</ol>
+
+<h2>배제한 대안</h2>
+<ul>
+<li><strong>Nominal truncation/freeze:</strong> 독립 경로가 아니고 nonzero derivative를 지워 C2 경계를 위반하므로 배제했다.</li>
+<li><strong>항상 home retreat:</strong> 더 긴 경로와 추가 collision risk를 만들며 attached object를 유지해야 하는 fault에는 부적절하다.</li>
+<li><strong>Fault 후 cuRobo global solve:</strong> 안전 반응의 latency를 비결정적으로 만들기 때문에 runtime abort mechanism으로 사용하지 않는다.</li>
+<li><strong>Contact/release를 brake가 생성:</strong> irreversible lifecycle 의미론을 수치 제동기가 추측하게 되므로 배제했다. 기존 certified command를 attached 또는 contained latch까지 완료한 뒤 brake를 시작한다.</li>
+</ul>
+
+<h2>재검토 중 발견한 누락</h2>
+<p>첫 구현은 arm polynomial의 연속시간 limit만 계산하고, 움직이지 않는 hand의 position limit은 암묵적으로 nominal source에 의존했다. 그러면 “전체 command motion limits checked”라는 결과가 과장된다. Fixed hand position의 normalized joint-limit margin도 동일한 hard gate에 포함하고, 범위 밖 hand fixture가 fail-closed하는 시험을 추가했다.</p>
+
+<h2>검증 결과</h2>
+<table class="table">
+<tr><th>검증</th><th>결과</th><th>범위</th></tr>
+<tr><td>Nonzero boundary planner</td><td>여러 짧은 후보를 거절한 뒤 shortest feasible duration 선택</td><td>C2 boundary와 continuous joint limits</td></tr>
+<tr><td>Failure injection</td><td>Moving hand, 불가능한 stop duration, hand position limit 위반 거절</td><td>Planner fail-closed</td></tr>
+<tr><td>Local resident abort regression</td><td>32/32 통과, 49.006 s</td><td>Planner·contract·slot·controller</td></tr>
+<tr><td>RTX 3090 clean checkout</td><td>32/32 통과, 21.245 s</td><td>Exact <code>46fcb970...</code> 재현</td></tr>
+<tr><td>서버 환경</td><td>RTX 3090 24 GB, driver 535.309.01, pinned cuRobo/CUDA venv</td><td>Production workstation compatibility</td></tr>
+</table>
+
+<h2>실제 r627 source audit</h2>
+<p>r627 runtime admission이 참조한 independent validation digest는 r223 계열의 동일 파일로 확인됐다. 이 파일은 1,265개 full-frame sampled collision을 통과했지만 continuous swept/path-tube 증거는 아니다. 더구나 r621 splice generation report에는 <code>independent_collision_validated=false</code>가 명시되어 있다. 따라서 과거 시뮬레이션 성공을 최신 resident full-task lease로 승격하지 않는다.</p>
+
+<h2>남은 경계와 다음 단계</h2>
+<ol>
+<li>r627 exact event command, motion limits, contact, robot/object/workcell과 collision semantics를 최신 resident template/request 계보로 source-close한다.</li>
+<li>Precontact와 attached/contained stationary-hand latch마다 brake를 생성하고 contact/release commit 구간은 certified safe-completion latch로 연결한다.</li>
+<li>Nominal 및 모든 abort route를 별도 GPU continuous collision·dynamics·terminal-region validator와 HPP-FCL parity로 검증한다.</li>
+<li>Accepted route만 startup CUDA slot에 올리고 각 phase fault를 actual Isaac articulation의 60 Hz 시간축에서 재생한다.</li>
+</ol>
+
+<p><a href="phase-aware-resident-abort-slots.html">phase-aware resident abort slot</a> · <a href="full-task-resident-validation.html">full-task resident validation</a> · <a href="rgb-camera-pipeline-correction.html">RGB-only pipeline correction</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
