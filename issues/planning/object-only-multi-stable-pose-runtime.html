@@ -12,11 +12,11 @@
 <nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
 </div></header>
 <main class="wrap article">
-<div class="eyebrow">ISSUE-096 · 2026-08-27 · object-only multi-stable-pose admission</div>
+<div class="eyebrow">ISSUE-096 · 2026-08-28 update · object-only multi-stable-pose admission</div>
 <h1>Object ID만 주어진 이벤트에서 stable pose, yaw와 위치를 함께 추정해 resident grasp로 라우팅한다.</h1>
 <p class="lede">기존 demo는 <code>pepsi_light/upside_down</code>처럼 stable-pose ID가 startup과 event에 이미 주어진다고 가정했다. 목표 작업에서는 물체 종류만 주어지고, 물체는 belt 위의 임의의 물리적 stable pose와 초기 yaw·위치로 들어온다. 따라서 pose를 입력으로 받는 경계를 폐기하고 RGB 관측이 pose class와 평면 상태를 함께 결정하도록 바꿨다.</p>
 
-<div class="callout"><strong>현재 판정:</strong> revision <a href="https://github.com/gohyunsu/beltbench/commit/df26485"><code>df26485</code></a>에서 Pepsi Light source pose 3개를 Git HEAD, exact catalog와 canonical mesh 2종에 결속한 비권한 onboarding bundle을 만들었다. 전체 회귀 1,708개는 통과했지만 3-pose Isaac settling qualification, Inspire Left grasp atlas와 multi-pose 실제시간 영상은 아직 검증 전이다.</div>
+<div class="callout"><strong>현재 판정:</strong> revision <a href="https://github.com/gohyunsu/beltbench/commit/448be81"><code>448be81</code></a>에서 source symmetry를 정확히 quotient하는 stable-pose class 경계를 추가했다. 실제 Pepsi Light 후보는 side와 양쪽 end의 세 class로 분리되지만 assessment는 항상 <code>execution_authorized=false</code>다. 전체 회귀 1,713개는 통과했으나 3-pose Isaac settling qualification, RGB open-set qualification, pose별 Inspire Left grasp atlas와 multi-pose 실제시간 영상은 아직 검증 전이다.</div>
 
 <h2>발생한 문제와 영향</h2>
 <table class="table">
@@ -28,6 +28,8 @@
 <tr><td>예시 inference deadline이 80 ms였다.</td><td>Warm FoundPose 2-view 측정치 약 0.28~0.31 s보다 작은 목표값을 실측 없이 사용했다.</td><td>실행 불가능한 정책을 통과시키거나 정상 event를 deadline miss로 오판한다.</td></tr>
 <tr><td>RGB-only fit이 support residual 0을 기록했다.</td><td>Support-plane constraint와 독립 관측 metric을 같은 필드로 표현했다.</td><td>측정하지 않은 깊이 일치가 관측된 것처럼 보일 수 있었다.</td></tr>
 <tr><td>Bundle 밖 reference를 hash 후 거부할 수 있었다.</td><td>Digest verifier 다음에 path-containment 검사를 수행했다.</td><td>실패 폐쇄하더라도 startup에서 NAS 파일을 한 번 열 가능성이 남았다.</td></tr>
+<tr><td>큰 유한 대칭 fold를 연속 대칭으로 근사할 수 있었다.</td><td>Class 수를 줄이기 위한 근사 정책이 실제 symmetry group과 pose 의미를 혼동했다.</td><td><code>C6</code>의 중간 각도처럼 형상 대칭이 아닌 orientation을 같은 class로 허용할 수 있었다.</td></tr>
+<tr><td>Source class 분리식이 class 중심만 비교했다.</td><td><code>radius + margin</code>만 요구해 허용 반경 끝의 runner-up margin을 보장하지 못했다.</td><td>Class 중심은 분리돼도 허용 오차 경계에서 분류가 모호해질 수 있었다.</td></tr>
 </table>
 
 <h2>채택한 데이터 수명주기</h2>
@@ -59,6 +61,7 @@
 <p>별도로 <code>object_processing</code> commit <code>9aaa4ce</code>의 <code>pepsi_light</code> gallery에는 MuJoCo settling으로 얻은 후보 3개가 있다. 형상상 side 1개와 양쪽 end 2개이며, 기존 upside-down fixture의 support height는 세 번째 후보와 일치한다. 그러나 gallery JSON은 source mesh digest와 settling trial 원본을 함께 봉인하지 않으므로 이 기록만으로 <code>status=measured</code>를 부여하지 않는다. Canonical mesh digest를 결속하고 Isaac settling 재검증을 통과한 뒤에만 deployment pose로 승격한다.</p>
 <p><code>df26485</code>의 stager는 repository URL과 revision을 Git에서 직접 읽고 catalog가 tracked 상태이며 <code>HEAD</code>와 동일한지 확인한다. 그 뒤 exact info JSON, object manifest, visual GLB와 collision GLB만 임시 디렉터리에 복사하고 모든 digest·transform을 재검증한 후 원자적으로 publish한다. 실제 v2 bundle은 15 MB, 후보 3개, payload SHA-256 <code>200c745e…263a2</code>이며 <code>execution_authorized=false</code>다.</p>
 <p>Canonical cylinder axis에 대한 세 후보의 world-up projection은 약 <code>0</code>, <code>+0.99998</code>, <code>-0.99999</code>로 side·upright·upside-down class를 분리한다. 기존 upside-down fixture는 세 번째 source pose와 직접 회전 오차 약 <code>0.0168°</code>로 일치한다. 이 결과는 기존 single-pose demo frame을 보존할 근거지만, 다른 두 pose의 grasp나 random-drop completeness를 증명하지 않는다.</p>
+<p><code>448be81</code>은 object-frame world-up vector를 source symmetry group으로 quotient한다. Pepsi 후보의 pairwise class distance는 side↔두 end가 각각 약 <code>89.76°</code>, <code>89.61°</code>, 두 end가 약 <code>179.37°</code>다. 실제 infinite-fold axis만 continuous로 처리하고 finite generators는 bounded exact rotation group으로 닫는다. Class center 분리는 <code>2 × class radius + runner-up margin</code>보다 커야 하므로 허용 반경 전체에서 margin을 보존한다. 이 평가는 semantic candidate를 선택할 뿐 pose를 measured로 승격하거나 grasp를 공급하지 않는다.</p>
 
 <h2>구현과 검증 결과</h2>
 <table class="table">
@@ -67,13 +70,14 @@
 <tr><td><a href="https://github.com/gohyunsu/beltbench/commit/4a36f42"><code>4a36f42</code></a></td><td>One-inference backend, bounded parallel solve, RGB pose/track builder와 latched planner router</td><td>관련 회귀 72개 통과, conditional skip 5개</td></tr>
 <tr><td><a href="https://github.com/gohyunsu/beltbench/commit/91505f5"><code>91505f5</code></a></td><td>Sealed global qualification, exact calibrator binding, complete measured-pose compiler, local-root confined transitive verification</td><td>Provisional·partial·open-set failure와 lexical·symlink escape를 모두 fail-closed</td></tr>
 <tr><td><a href="https://github.com/gohyunsu/beltbench/commit/df26485"><code>df26485</code></a></td><td>Git-bound external pose catalog와 canonical object meshes의 atomic local staging</td><td>실제 Pepsi 후보 3개 재현, overwrite·dirty source·tamper·forged transform 거부</td></tr>
-<tr><td><code>df26485</code> full suite</td><td>전체 BeltBench 회귀</td><td>1,708개 통과, conditional skip 28개, 177.403 s</td></tr>
+<tr><td><a href="https://github.com/gohyunsu/beltbench/commit/448be81"><code>448be81</code></a></td><td>Exact finite/continuous symmetry quotient, open-set class result와 non-authority boundary</td><td>실제 세 class 분리, finite-fold 근사 금지, forged acceptance와 ambiguous pose 거부</td></tr>
+<tr><td><code>448be81</code> full suite</td><td>전체 BeltBench 회귀</td><td>1,713개 통과, conditional skip 28개, 192.674 s</td></tr>
 </table>
 <p>이 검증은 인터페이스 ancestry, 상태 전이, bounded scheduling과 실패 폐쇄를 확인한다. 실제 모델 정확도, open-set false accept rate, pose별 latency나 moving grasp 성공률을 검증한 결과는 아니다.</p>
 
 <h2>현재 blocker와 다음 작업</h2>
 <ol>
-<li><code>object_processing</code>의 Pepsi Light 후보 3개를 canonical mesh와 settling evidence에 결속하고, provider pose <code>008</code>을 포함한 source-to-canonical frame resolution을 만든다.</li>
+<li>Staged Pepsi Light 후보 3개를 canonical collision mesh의 perturbation·global-drop Isaac campaign으로 검증해 measured pose만 승격하고 completeness 한계를 기록한다.</li>
 <li>지원 pose와 unknown/non-stable holdout을 포함한 Isaac RGB campaign으로 comparable cost calibrator와 admission threshold를 검증한다.</li>
 <li>각 stable pose에 대해 Inspire Left grasp를 기존 evidence에서 승격하거나 offline 생성한 뒤 intrinsic·deployment·moving-task gate를 통과시킨다.</li>
 <li>검증된 최소 deployment bundle을 local NVMe에 stage하고 startup resident load 시간을 측정한다.</li>
