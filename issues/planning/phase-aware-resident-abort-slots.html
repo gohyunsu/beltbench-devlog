@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Phase-aware resident abort slot · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-093 · 2026-08-27 · phase-aware resident abort startup</div>
+<h1>정지 경로 계약을 실제 CUDA resident slot과 fail-closed controller 경계로 연결한다.</h1>
+<p class="lede">기존 구현은 phase별 abort catalog, O(1) selector와 activation receipt를 정의했지만 실제 Isaac worker는 정지 경로가 설치되지 않았다고 보고했다. 계약이 있다는 이유만으로 readiness flag를 바꾸지 않고, exact artifact 설치와 controller 전환을 별도 모듈로 구현했다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> revision <code>55f9bad</code>에서 source-bound startup bundle, CUDA upload event, one-shot slot backend와 full-task controller state machine을 구현했다. RTX 3090 fixture smoke는 통과했지만 production Pepsi abort route와 실제 RGB event runner 연결은 없으므로 professor-ready 판정은 계속 차단한다.</div>
+
+<h2>발생한 문제와 영향</h2>
+<table class="table">
+<tr><th>문제</th><th>영향</th></tr>
+<tr><td>Catalog와 selector는 있었지만 concrete slot backend가 없었다.</td><td>테스트 metadata는 통과해도 controller가 어느 bytes를 실행하는지 증명할 수 없었다.</td></tr>
+<tr><td>Actual event runner는 <code>prevalidated_stop_route_installed=false</code>였다.</td><td>RGB perception, contact와 containment가 동작해도 fault 시 안전한 task cancellation이 없었다.</td></tr>
+<tr><td>처음 구현에서 uploader, activation adapter와 controller를 한 파일에 모았다.</td><td>장치 소유권, protocol translation과 state-machine 책임이 섞여 유지보수가 어려웠다.</td></tr>
+<tr><td>Fresh progress만 확인하고 nominal command time을 교차검증하지 않았다.</td><td>Latch index를 너무 일찍 보고하거나 latch를 지난 뒤 전환하면 C2 경계가 깨질 수 있었다.</td></tr>
+</table>
+
+<h2>해결 절차</h2>
+<ol>
+<li>Validated lease, abort catalog, exact command와 object-collision lifecycle을 inline으로 묶는 immutable startup bundle을 추가했다.</li>
+<li>모든 route에서 command digest, canonical dense tensor digest, collision lifecycle digest, source slot·event와 accepted collision·dynamics·terminal-region pass를 다시 대조한다.</li>
+<li>Canonical <code>time/q/qd/qdd</code> tensor를 startup에만 CUDA로 upload하고 named event를 synchronize한 뒤에만 capability를 발급한다.</li>
+<li>Activation adapter는 metadata-only protocol translation만 유지하고 CUDA slot ownership은 별도 backend로 분리했다.</li>
+<li>Full-task worker는 nominal command를 exact latch까지 유지한 뒤 같은 arm/hand motion-target edge에서 resident abort로 전환한다.</li>
+<li>Missing·stale·regressed·source-mismatched progress, early/late latch, command-time regression과 servo 예외는 모두 latched protective-stop 상태로 닫았다.</li>
+</ol>
+
+<h2>구현 중 발견한 결함과 수정</h2>
+<p>첫 state machine은 command timestamp regression을 servo 적용 후 검사했다. 또한 protective-stop 판정 뒤 다음 호출에서 nominal command가 다시 적용될 수 있었다. 검사를 side effect 앞으로 이동하고 protective-stop을 영구 latch했으며, route selection 및 servo 예외도 동일한 fail-closed 상태로 통합했다.</p>
+<p>초기 파일 구조도 다시 뜯어고쳤다. Generic activation adapter는 기존 크기로 복원하고, CUDA uploader/slot backend와 phase-aware full-task controller를 각각 독립 모듈로 분리했다. Online fallback, NAS read, tensor copy와 global abort planning은 추가하지 않았다.</p>
+
+<h2>검증 결과</h2>
+<table class="table">
+<tr><th>검증</th><th>결과</th><th>권한</th></tr>
+<tr><td>Local abort/controller regression</td><td>28/28 통과</td><td>계약과 state-machine 기능</td></tr>
+<tr><td>Clean RTX checkout regression</td><td>28/28, 23.173 s</td><td>동일 revision 재현</td></tr>
+<tr><td>Tensor refactor parity</td><td>기존/신규 SHA-256 모두 <code>3daf79dc...effe4a3</code></td><td>Canonical bytes 불변</td></tr>
+<tr><td>RTX 3090 CUDA fixture smoke</td><td>5 route upload/event ready, one-shot activation 성공</td><td>장치 설치 infrastructure</td></tr>
+<tr><td>Fixture startup upload</td><td>132.732 ms</td><td>측정 구간 밖 startup 진단, runtime latency 아님</td></tr>
+</table>
+
+<p>서버는 PyTorch 2.5.1 + CUDA 12.1에서 실행했다. Direct GitHub clone은 credential 부재로 실패했으므로, pushed commit의 complete-history Git bundle을 검증한 뒤 clean checkout을 만들었다. 이 전송 실패는 코드 실패와 분리해 보존했다.</p>
+
+<h2>남은 경계</h2>
+<ul>
+<li>현재 route는 unit fixture다. Independently planned production Pepsi retreat가 아니며 safe-hold 증거로 사용할 수 없다.</li>
+<li>CUDA tensor는 resident지만 Isaac servo는 source-verified CPU quintic sampler를 소비한다. 실제 controller는 resident slot bytes를 직접 소비해야 한다.</li>
+<li>현재 admitted RGB event runner는 새 full-task worker를 생성하지 않는다. 따라서 기존 professor-readiness blocker는 그대로다.</li>
+<li>Hardware protective-stop response, controller feedback clock, xArm/Inspire transport와 moving-object fault timing은 검증되지 않았다.</li>
+</ul>
+
+<h2>다음 단계</h2>
+<ol>
+<li>Actual Pepsi full command에서 precontact, contact-commit, attached, release-commit와 post-release route를 독립 계획한다.</li>
+<li>Exact remaining command와 각 abort route를 GPU collision, dynamics, terminal-region 및 HPP-FCL parity validator로 통과시킨다.</li>
+<li>Accepted bundle을 local NVMe에 stage하고 actual Isaac articulation runner에 연결한다.</li>
+<li>각 phase의 injected fault, missed latch, stale feedback와 servo failure를 실제 60 Hz 시간축에서 재생하고 영상을 생성한다.</li>
+</ol>
+
+<p><a href="full-command-abort-coverage.html">full-command abort coverage</a> · <a href="full-task-resident-validation.html">full-task resident validation</a> · <a href="rgb-camera-pipeline-correction.html">RGB-only pipeline correction</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
