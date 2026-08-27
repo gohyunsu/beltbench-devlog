@@ -18,6 +18,8 @@
 
 <div class="callout"><strong>현재 판정:</strong> revision <a href="https://github.com/gohyunsu/beltbench/commit/ed8c662"><code>ed8c662</code></a>에서 exact visual-mesh support 측정과 source-closed collision identity를 적용한 뒤 RTX 3090·Isaac Sim 4.5.0에서 264회 frozen settling campaign을 실행했다. 모든 trial의 물체-평면 clearance는 통과했지만 side pose의 return rate와 global drop의 unresolved rate가 정책을 통과하지 못해 전체 결과는 <code>accepted=false</code>, <code>execution_authorized=false</code>다. 이어 <a href="https://github.com/gohyunsu/beltbench/commit/3731c1b"><code>3731c1b</code></a>에서 공유 <code>pepsi_light/Inspire</code> 후보 100개를 전수 source-close했다. 기존 데이터를 적극적으로 재사용할 수 있는 입력 경계는 확보했지만 pose·hand·moving-task qualification이 남아 있어 runtime 권한은 계속 false다.</div>
 
+<div class="callout"><strong>2026-08-28 정정:</strong> 위 pool의 secondary scene별 성공 분포를 실제 stable-pose 성공 분포로 읽으면 안 된다. <a href="https://github.com/gohyunsu/beltbench/commit/2d948f5"><code>2d948f5</code></a>에서 tested episode의 <code>inv(C2R) @ pose_world</code>를 원본 대칭 분류식으로 재현한 결과, 성공 5건은 <code>source-000</code> 2건과 <code>source-001</code> 3건이며 뒤집힌 <code>source-002</code>는 0건이다. 자세한 원인과 immutable NAS report는 <a href="shared-autodex-tested-pose-resolution.html">ISSUE-097</a>에 기록한다.</div>
+
 <h2>발생한 문제와 영향</h2>
 <table class="table">
 <tr><th>문제</th><th>원인</th><th>영향</th></tr>
@@ -60,10 +62,10 @@
 <p>초기 catalog에는 legacy <code>pepsi/008/Allegro</code> episode 세 개만 들어 있었다. 이 snapshot만 보고 공유 데이터 전체가 세 episode라고 판단한 것은 조사 범위 오류였다. AutoDex interactive manifest가 가리키는 실제 experiment lineage를 따라가자 별도의 <code>pepsi_light/Inspire</code> candidate pool 100개와 완전한 physical episode 다섯 개가 확인됐다.</p>
 <p>세 raw object mesh는 파일명과 저장 tree가 달라도 41,392,081 byte와 SHA-256 <code>10d134c7…b81e</code>가 정확히 같았다. 따라서 legacy <code>pepsi</code>와 <code>pepsi_light</code>의 이 source object identity는 이름 추론이 아니라 byte identity로 연결할 수 있다. 후보의 <code>wrist_se3.npy</code>는 object-relative hand-root pose이며 pregrasp와 grasp는 각각 6-DOF Inspire command다. 다만 provider ID <code>inspire</code>가 BeltBench의 exact <code>inspire_left</code> joint·mount profile과 같다는 권한은 아직 별도 해소가 필요하다.</p>
 <table class="table">
-<tr><th>Secondary provider pose</th><th>기하 class 제안</th><th>후보</th><th>정적 성공 이력</th><th>현재 해석</th></tr>
-<tr><td><code>001</code></td><td>upright</td><td>34</td><td>0</td><td>모두 미시험이며 simulation qualification과 이후 hardware trial이 필요하다.</td></tr>
-<tr><td><code>002</code></td><td>side</td><td>36</td><td>2</td><td>두 성공은 우선순위 evidence일 뿐 moving-pick 권한이 아니다.</td></tr>
-<tr><td><code>011</code></td><td>upside-down</td><td>30</td><td>3</td><td>세 성공도 동일한 재검증 gate를 통과해야 한다.</td></tr>
+<tr><th>Secondary scene snapshot</th><th>후보</th><th>Joined 성공 episode</th><th>Episode 기반 실제 mapping</th><th>현재 해석</th></tr>
+<tr><td><code>001</code></td><td>34</td><td>0</td><td>없음</td><td>모두 미시험이며 stable-pose class는 unresolved다.</td></tr>
+<tr><td><code>002</code></td><td>36</td><td>2</td><td><code>source-000</code> 1, <code>source-001</code> 1</td><td>한 scene ID가 두 실제 pose로 갈리므로 pose authority가 아니다.</td></tr>
+<tr><td><code>011</code></td><td>30</td><td>3</td><td><code>source-000</code> 1, <code>source-001</code> 2</td><td>뒤집힌 <code>source-002</code> 성공을 의미하지 않는다.</td></tr>
 </table>
 <p>중요한 source defect도 발견했다. 후보가 생성될 때 사용한 것으로 보이는 generator scene tree와 현재 <code>object_processing</code> snapshot을 비교하면 32개 scene은 내용이 다르고 68개는 generator 쪽 파일이 없다. 정확히 동일하게 남은 generator scene은 0개다. 특히 성공 후보 두 개의 옛 scene pose ID는 현재 secondary snapshot과 다르다. 따라서 provider pose ID를 BeltBench stable-pose ID로 직접 승격하지 않고, newer scene metadata는 <code>secondary_scene_snapshot_only</code>로 보존했다.</p>
 <p><code>3731c1b</code>의 importer는 후보 100개를 성공 여부로 먼저 거르지 않는다. <code>success/failure/untested</code>를 삼상 상태로 보존하고, 성공 후보는 candidate result와 physical experiment result의 scene·episode·outcome이 일치하며 planned wrist, executed hand command, object pose와 camera-to-robot transform이 모두 유효할 때만 join한다. 첫 RTX 실행은 checkout이 Python environment에 설치되지 않아 import에서 중단됐고 source 및 registry write는 발생하지 않았다. Checkout을 명시적으로 Python path에 둔 뒤 재실행해 100개와 모든 source digest를 검증했다.</p>
@@ -96,13 +98,14 @@
 <tr><td><a href="https://github.com/gohyunsu/beltbench/commit/ed8c662"><code>ed8c662</code></a></td><td>Rotated AABB 측정을 exact visual vertex directional support로 교체하고 schema 1.1 ancestry를 봉인</td><td>Gf transform sample check 통과, 264회 campaign에서 clearance 실패 0회</td></tr>
 <tr><td><a href="https://github.com/gohyunsu/beltbench/commit/1477142"><code>1477142</code></a></td><td>Frozen campaign 기각 결과와 잘못된 penetration 해석 철회 기록</td><td>전체 회귀 1,734개 통과, conditional skip 28개, 156.130 s</td></tr>
 <tr><td><a href="https://github.com/gohyunsu/beltbench/commit/3731c1b"><code>3731c1b</code></a></td><td>Provider-native AutoDex grasp pool의 삼상 outcome, scene drift와 physical episode join을 append-only contract로 추가</td><td>전체 회귀 1,738개 통과, conditional skip 28개, 158.013 s; 실제 후보 100개 source re-hash와 idempotent write 재현</td></tr>
+<tr><td><a href="https://github.com/gohyunsu/beltbench/commit/2d948f5"><code>2d948f5</code></a></td><td>Tested episode pose-resolution, object-only topology v3와 pose별 resident selector 추가</td><td>전체 회귀 1,747개 통과, conditional skip 28개; 실제 성공 pose 2/3/0 분포와 immutable replay 검증</td></tr>
 </table>
 <p>이 검증은 인터페이스 ancestry, 상태 전이, bounded scheduling과 실패 폐쇄를 확인한다. 실제 모델 정확도, open-set false accept rate, pose별 latency나 moving grasp 성공률을 검증한 결과는 아니다.</p>
 
 <h2>현재 blocker와 다음 작업</h2>
 <ol>
 <li>Settling campaign은 수행됐지만 현재 backend가 정책에서 기각됐다. 후보 세 개를 measured로 승격하지 않으며 같은 holdout에 맞춘 threshold·damping 튜닝도 하지 않는다.</li>
-<li>Source object identity는 byte-level로 해소됐지만 provider pose metadata는 scene drift 때문에 non-authoritative다. Secondary <code>001/002/011</code>을 각각 upright/side/upside-down geometry 후보로 매핑한 뒤 canonical support transform에서 100개 object-relative wrist를 모두 재평가한다.</li>
+<li>Tested episode 5건의 pose는 해소됐지만 untested 95건의 source pose는 unresolved다. Secondary scene ID를 복원하려 하지 않고, object-relative proposal pool 전체를 exact target hand와 각 supported stable pose의 cross-product에서 offline 재평가한다.</li>
 <li>Provider <code>inspire</code>의 joint order, command unit, left-hand variant와 mount frame을 exact Inspire Left deployment profile에 결속한다. 이름이나 6-DOF shape만으로 동일 hand라고 판단하지 않는다.</li>
 <li>기존 100개를 먼저 intrinsic·deployment·moving-task gate로 qualification한다. 해당 pose에서 통과 후보가 없을 때만 offline generator를 실행하며 online 생성 fallback은 두지 않는다.</li>
 <li>지원 pose와 unknown/non-stable holdout을 포함한 Isaac RGB campaign으로 comparable cost calibrator와 admission threshold를 검증한다.</li>
