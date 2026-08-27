@@ -59,9 +59,31 @@
 </ol>
 <p>FoundPose는 physical RGB initial pose 후보지만 매 frame tracker로 사용하지 않는다. 현재 source-closed physical candidate는 accuracy holdout을 통과하지 못했다. GoTrack은 두 카메라 topology에서 latency와 error를 새로 측정한 뒤 optional low-rate correction 또는 reacquisition backend로만 판단한다. Nominal 상태 전파는 object yaw가 변하지 않는 task 가정과 independent encoder를 사용하므로 GoTrack이 기본 control-state owner일 필요가 없다.</p>
 
+<h2>2026-08-27 phase-aware abort의 runtime 경계를 분리했다</h2>
+<p>r627의 stop blocker를 닫기 위해 기존 Isaac runner에 즉시 정지 boolean을 추가하는 방안부터 배제했다. 접촉 전, 접촉 commit, attached transport, release commit, contained 이후에는 안전한 취소 동작이 서로 다르다. 따라서 nominal full command의 모든 sample을 하나의 미래 abort latch와 사전 검증된 resident abort command에 연결하고, controller feedback에서 상수 시간으로 선택하는 방식을 구현했다. 변경은 <code>476240a</code>의 route selection과 <code>57d9a16</code>의 activation boundary 두 커밋으로 나누어 push했다.</p>
+<table class="table">
+<tr><th>발생한 문제</th><th>원인</th><th>해결과 결과</th></tr>
+<tr><td>Abort catalog가 있어도 runtime에서 어느 경로를 실행할지 결정할 수 없었음</td><td>계약과 unit fixture는 offline metadata까지만 다뤘고 controller progress, generation, freshness가 연결되지 않았음</td><td><code>greatest_reached_nominal_sample_index</code>를 immutable catalog index에 직접 매핑했다. stale feedback, lineage/state mismatch, progress regression, missed latch는 모두 protective stop 요구로 전환한다.</td></tr>
+<tr><td>Route를 선택해도 device와 controller가 실제 slot을 갖는지 증명할 수 없었음</td><td>slot ID와 upload event 문자열이 device residency 또는 controller ownership receipt를 의미하지 않음</td><td>startup capability, metadata-only activation request, deadline-bound receipt를 별도 계약으로 만들었다. 온라인 메시지에는 trajectory tensor를 넣지 않고 slot, CUDA event, digest, generation만 운반한다.</td></tr>
+<tr><td>Backend 호출 중 예외나 late acknowledgement 뒤 slot을 재사용할 위험</td><td>호출 실패가 controller switch 미실행을 보장하지 않음</td><td>backend 호출 이후 유효한 completion receipt가 없으면 <code>activation_uncertain</code>으로 격리한다. 다른 abort를 재시도하거나 allocation을 release하지 않는다.</td></tr>
+<tr><td>서버 private clone 인증 실패</td><td>RTX workstation에는 GitHub HTTPS credential이 없음</td><td>기존 dirty checkout을 보존하고 로컬 <code>57d9a16</code> Git bundle을 SSH stdin으로 전송해 <code>/home/hyunsu/.agile/projects/beltbench-57d9a16</code> clean checkout을 만들었다.</td></tr>
+</table>
+
+<h3>검증 결과와 해석</h3>
+<p>RTX 3090, driver 535.309.01, Python 3.10.20, NumPy 1.26.4, Torch 2.5.1+cu121 환경에서 관련 test 39개가 모두 통과했다. clean revision은 <code>57d9a16b41e2296bd9b2bc04c89d5df874debe05</code>다. 실제 control 주기와 분리된 startup 검증을 먼저 수행한 뒤, fake slot backend를 이용해 host-side runtime 경로 2,000회를 측정했다.</p>
+<table class="table">
+<tr><th>측정 범위</th><th>p50</th><th>p95</th><th>p99</th><th>최대</th></tr>
+<tr><td>Controller dispatch, 5,000회</td><td>56.1 µs</td><td>58.5 µs</td><td>60.7 µs</td><td>77.5 µs</td></tr>
+<tr><td>Activation request 준비, 5,000회</td><td>165.9 µs</td><td>176.1 µs</td><td>182.3 µs</td><td>212.5 µs</td></tr>
+<tr><td>Receipt 검증, 5,000회</td><td>147.6 µs</td><td>155.3 µs</td><td>159.1 µs</td><td>184.5 µs</td></tr>
+<tr><td>Isaac edge의 fake slot activation, 1,000회</td><td>158.3 µs</td><td>163.6 µs</td><td>175.5 µs</td><td>264.0 µs</td></tr>
+<tr><td>Preconstructed coordinator 종단, 2,000회</td><td>453.9 µs</td><td>464.4 µs</td><td>475.8 µs</td><td>572.6 µs</td></tr>
+</table>
+<div class="callout"><strong>해석 제한:</strong> 이 수치는 RTX host에서 계약, digest, lookup, fake backend receipt의 비용을 측정한 것이다. 실제 abort tensor upload, cuRobo full-task collision, CUDA event wait, Isaac articulation command switch, controller tracking, protective stop은 실행하지 않았다. 따라서 host-side 모듈 경계가 60 Hz loop에 들어갈 여유가 있다는 예비 결과일 뿐, r627의 <code>prevalidated_controller_stop_route_not_installed</code> blocker를 닫지 않는다.</div>
+
 <h2>다음 구현 순서</h2>
 <ol>
-<li>Nominal command와 동일한 source·assembly·collision lineage를 가진 phase-aware stop route를 controller lease에 포함하고 fault injection으로 실제 전환을 검증한다.</li>
+<li>테스트 hold fixture가 아닌 독립 계획·충돌·동역학 검증된 abort command를 materialize하고, 실제 CUDA catalog upload와 Isaac slot-controller backend를 연결해 fault injection으로 전환을 검증한다.</li>
 <li>r627의 approach 구간을 재현해 command preparation과 CPU PhysX substep 비용을 분리 최적화하고, 동일 pacing policy로 여러 독립 run을 통과시킨다.</li>
 <li>Resident cuRobo collision gate를 exact remaining arm/hand/object command에 연결하고, HPP-FCL mesh oracle holdout에서 false accept 0과 target deadline을 동시에 확인한다.</li>
 <li>물리 RGB rig가 준비되면 native frame만으로 synchronization, clock mapping, undistortion, segmentation과 planar pose sealed holdout을 수행한다.</li>
