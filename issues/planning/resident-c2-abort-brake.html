@@ -61,6 +61,17 @@
 <h2>실제 r627 source audit</h2>
 <p>r627 runtime admission이 참조한 independent validation digest는 r223 계열의 동일 파일로 확인됐다. 이 파일은 1,265개 full-frame sampled collision을 통과했지만 continuous swept/path-tube 증거는 아니다. 더구나 r621 splice generation report에는 <code>independent_collision_validated=false</code>가 명시되어 있다. 따라서 과거 시뮬레이션 성공을 최신 resident full-task lease로 승격하지 않는다.</p>
 
+<h2>2026-08-27 후속: direct-stop 전수 검사를 future-latch coverage와 구분</h2>
+<p>r627의 60 Hz 상태를 모두 독립 C2 brake 시작점으로 시험하니 precontact는 전부 가능했지만 attached 일부는 1초를 넘겼고 contained는 release command가 hand lower bound에 있어 position margin 0으로 전부 거절됐다. 처음에는 전체 nominal suffix를 더 느리게 retime하는 방안을 검토했으나, 이는 현재 protocol의 <code>continue_nominal_to_future_abort_latch</code> 의미를 무시하고 정상 실행 시간을 불필요하게 늘린다.</p>
+<p>선택한 방향은 각 tick에서 즉시 새 brake를 만드는 것이 아니다. Reversible precontact에는 제한된 간격의 feasible latch를 두고, contact와 release 같은 irreversible 구간은 기존 certified command를 attached 또는 contained latch까지 완료한 뒤 정지한다. 모든 nominal sample은 phase-compatible 미래 latch 하나에 최대 continuation 시간 안으로 매핑되고, stale progress나 latch 누락은 resident route 선택이 아니라 독립 protective stop으로 처리한다.</p>
+
+<h2>Exact produced-command splice 누락</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결</th><th>결과</th></tr>
+<tr><td>Template route와 online-produced prefix가 각각 검증돼도 전환 경계가 다를 수 있음</td><td>Abort command는 template latch에 결속됐고 full-task admission은 exact output sample과 route 첫 sample을 직접 비교하지 않았음</td><td><a href="https://github.com/gohyunsu/beltbench/commit/9d35979"><code>9d35979</code></a>에서 모든 route의 arm·hand <code>q/qd/qdd</code> 시작값을 produced output의 declared latch와 exact 비교</td><td>Prefix 내부의 stale template route는 collision 검증 전에 fail-closed</td></tr>
+</table>
+<p>Resident command, abort braking, abort catalog와 full-task validation 집중 회귀 27/27이 통과했다. 이 검사는 collision이나 hardware authority를 추가하지 않으며, 독립 validator가 검사할 입력의 C2 source identity만 보장한다.</p>
+
 <h2>남은 경계와 다음 단계</h2>
 <ol>
 <li>r627 exact event command, motion limits, contact, robot/object/workcell과 collision semantics를 최신 resident template/request 계보로 source-close한다.</li>
