@@ -16,7 +16,7 @@
 <h1>Object ID만 주어진 이벤트에서 stable pose, yaw와 위치를 함께 추정해 resident grasp로 라우팅한다.</h1>
 <p class="lede">기존 demo는 <code>pepsi_light/upside_down</code>처럼 stable-pose ID가 startup과 event에 이미 주어진다고 가정했다. 목표 작업에서는 물체 종류만 주어지고, 물체는 belt 위의 임의의 물리적 stable pose와 초기 yaw·위치로 들어온다. 따라서 pose를 입력으로 받는 경계를 폐기하고 RGB 관측이 pose class와 평면 상태를 함께 결정하도록 바꿨다.</p>
 
-<div class="callout"><strong>현재 판정:</strong> revision <a href="https://github.com/gohyunsu/beltbench/commit/4a36f42"><code>4a36f42</code></a>에서 one-inference multi-pose RGB acquisition, open-set admission, immutable track latch와 pose별 resident planner routing을 구현했다. 구조 회귀 1,687개는 통과했지만 실제 Pepsi Light stable-pose set, comparable cost calibrator, Inspire Left grasp atlas와 multi-pose Isaac 영상은 아직 검증 전이다.</div>
+<div class="callout"><strong>현재 판정:</strong> revision <a href="https://github.com/gohyunsu/beltbench/commit/91505f5"><code>91505f5</code></a>에서 global known/open-set qualification, source-closed affine calibrator, complete-pose deployment compiler와 path-free resident load를 추가했다. 전체 회귀 1,703개는 통과했지만 실제 Pepsi Light 3-pose qualification, Inspire Left grasp atlas와 multi-pose Isaac 영상은 아직 검증 전이다.</div>
 
 <h2>발생한 문제와 영향</h2>
 <table class="table">
@@ -25,6 +25,9 @@
 <tr><td>Pose별로 FoundPose를 각각 호출할 수 있었다.</td><td>단일-pose backend를 그대로 여러 번 감싸는 단순 확장안이었다.</td><td>GPU feature inference가 pose 수만큼 중복돼 deadline과 확장성을 해친다.</td></tr>
 <tr><td>Raw solver RMSE로 pose를 고를 가능성이 있었다.</td><td>각 pose의 template 가시성·점 수·symmetry가 달라 절대 RMSE를 직접 비교할 수 없다.</td><td>낮아 보이는 residual이 실제 pose posterior를 의미하지 않아 confident wrong pick을 만들 수 있다.</td></tr>
 <tr><td>공유 NAS에서 event마다 grasp를 찾는 해석이 가능했다.</td><td>Provider episode와 grasp catalog가 이미 존재한다.</td><td>NFS traversal, parse, hash와 semantic resolution이 제어 critical path에 들어가 latency와 재현성을 깨뜨린다.</td></tr>
+<tr><td>예시 inference deadline이 80 ms였다.</td><td>Warm FoundPose 2-view 측정치 약 0.28~0.31 s보다 작은 목표값을 실측 없이 사용했다.</td><td>실행 불가능한 정책을 통과시키거나 정상 event를 deadline miss로 오판한다.</td></tr>
+<tr><td>RGB-only fit이 support residual 0을 기록했다.</td><td>Support-plane constraint와 독립 관측 metric을 같은 필드로 표현했다.</td><td>측정하지 않은 깊이 일치가 관측된 것처럼 보일 수 있었다.</td></tr>
+<tr><td>Bundle 밖 reference를 hash 후 거부할 수 있었다.</td><td>Digest verifier 다음에 path-containment 검사를 수행했다.</td><td>실패 폐쇄하더라도 startup에서 NAS 파일을 한 번 열 가능성이 남았다.</td></tr>
 </table>
 
 <h2>채택한 데이터 수명주기</h2>
@@ -32,7 +35,7 @@
 <tr><th>시점</th><th>수행 작업</th><th>실행 권한</th></tr>
 <tr><td>Offline onboarding</td><td>공유 원본을 read-only로 조사하고 object identity, mesh frame·scale, provider stable pose, hand와 outcome 의미를 해석한다. 지원할 각 stable pose의 grasp를 transfer 후 검증하거나 없으면 생성한다.</td><td>Provider evidence와 후보 생성만 허용한다.</td></tr>
 <tr><td>Offline qualification</td><td>Stable pose별 RGB holdout, open-set rejection, yaw symmetry, hand-object contact, robot IK·collision, moving intercept와 release를 exact context에서 검증한다.</td><td>통과한 pose/grasp/path만 deployment 후보가 된다.</td></tr>
-<tr><td>Bundle compile</td><td>지원 pose set, calibrator, object-relative grasp atlas, planner artifact와 모든 digest를 content-addressed 최소 bundle로 만든다.</td><td>선택된 bundle만 RTX local NVMe로 stage한다.</td></tr>
+<tr><td>Bundle compile</td><td>지원 pose set, calibrator, object-relative grasp atlas, planner artifact와 모든 digest를 content-addressed 최소 bundle로 만든다. 모든 중첩 reference는 hash 전에 local root containment를 통과해야 한다.</td><td>선택된 bundle만 RTX local NVMe로 stage한다.</td></tr>
 <tr><td>Startup</td><td>Bundle을 한 번 검증하고 모든 pose별 atlas와 planner를 immutable resident map으로 올린다.</td><td>Startup 이후 NAS와 파일 경로를 닫는다.</td></tr>
 <tr><td>Online event</td><td>RGB generation에서 stable pose, yaw와 belt-plane 위치를 얻고 pose를 latch한 뒤 O(1) resident routing과 encoder-only translation tracking을 수행한다.</td><td>Latched pose의 검증된 planner만 사용할 수 있다.</td></tr>
 </table>
@@ -53,19 +56,21 @@
 
 <h2>공유 데이터에 대한 현재 증거</h2>
 <p>현재 catalog에서 source-verified된 Pepsi provider record는 세 개이며 모두 provider pose <code>008</code>, Allegro hand 조건이다. 성공 2개와 실패 1개는 유용한 제안 근거지만 <code>pepsi_light</code> mesh identity, BeltBench stable-pose 의미와 Inspire Left command가 아직 해소되지 않았다. 따라서 공유 데이터는 처음부터 다시 만들지 않기 위한 적극적 입력이지만, 지금 당장 runtime에서 선택할 수 있는 완성된 multi-pose grasp database는 아니다.</p>
+<p>별도로 <code>object_processing</code> commit <code>9aaa4ce</code>의 <code>pepsi_light</code> gallery에는 MuJoCo settling으로 얻은 후보 3개가 있다. 형상상 side 1개와 양쪽 end 2개이며, 기존 upside-down fixture의 support height는 세 번째 후보와 일치한다. 그러나 gallery JSON은 source mesh digest와 settling trial 원본을 함께 봉인하지 않으므로 이 기록만으로 <code>status=measured</code>를 부여하지 않는다. Canonical mesh digest를 결속하고 Isaac settling 재검증을 통과한 뒤에만 deployment pose로 승격한다.</p>
 
 <h2>구현과 검증 결과</h2>
 <table class="table">
 <tr><th>Revision</th><th>변경</th><th>검증 경계</th></tr>
 <tr><td><a href="https://github.com/gohyunsu/beltbench/commit/a9e7c92"><code>a9e7c92</code></a></td><td>Source-closed multi-pose deployment, known+unknown hypothesis, stable-pose admission/latch와 path-free resident index</td><td>정책·계약·fail-closed routing</td></tr>
 <tr><td><a href="https://github.com/gohyunsu/beltbench/commit/4a36f42"><code>4a36f42</code></a></td><td>One-inference backend, bounded parallel solve, RGB pose/track builder와 latched planner router</td><td>관련 회귀 72개 통과, conditional skip 5개</td></tr>
-<tr><td><code>4a36f42</code> full suite</td><td>전체 BeltBench 회귀</td><td>1,687개 통과, conditional skip 28개, 156.794 s</td></tr>
+<tr><td><a href="https://github.com/gohyunsu/beltbench/commit/91505f5"><code>91505f5</code></a></td><td>Sealed global qualification, exact calibrator binding, complete measured-pose compiler, local-root confined transitive verification</td><td>Provisional·partial·open-set failure와 lexical·symlink escape를 모두 fail-closed</td></tr>
+<tr><td><code>91505f5</code> full suite</td><td>전체 BeltBench 회귀</td><td>1,703개 통과, conditional skip 28개, 206.695 s</td></tr>
 </table>
 <p>이 검증은 인터페이스 ancestry, 상태 전이, bounded scheduling과 실패 폐쇄를 확인한다. 실제 모델 정확도, open-set false accept rate, pose별 latency나 moving grasp 성공률을 검증한 결과는 아니다.</p>
 
 <h2>현재 blocker와 다음 작업</h2>
 <ol>
-<li>Pepsi Light mesh에서 실제 stable-pose set을 열거하고 provider pose <code>008</code>을 포함한 source-to-canonical frame resolution을 만든다.</li>
+<li><code>object_processing</code>의 Pepsi Light 후보 3개를 canonical mesh와 settling evidence에 결속하고, provider pose <code>008</code>을 포함한 source-to-canonical frame resolution을 만든다.</li>
 <li>지원 pose와 unknown/non-stable holdout을 포함한 Isaac RGB campaign으로 comparable cost calibrator와 admission threshold를 검증한다.</li>
 <li>각 stable pose에 대해 Inspire Left grasp를 기존 evidence에서 승격하거나 offline 생성한 뒤 intrinsic·deployment·moving-task gate를 통과시킨다.</li>
 <li>검증된 최소 deployment bundle을 local NVMe에 stage하고 startup resident load 시간을 측정한다.</li>
