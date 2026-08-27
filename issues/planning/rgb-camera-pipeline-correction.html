@@ -16,7 +16,7 @@
 <h1>깊이를 대체하는 fallback이 아니라, RGB-only 관측 계약과 검증 순서를 다시 닫는다.</h1>
 <p class="lede">실제 장비의 카메라가 RGB라는 사실을 기준으로 전체 D1 경계를 다시 감사했다. Metric 위치는 depth image가 아니라 알려진 CAD scale, stable tabletop pose, camera calibration과 belt plane에서 얻고, 초기 pose 이후의 이동은 encoder가 전파한다. Isaac RGB background mask와 FoundPose를 바로 연결한 방법은 개발 분할에서 실패했으므로 threshold를 느슨하게 하지 않고, qualified YOLOE mask와 source-matched RGB yaw backend로 simulation diagnostic을 다시 구성했다.</p>
 
-<div class="callout"><strong>현재 판정, 2026-08-27:</strong> physical target은 synchronized calibrated RGB이고 active path는 raw modality <code>["rgb"]</code>만 허용한다. <code>9600687</code>에서 exact live-shaped RGB pose backend warmup을 추가하고, <code>0f36e57</code>에서 PhysX convex-hull cooking 품질을 source policy에 결박했다. 이 exact source로 admission <code>r567-r570</code>을 다시 발급한 RTX 3090 actual-time <code>r571</code>은 RGB pose가 selection을 구동한 뒤 contact, guarded attachment, release, terminal source-hull containment와 <code>complete</code> stage까지 기능적으로 완주했다. 그러나 RTF 0.999998은 종료 시 catch-up 결과일 뿐이다. Pacing gate는 1-period late 699/1,625회와 p95 wall lateness 283.687 ms로 실패했고, 새 collision cooking의 drop 결과도 아직 1회뿐이다. 따라서 <code>integrated_simulation_diagnostic_complete=true</code>이지만 <code>integrated_simulation_ready=false</code>, <code>professor_demo_ready=false</code>, physical RGB와 hardware authority false를 유지한다.</div>
+<div class="callout"><strong>현재 판정, 2026-08-27:</strong> physical target은 synchronized calibrated RGB이고 active path는 raw modality <code>["rgb"]</code>만 허용한다. <code>855aa31</code>에서 RGB event를 비중복 topology v2로 분리하고 <code>bd73241</code>에서 실제 PhysX device·Fabric readback을 닫았다. 이 exact source의 RTX 3090 <code>r607</code>은 15개 canonical stage의 deadline, 60 Hz global pacing, RGB-driven selection, contact, guarded attachment, release, terminal containment와 407-frame 영상을 모두 통과했다. 따라서 declared RGB-only integrated simulation과 soft-real-time pipeline은 ready다. 그러나 사전 검증 stop route와 admission 이후 수정되지 않는 hand target이 없고 physical RGB rig도 검증하지 않았으므로 <code>professor_demo_ready=false</code>, physical RGB와 hardware authority false를 유지한다.</div>
 
 <h2>고정한 실제 시스템 계약</h2>
 <pre>synchronized raw RGB cameras
@@ -201,6 +201,27 @@
 
 <div class="callout"><strong>r571 영상과 비공개 증거:</strong> 서버는 <code>/home/hyunsu/.agile/projects/runs/isaac-rgb-event-0f36e57-convex255-pacing-r571/trial</code>, 로컬은 BeltBench checkout의 <code>evidence/isaac-rgb-event-0f36e57-convex255-r571</code>에 MP4, report와 event trace를 보존했다. 영상은 1280×720, 15 FPS, 407 frames이며 SHA-256은 <code>45b8acbbcb84a732a4e34067f408d5ed75f400973bfbc3e3651a2df6c3950e4c</code>다. Report는 <code>d885e114f6964be502ac3e00a35a9e3be25fc58c56972c8eaf052128e3ba5d96</code>, trace는 <code>1baa6b4886ae6ad77de980efc253baf7ff59d5dd3c7befbb41f300154a7b0906</code>이며 서버 원본과 일치한다. Public asset으로 승격하지 않고 교수님께는 기능 완주 diagnostic으로만 보여준다.</div>
 
+<h2>2026-08-27: RGB stage 경계와 실제시간 pacing을 다시 닫음</h2>
+<table><thead><tr><th>단계</th><th>발생한 문제와 원인</th><th>조치와 결과</th></tr></thead><tbody>
+<tr><td><code>r594 @ e240408</code></td><td>Raw RGB capture/submit은 4.510 ms였지만 segmentation submit-to-result 39.297 ms를 25 ms sensor-ingress stage로 잘못 표시했다. 비동기 worker의 submit, polling, child compute와 transport 경계가 한 이름에 섞여 있었다.</td><td>실제 RGB event는 100.308 ms에 selection까지 도달하고 grasp lifecycle도 수행했지만 timing profile, terminal containment와 CPU pacing 실패를 보존했다. 수치를 다른 stage로 옮겨 성공 처리하지 않았다.</td></tr>
+<tr><td><a href="https://github.com/gohyunsu/beltbench/commit/855aa314bcd2f08b9e498db31ed4cb1ba05af91a"><code>855aa31</code></a></td><td>RGB-D 식의 단일 perception 항목으로는 실제 physical RGB 배포 시 camera ingress, GPU segmentation, pose process, planar solver 중 병목을 구분할 수 없었다.</td><td><code>sensor_ingress → rgb_segmentation → rgb_pose_hypothesis → planar_pose_fit → acquisition_gate</code>로 비중복 분리했다. Event clock은 raw capture 전에 시작하고 capacity-one worker, generation·timestamp·calibration ancestry와 250 ms 전체 budget을 유지한다. Depth와 pseudo-depth fallback은 없다.</td></tr>
+<tr><td><a href="https://github.com/gohyunsu/beltbench/commit/bd73241c9cfaa98e4921e22f96e4aecf9181c5ab"><code>bd73241</code></a></td><td>Isaac 4.5의 <code>PhysicsContext.use_fabric</code> property가 잘못된 classmethod signature 때문에 <code>TypeError</code>를 냈다. 요청한 GPU 값을 관찰값으로 추정하면 timing evidence가 거짓이 된다.</td><td>Kit extension manager에서 <code>omni.physx.fabric</code> 활성 상태를 직접 읽고 requested/observed device, GPU dynamics와 broadphase를 함께 fail-closed한다. GPU smoke는 <code>cuda:0</code>, GPU broadphase/dynamics, Fabric true를 확인했다.</td></tr>
+<tr><td><code>r603-r606</code></td><td>r603 full GPU articulation은 NVIDIA 535.53.01 driver와 Isaac-bundled PyTorch CUDA 초기화가 맞지 않아 영상 전에 실패했다. r604의 CPU 4-substep은 초기 hand speed 0.114892 rad/s, r606의 6-substep은 0.051278 rad/s로 0.05 rad/s settle 한계를 넘었다. r605는 output directory를 미리 만든 operator error였다.</td><td>Driver 검증이나 settle gate를 비활성화하지 않았다. 실패 evidence를 각각 보존하고 7-substep을 새 admission으로 시험했다.</td></tr>
+</tbody></table>
+
+<h2>r607 topology-v2 actual-time 결과</h2>
+<table><thead><tr><th>항목</th><th>직접 측정한 결과</th><th>판정</th></tr></thead><tbody>
+<tr><td>RGB 관측 계약</td><td>두 camera raw modality는 <code>["rgb"]</code>, derived product는 <code>object_mask</code>, depth request/use는 false다. YOLOE는 CUDA FP16으로 두 view를 한 batch 처리했고 child inference 16.687 ms였다.</td><td>Simulation RGB-only causal ingress 통과. Physical camera authority는 아님.</td></tr>
+<tr><td>Canonical D1 timing</td><td>Ingress 2.537 ms, segmentation submit-to-result 31.806 ms, pose hypothesis와 process transport 62.877 ms, planar fit 1.483 ms, acquisition gate 0.161 ms다. Acquisition-to-selection은 100.510 ms였다.</td><td>15/15 canonical stage 측정, deadline miss 0, complete soft-real-time pipeline true.</td></tr>
+<tr><td>60 Hz pacing</td><td>27.083333 s simulation / 27.083407 s wall, RTF 0.999997. Physics interval p95 14.002 ms, 1-period late 7/1,625회, 최대 연속 2회이며 pacing failure code는 없다.</td><td>7 CPU substep, 420 Hz physics에서 현재 pacing policy 통과. Hard real-time claim은 하지 않음.</td></tr>
+<tr><td>Pose evaluator</td><td>Position error 0.114 mm, yaw error 0.020908 rad이고 simulator truth는 selector에 입력되지 않았다.</td><td>Exact admitted simulation rig 범위에서 통과.</td></tr>
+<tr><td>Lifecycle</td><td>Contact, guarded retention, attachment, release, source-hull terminal containment, authoritative trace와 <code>complete</code> stage가 모두 true다.</td><td><code>integrated_simulation_ready=true</code>, <code>declared_scope_ready=true</code>.</td></tr>
+<tr><td>영상</td><td>1280×720, 15 FPS, 407/407 encoded, drop/error 0, SHA-256 <code>70d6bb4b3e6ec76794b057cb534c5de48e4d0704fb137d1213f3b07b19a75b72</code>.</td><td>교수님께 actual-time integrated simulation diagnostic으로 재생 가능.</td></tr>
+<tr><td>남은 blocker</td><td><code>prevalidated_controller_stop_route_not_installed</code>, <code>hand_targets_modified_after_admission</code>, physical RGB native qualification 부재.</td><td><code>professor_demo_ready=false</code>, <code>physical_rgb_deployment_ready=false</code>, hardware authority false.</td></tr>
+</tbody></table>
+
+<div class="callout"><strong>r607 비공개 증거:</strong> 서버는 <code>/home/hyunsu/.agile/projects/runs/isaac-rgb-event-bd73241-cpu7-r607/trial</code>, 로컬은 BeltBench checkout의 <code>evidence/isaac-rgb-event-bd73241-cpu7-r607</code>에 MP4, report, runtime trace와 guarded-retention report를 보존했다. MP4 SHA-256은 <code>70d6bb4b3e6ec76794b057cb534c5de48e4d0704fb137d1213f3b07b19a75b72</code>, report는 <code>04727be418e76aee591171a419723b529d26cff03a7bac5ea593a5e7144d0de5</code>, trace는 <code>4e9a80dc2c573c3ca0e8db4eb9626828be788f66c951fd0cf8010d003dc0ad89</code>이며 서버 원본과 일치한다. Report가 professor-ready false이므로 public asset으로 올리지 않는다.</div>
+
 <h2>RTX 3090 개발 결과</h2>
 <table><thead><tr><th>Run</th><th>직접 관찰</th><th>판정</th></tr></thead><tbody>
 <tr><td><code>r393</code></td><td>V3 two-view rig, reference 72개와 query 120개, raw modality는 RGB뿐이고 depth request/use는 false다. Static-background segmentation p95는 7.397 ms였다. Simulation reference matcher는 development 11/24만 수락했고 accepted yaw p95가 0.072325 rad였다.</td><td>실패. Cast shadow가 Pepsi body와 하나의 connected component로 합쳐졌다. Holdout temporal index 1-4는 열지 않았다.</td></tr>
@@ -219,8 +240,8 @@
 <li><strong>완료:</strong> YOLOE learned mask, source-matched simulation yaw, exact weight/source admission과 actual-time D1-D3 lifecycle을 연결했다.</li>
 <li><strong>완료:</strong> One-shot r489 실패를 보존하고 independent off-grid-yaw/four-position r507에서 bounded fresh-frame simulation planar pose를 48/48 event로 qualification했다.</li>
 <li><strong>완료:</strong> r507 report를 source-closed event admission에 결박하고 D2/D3 gate를 바꾸지 않은 r519 actual-time integrated simulation을 재실행했다.</li>
-<li><strong>완료:</strong> Current-source RGB backend cold path를 exact-input warmup으로 드러내고 PhysX convex cooking 품질을 source policy에 결박한 r571 기능 완주 영상을 확보했다.</li>
-<li><strong>다음:</strong> r571 pacing phase별 wall lateness와 physics interval을 profile해 실제 병목만 줄인다. Control/physics rate, deadline, gate를 낮춰 통과시키지 않는다.</li>
+<li><strong>완료:</strong> Current-source RGB backend cold path와 PhysX convex cooking 품질을 source policy에 결박하고 r571 기능 완주 영상을 확보했다.</li>
+<li><strong>완료:</strong> RGB topology v2로 비동기 stage를 분리하고 r607에서 15/15 deadline, global pacing와 전체 lifecycle을 함께 통과했다.</li>
 <li><strong>다음:</strong> Physical RGB rig에서 explicit RGB8 channel check, hardware synchronization, frame-mid-exposure/readout logging, in-memory rectification, blur/occlusion, segmentation과 x/y/yaw를 별도 native holdout으로 qualification한다.</li>
 <li><strong>다음:</strong> Camera clock mapping uncertainty와 encoder alignment horizon을 실제 trigger/PTP 로그에서 측정하고, 이 bound가 selector slack과 capture-to-decision budget 안에 드는지 검증한다.</li>
 <li><strong>다음:</strong> CPU startup certificate만 사용하는 현재 collision 경계를 resident GPU collision gate와 비교 qualification하고, 실제 decision latency 감소가 있을 때만 승격한다.</li>
@@ -253,9 +274,13 @@
 <li>r565-r566은 warm live RGB pose를 통과했지만 strict terminal source-hull containment를 실패했다. 이 negative evidence를 유지하고 margin이나 deadline을 완화하지 않았다.</li>
 <li><code>0f36e57</code>: PhysX convex cooking vertex limit의 schema, USD authoring과 readback fail-closure를 추가했다. Focused 28개, local 전체 <code>Ran 1,592 tests</code>, OK, 27개 skipped. RTX exact checkout 전체 <code>Ran 1,592 tests</code>, OK, 15개 skipped.</li>
 <li>r567-r570에서 current-source admission을 전부 다시 만들었고 r571은 RGB-driven measured lifecycle과 terminal containment를 기능적으로 완주했다. 동시에 pacing assessment는 명시적으로 실패했으며 새 drop 결과는 1회뿐이다.</li>
+<li><code>855aa31</code>: RGB runtime topology v2와 CPU/GPU physics 선택·readback을 추가했다. Local 전체 1,610개 통과, 28개 skipped. RTX exact checkout 전체 1,610개 통과, 15개 skipped.</li>
+<li><code>bd73241</code>: Isaac 4.5 Fabric readback을 Kit extension state로 교정했다. RTX focused 15개와 GPU PhysX readback smoke를 통과했다.</li>
+<li>r599-r602는 source command, guarded splice, event와 RGB perception admission을 <code>bd73241</code>에 다시 결박했다. r603은 driver/PyTorch CUDA, r604와 r606은 unchanged settle gate, r605는 immutable output 경로 검사에서 각각 실패했다.</li>
+<li>r607은 15/15 stage deadline과 60 Hz pacing, RGB-driven selection, contact, attachment, release, terminal containment를 통과했다. 동시에 stop route와 immutable hand-target provenance, physical RGB와 hardware authority는 계속 false다.</li>
 </ul>
 
-<div class="callout"><strong>교수님께 설명할 현재 상태:</strong> “물리 카메라가 RGB이므로 observed depth 기반 위치 추정은 제거했습니다. 두 synchronized RGB의 learned segmentation, known belt plane 기반 x/y와 source-matched yaw를 qualification과 source admission으로 묶고, RTX 3090에서 그 결과가 selection부터 measured contact, attachment, release, 상자 containment와 complete stage까지 구동하는 current-source 영상을 확보했습니다. 다만 이것은 기능적으로 완주한 simulation diagnostic 한 회입니다. 전체 RTF는 1에 가깝지만 tick deadline pacing은 실패했고, startup warmup 변동, drop 반복성, stop route, immutable admitted hand target과 physical RGB rig qualification도 남아 있습니다. 따라서 professor-ready나 hardware-ready라고 주장하지 않습니다.”</div>
+<div class="callout"><strong>교수님께 설명할 현재 상태:</strong> “물리 카메라가 RGB이므로 observed depth 기반 위치 추정과 depth fallback을 제거했습니다. 두 synchronized RGB의 CUDA YOLOE segmentation, known belt plane 기반 x/y와 source-matched yaw를 비동기 모듈로 분리했고, RTX 3090에서 이 결과가 selection부터 measured contact, attachment, release와 상자 containment까지 구동하는 60 Hz actual-time 영상을 확보했습니다. 이번 r607은 15개 stage deadline과 global pacing도 통과했습니다. 다만 physical RGB camera 자체의 calibration·동기화·lighting/blur/occlusion과 controller stop route, admission 이후 수정되지 않는 hand command는 아직 검증하지 않았으므로 professor-ready나 hardware-ready라고 주장하지 않습니다.”</div>
 
 <p><a href="isaac-guarded-contact-actual-time-r153.html">ISSUE-088 actual-time RGB integration</a> · <a href="realtime-perception-single-gpu-plan.html">ISSUE-074 single-GPU plan</a> · <a href="planar-yaw-backend-promotion.html">ISSUE-085 pose promotion</a></p>
 </main>
