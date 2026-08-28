@@ -12,7 +12,7 @@
 <nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
 </div></header>
 <main class="wrap article">
-<div class="eyebrow">ISSUE-096 · 2026-08-28 fifth update · resident exact-command boundary</div>
+<div class="eyebrow">ISSUE-096 · 2026-08-28 sixth update · D2 admission to exact command</div>
 <h1>Object ID만 주어진 이벤트에서 stable pose, yaw와 위치를 함께 추정해 resident grasp로 라우팅한다.</h1>
 <p class="lede">기존 demo는 <code>pepsi_light/upside_down</code>처럼 stable-pose ID가 startup과 event에 이미 주어진다고 가정했다. 목표 작업에서는 물체 종류만 주어지고, 물체는 belt 위의 임의의 물리적 stable pose와 초기 yaw·위치로 들어온다. 따라서 pose를 입력으로 받는 경계를 폐기하고 RGB 관측이 pose class와 평면 상태를 함께 결정하도록 바꿨다.</p>
 
@@ -23,6 +23,8 @@
 <div class="callout"><strong>2026-08-28 네 번째 업데이트:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/1d43501"><code>1d43501</code></a>에서 object-only D1→D2 composition root를 추가했다. Event API는 stable-pose ID, NAS root와 online grasp provider를 받지 않는다. 하나의 source-closed resident deployment와 하나의 0.95 s provisional event budget으로 RGB multi-pose acquisition, fresh-generation confirmation, encoder track과 complete pose-specific selector map을 함께 생성한다. 실제 FoundPose backend fixture는 두 RGB generation을 소비한 뒤 <code>side</code> selector만 호출했고, RTX 3090 전체 회귀는 1,774 passed, 15 skipped, 92 subtests passed였다. 이 결과는 D1→D2 구조 검증이며 RGB 정확도, qualified Pepsi deployment, cuRobo command lease 또는 D3 실행 권한은 증명하지 않는다.</div>
 
 <div class="callout"><strong>2026-08-28 다섯 번째 업데이트:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/49404af"><code>49404af</code></a>부터 <a href="https://github.com/gohyunsu/beltbench/commit/bececf2"><code>bececf2</code></a>까지, 이미 exact request와 object lifecycle이 준비됐다는 경계 아래 full-command producer, preallocated producer slot, complete abort catalog, independent validator result와 validated lease를 하나의 deadline으로 조립했다. 모든 reject·deadline·identity mismatch는 정확한 slot을 영구 quarantine한다. RTX 3090에서 CUDA-only 테스트 2개와 전체 회귀 1,779 passed, 17 skipped, 92 subtests를 통과했다. 33×10 contract fixture의 30회 CUDA publication은 enqueue p99 4.235 ms, synchronized completion p99 4.302 ms였고 77.112 ms allocation·warmup은 startup으로 분리했다. 이는 작은 command의 CPU 검증·pinned staging·H2D·CUDA event publication 증거일 뿐 cuRobo planning, collision, 실제 xArm/Inspire command 크기나 end-to-end latency가 아니다. D2 admission→exact request 변환과 concrete full-task validator는 아직 없다.</div>
+
+<div class="callout"><strong>2026-08-28 여섯 번째 업데이트:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/147614c"><code>147614c</code></a>에서 <code>PathFamilyWarmStartAdmission</code> 이후의 단절을 닫았다. <code>ResidentFullTaskAdmissionRuntime</code>은 admission과 startup-resident route를 시작 시 digest로 snapshot하고 기존 commit deadline을 교체하지 않은 채 request, moving contact, object lifecycle과 full-task inference를 순서대로 실행한다. Event 중 source 변조는 publication 전에 거부하고, publication 후 admission drift나 compute/validation budget 초과는 정확한 slot을 quarantine한다. 관련 29개 테스트와 RTX native 전체 회귀 1,784 passed, 17 skipped, 92 subtests가 통과했다. 그러나 object-only multi-pose selector가 robot-state snapshot을 포함한 admission을 실제로 발행하는 production adapter와 concrete cuRobo validator는 아직 없다.</div>
 
 <h2>발생한 문제와 영향</h2>
 <table class="table">
@@ -39,6 +41,8 @@
 <tr><td>D1 pipeline, causal runtime과 D2 router를 독립적으로 조립할 수 있었다.</td><td>각 구성요소의 단위 계약은 있었지만 동일 resident deployment와 동일 event budget을 강제하는 composition root가 없었다.</td><td>서로 다른 pose registry, backend revision, confirmation attempt 수 또는 deadline을 사용해도 개별 테스트는 통과할 수 있었다.</td></tr>
 <tr><td>Exact command producer와 validator 사이에 실제 device publication 경계가 없었다.</td><td>기존 계약은 slot 문자열과 fixture outcome만으로도 조립할 수 있었고, 변경된 command가 어떤 CUDA storage와 completion event에 들어갔는지 증명하지 않았다.</td><td>Validator가 producer와 다른 command를 보거나 host copy·allocation을 deadline 안에 숨겨도 구조 테스트가 발견하지 못한다.</td></tr>
 <tr><td>CUDA-only 테스트가 perception dependency 때문에 시작 전에 실패했다.</td><td><code>beltbench.runtime</code> package의 eager import가 OpenCV를 요구했고, 첫 fixture는 Viser·perception까지 transitive import했다. 고정 cuRobo 환경에는 <code>cv2</code>가 없었다.</td><td>Slot backend 자체와 무관한 패키지 결합 때문에 최소 GPU 환경에서 독립 qualification이 불가능했다.</td></tr>
+<tr><td>Request와 lifecycle 준비 시간이 full-task deadline 밖에 남아 있었다.</td><td>기존 inference runtime은 이미 조립된 두 객체만 받고 admission의 compute·validation budget을 알지 못했다.</td><td>D2 이후 source resolution·contact/lifecycle 생성 지연을 제외한 채 selection-to-lease가 실시간이라고 보고할 수 있었다.</td></tr>
+<tr><td>첫 RTX 전체 회귀가 collection 113건에서 실패했다.</td><td>Test path만 넘기고 실행 checkout과 import root를 고정하지 않아 이전 설치본이 import됐다.</td><td>코드 결함처럼 보이는 stale-package 오류였다. 실행 checkout과 import root를 명시한 재실행에서 전체 회귀가 통과했다.</td></tr>
 </table>
 
 <h2>최신 AutoDex·ParaDex 구현에서 채택한 범위</h2>
@@ -119,6 +123,7 @@
 <tr><td><a href="https://github.com/gohyunsu/beltbench/commit/49404af"><code>49404af</code></a>–<a href="https://github.com/gohyunsu/beltbench/commit/fd6f11a"><code>fd6f11a</code></a></td><td>Exact full-command producer, abort-route resolver, independent validator와 validated lease를 single-flight·single-deadline runtime으로 조립하고 stage evidence를 별도 모듈로 분리</td><td>성공, validator reject, deadline, backend alias와 receipt tamper를 모두 검증하며 실패 시 producer slot quarantine</td></tr>
 <tr><td><a href="https://github.com/gohyunsu/beltbench/commit/3fab9d9"><code>3fab9d9</code></a>–<a href="https://github.com/gohyunsu/beltbench/commit/dde1f0a"><code>dde1f0a</code></a></td><td>Preallocated CUDA command slot을 추가하고 pure contract package로 port를 이동했으며 CUDA fixture를 planning/Viser/perception import에서 분리</td><td>실패 원인이던 <code>cv2</code> transitive dependency를 제거하고 pinned host staging, device tensor, CUDA event와 permanent quarantine를 독립 검증</td></tr>
 <tr><td><a href="https://github.com/gohyunsu/beltbench/commit/bececf2"><code>bececf2</code></a></td><td>Actual contract command와 runtime-session source를 re-hash하는 CUDA publication benchmark 추가</td><td>RTX 3090 30회에서 completion p99 4.302 ms, max 4.451 ms; 33×10 transport-only fixture이므로 execution 권한은 false</td></tr>
+<tr><td><a href="https://github.com/gohyunsu/beltbench/commit/147614c"><code>147614c</code></a></td><td>Admission·resident route digest, request/contact/lifecycle builder와 full-task inference를 admission의 원래 deadline 아래 단일-flight로 조립</td><td>관련 29개 통과; RTX native 1,784 passed, 17 skipped, 92 subtests, 61.98 s. Source drift와 budget failure의 post-publication slot quarantine 검증</td></tr>
 </table>
 <p>이 검증은 인터페이스 ancestry, 상태 전이, bounded scheduling과 실패 폐쇄를 확인한다. 실제 모델 정확도, open-set false accept rate, pose별 latency나 moving grasp 성공률을 검증한 결과는 아니다.</p>
 
@@ -129,7 +134,7 @@
 <li>Provider <code>inspire</code>의 joint order, command unit, left-hand variant와 mount frame을 exact Inspire Left deployment profile에 결속한다. 이름이나 6-DOF shape만으로 동일 hand라고 판단하지 않는다.</li>
 <li>기존 100개를 먼저 intrinsic·deployment·moving-task gate로 qualification한다. 해당 pose에서 통과 후보가 없을 때만 offline generator를 실행하며 online 생성 fallback은 두지 않는다.</li>
 <li>지원 pose와 unknown/non-stable holdout을 포함한 Isaac RGB campaign으로 comparable cost calibrator와 admission threshold를 검증한다.</li>
-<li>새 composition이 선택한 pose-specific path-family admission을 같은 event deadline 안에서 exact request와 object lifecycle로 변환한다. 이미 준비된 request를 받는 runtime만으로 D1→D3 causal closure를 주장하지 않는다.</li>
+<li>Object-only multi-pose selector가 latched track, 같은-generation conveyor state와 measured robot state로 production <code>RuntimePlanningObservation</code>을 만들고 exact path-family admission을 발행하도록 연결한다. <code>147614c</code>는 admission 이후만 닫았으므로 D1→D3 causal closure를 주장하지 않는다.</li>
 <li>Nominal dynamic world, attached-object transport, release envelope, dynamics와 모든 abort route를 실제로 실행하는 concrete resident cuRobo validator를 구현한다. Fixture outcome이나 producer 자기검증을 independent authority로 사용하지 않는다.</li>
 <li>실제 xArm/Inspire width와 full task horizon으로 producer→CUDA slot→validator→validated lease 전체 latency를 재측정한다. 현재 33×10 publication p99는 이 gate를 대체하지 않는다.</li>
 <li>검증된 최소 deployment bundle을 local NVMe에 resident-load한 뒤 새 multi-pose Isaac composition runner에서 actual-time trace와 영상을 만든다. 기존 single-pose runner에 pose switch 조건문을 추가하지 않는다.</li>
