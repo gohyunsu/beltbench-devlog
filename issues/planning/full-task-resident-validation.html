@@ -12,11 +12,11 @@
 <nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
 </div></header>
 <main class="wrap article">
-<div class="eyebrow">ISSUE-051 · 2026-08-29 update · exact collision witness</div>
+<div class="eyebrow">ISSUE-051 · 2026-08-29 update · 5 ms full-task collision closure</div>
 <h1>Nominal과 모든 abort route를 한 fixed-shape GPU validation lease로 닫는다.</h1>
 <p class="lede">교수님의 inference demo 우선 방향과 사수님의 “충돌에 cuRobo를 왜 사용하지 않는가”라는 질문을 실제 runtime 경계로 반영했다. Online에서는 cuRobo가 self/world/object continuous collision과 dynamics의 수치 authority를 맡고, CPU는 compact hard reduction, deadline, cancel과 controller I/O만 맡는 것이 타당하다. 하지만 단순히 cuRobo라는 backend 이름을 기록하는 것으로는 어떤 command, collision lifecycle과 abort route가 검증됐는지 증명할 수 없으므로 exact pass coverage와 CUDA event lineage를 typed lease로 강제했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/1f558c5"><code>1f558c5</code></a>에서 startup 불변 검증과 event 동적 검증을 분리하고 <a href="https://github.com/gohyunsu/beltbench/commit/3ce2007"><code>3ce2007</code></a>에서 event 입력 digest를 경량화했다. <a href="https://github.com/gohyunsu/beltbench/commit/317df02"><code>317df02</code></a>의 RTX r13은 같은 37개 판정과 component margin을 재현하면서 event 50회 p50 10.612 ms, p95 10.883 ms, 최대 11.286 ms를 기록했다. 다만 current source-002 Pepsi command는 여전히 26/37 pass만 통과한다. Post-validation witness가 실제 실패 link와 시각을 특정했지만 grasp/contact·attached·release·self-sweep geometry가 거절되므로 planning lease와 hardware execution 권한은 계속 차단한다.</div>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/4f9c545"><code>4f9c545</code></a>의 RTX r22는 1,800-sample nominal command, 12개 abort route와 40개 pass를 source-closed하게 검사했다. 5 ms continuous cell, source-bound takeoff support, 단일 multi-environment cuRobo world query와 time-indexed release cylinder를 적용한 결과 32/40 pass를 통과했고 event 20회 p50 17.918 ms, p95 18.025 ms, 최대 18.542 ms를 기록했다. 그러나 nominal pre-contact, attached takeoff, post-detach clearance와 abort 002·003·005·006·010이 거절되므로 validated lease, working grasp demo와 hardware execution 권한은 계속 차단한다.</div>
 
 <h2>왜 cuRobo와 GPU resident인가</h2>
 <table class="table">
@@ -106,6 +106,26 @@
 
 <p>r13은 RTX 3090, Torch 2.5.1+cu121, CUDA 12.1과 고정된 cuRobo revision에서 실행했다. 37개 outcome과 모든 component diagnostic은 r9와 동일했다. Witness 추출은 0.605초의 별도 진단 비용이었으며 event p50/p95에는 포함되지 않는다.</p>
 
+<h2>2026-08-29 5 ms continuous grid와 proxy parity 수정</h2>
+<table class="table">
+<tr><th>발생한 문제</th><th>원인</th><th>해결과 결과</th></tr>
+<tr><td>20 ms attached swept 검사가 <code>left_middle_1</code>에 -11.629 mm 충돌을 보고했다.</td><td>Waypoint 수를 cell allocation 상한으로 재사용했고, 한 cell의 robot/object motion inflation이 실제 중간 형상보다 지나치게 컸다.</td><td><a href="https://github.com/gohyunsu/beltbench/commit/b87f6a4"><code>b87f6a4</code></a>에서 각 segment의 <code>ceil(dt / certificate_dt)</code> 합으로 exact buffer를 계산하고 5 ms certificate를 생성했다. r18의 7,175 cell에서 같은 swept pair margin이 +0.487 mm로 바뀌어 통과했다. Threshold나 contact allowlist는 바꾸지 않았다.</td></tr>
+<tr><td>Attach 직후 object-world가 약 -27 mm였고 conveyor 전체를 mask하면 다른 충돌까지 숨길 위험이 있었다.</td><td>실제 mesh는 takeoff 중 deck 지지만 갖지만 axial sphere proxy의 둥근 end cap은 deck을 계속 침범했다.</td><td><a href="https://github.com/gohyunsu/beltbench/commit/d8eb7bc"><code>d8eb7bc</code></a>에서 independently validated playback의 obstacle ID와 half-open 시간 구간만 nominal pass에 결속했다. Abort는 이 mask를 상속하지 않는다.</td></tr>
+<tr><td>Support 포함·제외 checker를 두 번 호출한 r19 warm-up이 239.36초로 증가했다.</td><td>같은 object spheres를 full scene과 reduced scene에 별도 GPU kernel로 평가했다.</td><td><a href="https://github.com/gohyunsu/beltbench/commit/14853ad"><code>14853ad</code></a>에서 full scene과 support-excluded scene을 cuRobo multi-environment 하나에 올리고 sample별 environment index를 한 번 전달했다. r20 warm-up은 125.71초로 회복되고 event p95는 18.246 ms였다.</td></tr>
+<tr><td>Release checker가 낙하 전체 AABB를 모든 시각에 적용해 contained abort 008을 -1.208로 거절했다.</td><td>물체가 이미 지나간 공간까지 손이 영구히 들어갈 수 없다는 시간 비동기 표현이었다.</td><td><a href="https://github.com/gohyunsu/beltbench/commit/d70423b"><code>d70423b</code></a>에서 ballistic midpoint pose와 cell translation bound를 사용하고, contained abort는 latch pose에 고정했다. Abort 008 margin은 +0.260 m로 바뀌어 통과했다. Nominal detach에만 첫 knot/cell contact mask를 적용한다.</td></tr>
+<tr><td>Time-indexed sphere도 nominal release에서 -4.76 mm를 보고했지만 HPP-FCL exact mesh는 같은 구간에서 3.00~3.78 mm 비충돌이었다.</td><td>6개 axial sphere slab가 Pepsi cylinder 끝단을 큰 구면 cap으로 과포괄했다.</td><td><a href="https://github.com/gohyunsu/beltbench/commit/4f9c545"><code>4f9c545</code></a>에서 1 mm padded outer cylinder의 oriented signed distance로 교체했다. r22 nominal release minimum은 -3.33 mm로 개선됐지만 2 mm release padding, 2 mm robot clearance와 continuous translation bound까지 만족하지 않아 여전히 정당하게 거절된다.</td></tr>
+</table>
+
+<h3>r22 정량 결과와 해석</h3>
+<ul>
+<li>Platform은 RTX 3090, Torch 2.5.1+cu121, CUDA 12.1, cuRobo <code>8e734f3ced1df898990bcd92de40abce475907db</code>다. Source verification 0.730초, lifecycle publish 4.164초, abort catalog 35.647초, checker warm-up 121.639초, invariant validation 2.774초였다.</li>
+<li>Event path는 dynamic pose update, time-indexed target contact와 swept dynamic-object collision만 실행했다. 20회 p50 17.918 ms, p95 18.025 ms, 최대 18.542 ms이며 synchronous artifact write는 0이다.</li>
+<li>Nominal pre-contact는 8.68125초 <code>left_ring_2</code> -2.324 mm, violation count 9, contact count 1 부족이다. Exact mesh도 contact 직전 최소 간격이 약 0.019 mm이므로 guarded transition과 proxy/contact counting을 함께 다시 설계해야 한다.</li>
+<li>Nominal attached robot-object swept는 +0.487 mm로 통과했지만 takeoff sphere-world는 -26.722 mm다. Exact mesh deck clearance는 9.14852초 1.134 mm이므로 source-bound cylinder/world parity 또는 fixed-command exact oracle 결속이 필요하다.</li>
+<li>Nominal release cylinder swept는 21.35317초 <code>left_ring_2</code> -3.333 mm다. 실제 mesh 비충돌만으로 robust clearance를 통과시킬 수 없으므로 hand-open/arm-separation suffix를 motion limits 안에서 재계획해야 한다.</li>
+<li>Abort 005·006·010은 각각 <code>1.07e-5</code>, <code>8.82e-7</code>, <code>3.56e-5</code> 수준의 5 ms swept self margin만 남았다. 이를 zero 처리하지 않고 동일 source의 1 ms certificate를 별도 생성해 temporal convergence를 검사한다.</li>
+</ul>
+
 <h2>검증 결과</h2>
 <ul>
 <li>Full-task validation, producer lease, full command와 abort 집중 테스트 21개가 통과했다.</li>
@@ -121,7 +141,7 @@
 </ul>
 
 <h2>현재 제한과 다음 단계</h2>
-<p>Actual full-task validator와 실시간 event partition은 구현됐지만 현재 singleton grasp와 command가 gate를 통과하지 않는다. 또한 partition digest를 controller lease가 아직 재현하지 않고 Isaac RGB runner도 이 concrete validator를 호출하지 않는다. 따라서 10.843 ms component가 확인됐다는 사실을 working grasp demo 또는 end-to-end latency로 승격하지 않는다.</p>
+<p>Actual full-task validator와 실시간 event partition은 구현됐지만 현재 singleton grasp와 command가 gate를 통과하지 않는다. 또한 partition digest를 controller lease가 아직 재현하지 않고 Isaac RGB runner도 이 concrete validator를 호출하지 않는다. 따라서 18.025 ms component가 확인됐다는 사실을 working grasp demo 또는 end-to-end latency로 승격하지 않는다.</p>
 <ol>
 <li>완료한 8개 shortlist 일괄 qualification 결과 rank 1만 dense-valid였으므로, 8.641667초 <code>left_ring_2</code>와 13.028156초 <code>left_middle_1</code> witness를 objective로 삼아 object-relative grasp·guarded closure·운반 속도를 공동 재최적화한다.</li>
 <li>Attach 경계의 의도된 벨트 지지 접촉은 다른 object-world 충돌을 숨기지 않는 obstacle-specific transient support model로 표현한다. Release의 proximal link 충돌은 contact allowlist 확장이 아니라 grasp/release 형상으로 해결한다.</li>
