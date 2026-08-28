@@ -62,10 +62,19 @@
 <li>RTX workstation 전체 suite: 1,768 passed, 15 skipped, 92 subtests passed.</li>
 <li>현재 stable-pose campaign, open-set RGB qualification, retention·moving-contact capability가 승인되지 않아 production deployment는 만들지 않았다.</li>
 </ul>
+
+<h2>2026-08-28 · Fresh-frame confirmation 연결</h2>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/c270feecb7478d3465f71f1f1b6a4f416bc3be8c"><code>c270fee</code></a>에서 stable pose가 한 frame만으로 latch되지 않는 경우를 공통 causal sensor runtime에 연결했다. 첫 fit이 통과했지만 confirmation 수가 부족하면 provider를 계속 poll하지 않고 현재 single-flight slot을 해제한다. 다음의 더 새로운 synchronized RGB generation을 다시 segmentation·pose fit에 사용하며, confirmation generation과 실패 retry를 별도로 기록한다.</p>
+<p>기존 Isaac admitted-event runner는 RGB 전에 단일 command를 고정하는 baseline임을 명시했다. 따라서 여기에 pose별 조건문을 추가하지 않는다. 최신 protocol은 pose latch 후 resident atlas/path family를 고르고, 현재 x/y/yaw와 deadline에 맞춘 exact GPU command가 독립 validation을 통과한 뒤에만 simulation execution을 결속한다.</p>
+<ul>
+<li>관련 causal sensor·multi-pose·runner 회귀: 42 passed.</li>
+<li>RTX workstation 전체 suite: 1,771 passed, 15 skipped, 92 subtests passed.</li>
+<li>Unknown/open-set, nonmonotonic generation, pose routing mismatch는 계속 terminal no-pick이다.</li>
+</ul>
 <ol>
-<li>Simulation RGB sensor의 stable-pose class·x/y·yaw·covariance 출력을 현재 runtime contract에 연결한다.</li>
-<li>Unknown pose·모호한 yaw·가림을 포함한 synthetic perception qualification을 수행한다.</li>
-<li>Resident selection 이후 cuRobo exact planning과 Isaac Sim camera/control loop를 actual-time trace로 결속한다.</li>
+<li>Simulation RGB worker·open-set calibrator를 실제 stable-pose deployment artifact로 만들고 class·x/y·yaw·covariance를 qualification한다.</li>
+<li>Unknown pose·모호한 yaw·가림을 포함한 synthetic holdout을 통과시킨다.</li>
+<li>Resident selection 이후 exact cuRobo command lease와 Isaac Sim camera/control loop를 actual-time trace로 결속한다.</li>
 </ol>
 
 <p><a href="multi-pose-grasp-generation-support-normal-approach.html">ISSUE-103 multi-pose grasp generation</a> · <a href="object-only-multi-stable-pose-runtime.html">ISSUE-096 object-only runtime</a> · <a href="realtime-conveyor-architecture.html">ISSUE-015 real-time architecture</a></p>
