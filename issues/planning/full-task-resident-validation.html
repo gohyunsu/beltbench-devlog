@@ -12,11 +12,11 @@
 <nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
 </div></header>
 <main class="wrap article">
-<div class="eyebrow">ISSUE-051 · 2026-08-11 · full-task resident validation</div>
+<div class="eyebrow">ISSUE-051 · 2026-08-28 update · continuous self-sweep validation</div>
 <h1>Nominal과 모든 abort route를 한 fixed-shape GPU validation lease로 닫는다.</h1>
 <p class="lede">교수님의 inference demo 우선 방향과 사수님의 “충돌에 cuRobo를 왜 사용하지 않는가”라는 질문을 실제 runtime 경계로 반영했다. Online에서는 cuRobo가 self/world/object continuous collision과 dynamics의 수치 authority를 맡고, CPU는 compact hard reduction, deadline, cancel과 controller I/O만 맡는 것이 타당하다. 하지만 단순히 cuRobo라는 backend 이름을 기록하는 것으로는 어떤 command, collision lifecycle과 abort route가 검증됐는지 증명할 수 없으므로 exact pass coverage와 CUDA event lineage를 typed lease로 강제했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/7a3debf"><code>7a3debf</code></a>는 full-task validation pass shape, source replay와 final lease를 구현한다. Current fixture는 19개 pass를 통과하지만 실제 cuRobo V2 kernel 결과가 아니며 target driver도 지원 조건을 만족하지 않는다. 따라서 planning-validated contract를 controller·hardware 실행 권한으로 사용하지 않는다.</div>
+<div class="callout"><strong>현재 효력:</strong> source <a href="https://github.com/gohyunsu/beltbench/commit/7a3debf"><code>7a3debf</code></a>는 full-task validation pass shape, source replay와 final lease를 구현한다. 이후 <a href="https://github.com/gohyunsu/beltbench/commit/396804b"><code>396804b</code></a>부터 <a href="https://github.com/gohyunsu/beltbench/commit/ac1d932"><code>ac1d932</code></a>까지 actual xArm6+Inspire sphere model의 연속 self-sweep 입력과 RTX benchmark를 구현했다. Corrected prefix hot path는 p99 19.996 ms, deadline miss 0이었지만 보수적 팽창에서 80/144 cell이 작은 양의 collision cost를 보여 <code>component_accepted=false</code>다. 따라서 속도는 목표 범위에 들어왔어도 현재 command와 full-task execution 권한은 계속 차단한다.</div>
 
 <h2>왜 cuRobo와 GPU resident인가</h2>
 <table class="table">
@@ -56,6 +56,16 @@
 <li>Contract payload 자체는 source 객체를 알 수 없으므로 generic <code>validate()</code>와 source-aware <code>verify()</code>를 분리했다. Verification은 producer output, request, template, nominal lifecycle, runtime session, abort catalog, route command/lifecycle와 motion profile에서 전체 pass를 재구성한다.</li>
 </ul>
 
+<h2>2026-08-28 continuous self-sweep 구현 감사</h2>
+<table class="table">
+<tr><th>발생한 문제</th><th>원인</th><th>해결과 결과</th></tr>
+<tr><td>Self-collision sphere pair를 모두 JSON으로 전개하자 진단 artifact가 약 588 MB가 됐다.</td><td>cuRobo의 sparse link-pair kernel을 사용하면서도 host에서 모든 sphere pair를 Cartesian product로 중복 직렬화했다.</td><td><code>396804b</code>에서 sphere link, base radius, self padding, sphere×joint motion gain과 checked/ignored link partition만 저장했다. Actual certificate는 5,882 sphere, 22 link, 208 checked/23 ignored link pair를 약 1.59 MB로 표현해 약 370배 작아졌다. Production 경로의 explicit sphere-pair 전개는 금지했다.</td></tr>
+<tr><td>Command segment가 길어도 subinterval 수가 전역 상수 1로 남을 수 있었다.</td><td>전체 command의 고정 subdivision을 사용해 segment별 시간 길이와 20 ms 최대 cell 폭을 결속하지 않았다.</td><td><code>8aec7c8</code>에서 각 segment의 cell 수를 startup에 <code>ceil(dt / maximum_cell_duration)</code>으로 계산하고 ragged segment를 고정 resident index로 평탄화했다. Event path에는 allocation을 두지 않고 전체 cell 상한을 startup에서 검사한다.</td></tr>
+<tr><td>첫 실제 benchmark에서 collision 0으로 보였지만 command hand joint와 cuRobo cspace joint 순서가 달랐다.</td><td>두 입력의 joint 개수만 같다고 보고 tensor column을 이름으로 재정렬하지 않았다. Thumb-first command를 index-first kinematics에 그대로 전달했다.</td><td><code>50011c9</code>에서 command와 kinematics joint inventory의 exact equality를 요구하고 q/qd/qdd에 같은 startup permutation을 적용했다. 이전 collision 결과는 폐기했으며 순서 불일치는 회귀 테스트로 고정했다.</td></tr>
+<tr><td>Corrected 연속 팽창이 현재 prefix를 거절했다.</td><td>구간 내부 motion을 sphere radius에 보수적으로 더하자 endpoint-only 검사에 없던 near self-clearance가 드러났다.</td><td><code>ac1d932</code>의 source-bound benchmark에서 replan cutoff까지 144 cell을 100회 측정했다. p50 18.949 ms, p95 19.082 ms, p99 19.996 ms, 최대 20.002 ms, 50 ms miss 0이었으나 80 cell에서 최대 <code>2.044e-5</code> collision cost가 검출돼 fail-closed했다. Threshold를 완화하거나 결과를 clear로 재해석하지 않는다.</td></tr>
+</table>
+<p>Checker 구성 118.39초와 첫 호출 0.591초는 startup workload다. Event hot path는 resident 144-cell prefix 한 번만 실행했다. 이 수치는 self-collision component에만 유효하며 static world, dynamic target, attached object, release envelope, suffix certificate, abort route나 controller 실행을 검증한 end-to-end 수치가 아니다.</p>
+
 <h2>검증 결과</h2>
 <ul>
 <li>Full-task validation, producer lease, full command와 abort 집중 테스트 21개가 통과했다.</li>
@@ -63,15 +73,18 @@
 <li><code>beltbench-calibration</code> 환경에서 calibration·pickplace·pose artifact 14개가 모두 통과했다.</li>
 <li><code>compileall</code>, 공개 API import, line-length 검색, cached <code>git diff --check</code>가 통과했다.</li>
 <li>19-slot coverage, strategy별 GPU operation, missing·reordered·failed result, draft limits, producer/validator/graph/slot alias, foreign source evidence와 foreign producer backend를 회귀 테스트한다.</li>
+<li>Compact certificate, ragged resident cells와 exact joint-order binding 관련 local 회귀가 통과했고, RTX cuRobo 환경의 집중 테스트 16개가 통과했다.</li>
+<li>Actual resident template의 corrected prefix benchmark는 100회 중 deadline miss 0이었지만 collision 때문에 명시적으로 거절됐다. 이 결과는 performance pass를 collision pass로 바꾸지 않는다.</li>
 </ul>
 
 <h2>현재 제한과 다음 단계</h2>
-<p>현재 outcome은 contract test용 fixture이며 cuRobo가 계산한 signed distance나 dynamics margin이 아니다. Backend ID와 graph ID는 causal identity를 강제하지만 실제 CUDA stream wait와 event record는 runtime driver가 구현해야 한다. 또한 A6000 server의 driver 535는 선택한 cuRobo V2 0.8.0 정책의 최소 580.65.06을 만족하지 않아 V2 graph replay, p99와 parity를 측정하지 못했다.</p>
+<p>RTX 3090에서 actual cuRobo sparse self-collision kernel과 compact continuous inflation까지는 실행했지만 full-task validator 전체를 구현한 것은 아니다. Current singleton command는 corrected prefix에서 거절됐고, nominal suffix·world/object lifecycle·abort route를 하나의 source-bound 결과로 합성하는 concrete backend도 남아 있다. 따라서 component benchmark를 controller authority로 승격하지 않는다.</p>
 <ol>
-<li>지원 driver 서버에서 fixed-shape 19-slot cuRobo V2 validator graph를 구현하고 exact source events를 stream wait로 연결한다.</li>
-<li>Target GPU 1,000 trial에서 deadline miss 0과 one-readback/zero-write를 계측하고 HPP-FCL corpus false negative 0을 확인한다.</li>
-<li>실제 accepted lease만 one-shot controller handoff로 넘기고 timeout은 release가 아니라 cancel·quarantine으로 처리한다.</li>
-<li>Controller 완료 뒤 allocator 재사용 전에 full-command capture를 생성해 MuJoCo와 actual-time Viser에 비동기로 연결한다.</li>
+<li>Changed prefix GPU result, immutable suffix certificate와 splice boundary를 exact command digest·joint order·collision model에 결속하는 composite self-sweep evidence를 구현한다. Prefix만 검사하고 full sweep이라고 보고하지 않는다.</li>
+<li>Static world, moving target contact, attached object, release envelope, continuous dynamics와 모든 abort route를 fixed-shape result slot에 연결한다.</li>
+<li>현재 거절된 prefix는 sphere model, assembly semantics와 exact geometry oracle로 원인을 분류한 뒤 command clearance를 재설계한다. Collision threshold나 checked pair를 결과에 맞춰 완화하지 않는다.</li>
+<li>첫 simulation-only vertical slice에서는 각 미자격 stage를 명시적으로 차단 상태로 표시한 채 모든 production module port를 호출한다. 완전한 multi-pose qualification을 선행 조건으로 두지 않되 실제 accepted lease만 controller authority로 승격한다.</li>
+<li>Controller 완료 뒤 allocator 재사용 전에 full-command capture를 생성해 MuJoCo, Isaac actual-time video와 Viser에 비동기로 연결한다.</li>
 </ol>
 
 <p><a href="exact-full-command-producer-lease.html">Exact full-command producer lease</a>, <a href="resident-abort-command-collision.html">Resident abort collision</a>, <a href="curobo-realtime-collision-audit.html">cuRobo real-time collision audit</a>를 함께 참고한다.</p>
