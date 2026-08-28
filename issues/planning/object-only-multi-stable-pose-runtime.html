@@ -12,7 +12,7 @@
 <nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
 </div></header>
 <main class="wrap article">
-<div class="eyebrow">ISSUE-096 · 2026-08-28 sixth update · D2 admission to exact command</div>
+<div class="eyebrow">ISSUE-096 · 2026-08-28 seventh update · robot-aware D2 to validated lease</div>
 <h1>Object ID만 주어진 이벤트에서 stable pose, yaw와 위치를 함께 추정해 resident grasp로 라우팅한다.</h1>
 <p class="lede">기존 demo는 <code>pepsi_light/upside_down</code>처럼 stable-pose ID가 startup과 event에 이미 주어진다고 가정했다. 목표 작업에서는 물체 종류만 주어지고, 물체는 belt 위의 임의의 물리적 stable pose와 초기 yaw·위치로 들어온다. 따라서 pose를 입력으로 받는 경계를 폐기하고 RGB 관측이 pose class와 평면 상태를 함께 결정하도록 바꿨다.</p>
 
@@ -25,6 +25,18 @@
 <div class="callout"><strong>2026-08-28 다섯 번째 업데이트:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/49404af"><code>49404af</code></a>부터 <a href="https://github.com/gohyunsu/beltbench/commit/bececf2"><code>bececf2</code></a>까지, 이미 exact request와 object lifecycle이 준비됐다는 경계 아래 full-command producer, preallocated producer slot, complete abort catalog, independent validator result와 validated lease를 하나의 deadline으로 조립했다. 모든 reject·deadline·identity mismatch는 정확한 slot을 영구 quarantine한다. RTX 3090에서 CUDA-only 테스트 2개와 전체 회귀 1,779 passed, 17 skipped, 92 subtests를 통과했다. 33×10 contract fixture의 30회 CUDA publication은 enqueue p99 4.235 ms, synchronized completion p99 4.302 ms였고 77.112 ms allocation·warmup은 startup으로 분리했다. 이는 작은 command의 CPU 검증·pinned staging·H2D·CUDA event publication 증거일 뿐 cuRobo planning, collision, 실제 xArm/Inspire command 크기나 end-to-end latency가 아니다. D2 admission→exact request 변환과 concrete full-task validator는 아직 없다.</div>
 
 <div class="callout"><strong>2026-08-28 여섯 번째 업데이트:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/147614c"><code>147614c</code></a>에서 <code>PathFamilyWarmStartAdmission</code> 이후의 단절을 닫았다. <code>ResidentFullTaskAdmissionRuntime</code>은 admission과 startup-resident route를 시작 시 digest로 snapshot하고 기존 commit deadline을 교체하지 않은 채 request, moving contact, object lifecycle과 full-task inference를 순서대로 실행한다. Event 중 source 변조는 publication 전에 거부하고, publication 후 admission drift나 compute/validation budget 초과는 정확한 slot을 quarantine한다. 관련 29개 테스트와 RTX native 전체 회귀 1,784 passed, 17 skipped, 92 subtests가 통과했다. 그러나 object-only multi-pose selector가 robot-state snapshot을 포함한 admission을 실제로 발행하는 production adapter와 concrete cuRobo validator는 아직 없다.</div>
+
+<div class="callout"><strong>2026-08-28 일곱 번째 업데이트:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/69df534"><code>69df534</code></a>에서 object-only event를 실제 robot-state-aware admission과 full-task validated lease까지 구조적으로 연결했다. <code>ResidentStablePosePlanningSelector</code>는 latched RGB track과 exact encoder sample에 최신 named robot <code>q/qd/qdd</code>를 결합한다. 그 바깥의 <code>ResidentStablePoseFullTaskSelector</code>는 stable pose 하나가 아니라 <code>(stable_pose_id, path_family_id)</code> 전체를 startup에 완전 매핑하고, 선택된 family의 template·grasp·connector·task·path digest가 일치할 때만 같은 deadline 아래 producer와 independent validator를 호출한다. Planning과 full-task runtime이 서로 다른 clock을 쓰는 구성도 startup에서 거부한다. Local 전체 회귀는 1,800 passed, 36 skipped, 92 subtests였고 최종 clock 보강 집중 회귀 12개와 RTX 집중 회귀 29개가 통과했다. 결과는 <code>planning_validated=true</code>지만 <code>controller_lease_issued=false</code>, <code>execution_authorized=false</code>다. Concrete full-task GPU validator, event-time output/lease를 그대로 소비하는 capacity-one D3 handoff, target Isaac runner와 qualified Pepsi deployment는 아직 남아 있다.</div>
+
+<h2>일곱 번째 업데이트에서 발견한 문제와 해결</h2>
+<table class="table">
+<tr><th>발생한 문제</th><th>원인</th><th>해결 방안</th><th>결과</th></tr>
+<tr><td>D1이 pose와 belt state만 D2에 넘겼다.</td><td>이전 selector는 prevalidated static event request를 고르는 역할이었고 moving interception 시작점인 robot <code>q/qd/qdd</code>를 소유하지 않았다.</td><td>Capacity-one 최신 robot motion state를 공통 selector에 두고 latched track, exact encoder state, robot state를 하나의 planning observation으로 결합했다.</td><td>Robot state가 없으면 track을 소비하기 전에 실패하고, 있으면 exact pending warm-start admission만 발행한다.</td></tr>
+<tr><td>Stable pose마다 full-task runtime 하나를 두려 했다.</td><td>Pose routing과 path-family routing을 같은 key로 오인했다. 한 pose에서도 yaw·horizon·grasp에 따라 여러 family가 선택될 수 있다.</td><td>Startup key를 <code>(stable_pose_id, path_family_id)</code>로 바꾸고 모든 planning family의 exact runtime이 없거나 extra route가 있으면 시작을 거부했다.</td><td>선택된 family와 다른 grasp 또는 template을 우연히 실행할 수 없다.</td></tr>
+<tr><td>Planning deadline과 inference clock의 동일성이 보장되지 않았다.</td><td>두 runtime이 각각 유효한 monotonic number를 반환하는지만 확인했고 clock source identity는 대조하지 않았다.</td><td>각 family runtime의 clock 객체가 해당 planning runner clock과 동일해야만 startup을 통과하도록 했다.</td><td>서로 다른 clock domain의 숫자를 비교해 deadline을 통과하는 허위 실시간 구성을 차단했다.</td></tr>
+<tr><td>Validated lease를 controller lease로 읽을 수 있었다.</td><td>이름에 lease가 있지만 실제 계약은 producer output을 independent validator 결과에 결속하는 planning evidence다.</td><td>Decision payload에서 <code>validated_command_lease_issued</code>와 <code>controller_lease_issued</code>를 분리하고 후자는 계속 false로 고정했다.</td><td>D2 검증 완료와 D3 실행 권한을 명시적으로 구분한다.</td></tr>
+<tr><td>저장소 root의 전체 pytest가 test 실행 전에 장시간 정체됐다.</td><td>보존된 대형 <code>evidence/</code> tree까지 test discovery가 재귀 탐색했다.</td><td><code>pyproject.toml</code>의 기본 <code>testpaths</code>를 <code>tests</code>로 고정했다. Evidence와 bundle은 삭제하거나 이동하지 않았다.</td><td>범위를 명시한 전체 회귀가 3분 31초에 종료됐고 1,800/36 skip/92 subtests를 확인했다.</td></tr>
+</table>
 
 <h2>발생한 문제와 영향</h2>
 <table class="table">
