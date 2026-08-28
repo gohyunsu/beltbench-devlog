@@ -12,11 +12,11 @@
 <nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
 </div></header>
 <main class="wrap article">
-<div class="eyebrow">ISSUE-051 · 2026-08-29 update · startup/event partitioned validation</div>
+<div class="eyebrow">ISSUE-051 · 2026-08-29 update · exact collision witness</div>
 <h1>Nominal과 모든 abort route를 한 fixed-shape GPU validation lease로 닫는다.</h1>
 <p class="lede">교수님의 inference demo 우선 방향과 사수님의 “충돌에 cuRobo를 왜 사용하지 않는가”라는 질문을 실제 runtime 경계로 반영했다. Online에서는 cuRobo가 self/world/object continuous collision과 dynamics의 수치 authority를 맡고, CPU는 compact hard reduction, deadline, cancel과 controller I/O만 맡는 것이 타당하다. 하지만 단순히 cuRobo라는 backend 이름을 기록하는 것으로는 어떤 command, collision lifecycle과 abort route가 검증됐는지 증명할 수 없으므로 exact pass coverage와 CUDA event lineage를 typed lease로 강제했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/1f558c5"><code>1f558c5</code></a>에서 startup 불변 검증과 event 동적 검증을 서로 겹치지 않는 operation 집합으로 분리했고, <a href="https://github.com/gohyunsu/beltbench/commit/3ce2007"><code>3ce2007</code></a>에서 event가 실제로 읽는 pose·state·velocity만 canonical byte digest로 결속했다. RTX 3090의 authoritative event validation 50회는 p50 10.843 ms, p95 11.323 ms, 최대 12.050 ms였다. 다만 current source-002 Pepsi command는 37 pass 중 26개만 통과했고 event 4 pass 중 2개가 실패했다. 성능과 operation coverage는 확인했지만 grasp/contact·attached·release·self-sweep geometry가 거절되므로 planning lease와 hardware execution 권한은 계속 차단한다.</div>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/1f558c5"><code>1f558c5</code></a>에서 startup 불변 검증과 event 동적 검증을 분리하고 <a href="https://github.com/gohyunsu/beltbench/commit/3ce2007"><code>3ce2007</code></a>에서 event 입력 digest를 경량화했다. <a href="https://github.com/gohyunsu/beltbench/commit/317df02"><code>317df02</code></a>의 RTX r13은 같은 37개 판정과 component margin을 재현하면서 event 50회 p50 10.612 ms, p95 10.883 ms, 최대 11.286 ms를 기록했다. 다만 current source-002 Pepsi command는 여전히 26/37 pass만 통과한다. Post-validation witness가 실제 실패 link와 시각을 특정했지만 grasp/contact·attached·release·self-sweep geometry가 거절되므로 planning lease와 hardware execution 권한은 계속 차단한다.</div>
 
 <h2>왜 cuRobo와 GPU resident인가</h2>
 <table class="table">
@@ -87,6 +87,25 @@
 <li><code>startup-invariant-certificate.json</code>, <code>event-validation-result.json</code>, <code>partitioned-full-task-validation.json</code>을 별도 보존한다. 현재 validated lease schema가 두 digest를 아직 결속하지 않으므로 complete operation coverage와 낮은 지연만으로 lease를 만들지 않는다.</li>
 </ul>
 
+<h2>2026-08-29 shortlist 일괄 qualification과 collision witness</h2>
+<table class="table">
+<tr><th>발생한 문제</th><th>원인</th><th>해결과 결과</th></tr>
+<tr><td>Ballistic drop에도 모든 grasp가 같은 exact object terminal pose를 강제받아 일부 후보가 terminal IK에서 탈락했다.</td><td>Tabletop placement와 넉넉한 bin 위에서의 drop을 같은 terminal 의미로 사용했다. Drop은 물체 pose보다 tool release pose를 고정하는 편이 grasp transform 차이를 허용하면서도 실행 의미가 명확하다.</td><td><a href="https://github.com/gohyunsu/beltbench/commit/b1e9ec9"><code>b1e9ec9</code></a>에서 schema 5 drop은 exact terminal tool pose를, placement와 legacy artifact는 기존 exact object pose를 유지하도록 분리했다. Rank 3·5·7의 terminal IK 실패는 해소됐지만 downstream collision robustness에서 다시 거절됐다.</td></tr>
+<tr><td>첫 dense-valid grasp를 찾으면 나머지 shortlist를 평가하지 않아 후보 다양성과 공통 병목을 판단할 수 없었다.</td><td>Runtime의 early-exit 정책을 offline qualification에도 그대로 적용했다.</td><td><code>3626065</code>와 <code>33714ab</code>에서 grasp별 strongest operational intercept 하나를 유지하고 Linux fork 8-worker로 8개 grasp를 끝까지 평가했다. 417개 source file을 재검증한 r12는 8개 중 rank 1 하나만 dense-valid였다. Coarse 286.607초, dense 119.589초이며 결과 재현은 통과했지만 execution authority는 false다.</td></tr>
+<tr><td>기존 report는 attached 또는 release minimum만 보여 어느 link·sphere·시각을 고쳐야 하는지 알 수 없었다.</td><td>실시간 gate가 축약 scalar만 host로 읽는 올바른 구조였지만, 별도 post-validation 진단이 없었다.</td><td><a href="https://github.com/gohyunsu/beltbench/commit/317df02"><code>317df02</code></a>에서 같은 resident command, lifecycle, cuRobo model과 축약 전 tensor로 pass, knot/swept, trajectory time, source sample, robot link와 object sphere witness를 추출했다. 이 경로는 startup/event timing과 execution authority에 들어가지 않는다.</td></tr>
+</table>
+
+<h3>r13에서 특정된 실제 병목</h3>
+<ul>
+<li>Pre-attach swept minimum은 8.641667초의 <code>left_ring_2</code>이며 물체 margin은 -3.492 mm다. 8.7초 contact knot에서는 최소 contact count가 1개 부족하다. Threshold를 낮출 문제가 아니라 guarded closure와 grasp command를 함께 재최적화해야 한다.</li>
+<li>Attached knot의 robot-object margin은 +4.520 mm지만 13.028156초 swept cell에서 <code>left_middle_1</code> 대 <code>sphere-000</code>이 -20.795 mm다. 정적 grasp 하나만 보지 말고 운반 속도와 continuous inflation을 포함한 궤적 후보를 다시 만들어야 한다.</li>
+<li>Attached object-world는 attach 경계 9.0초부터 실패한다. 물체가 벨트 지지면과 의도적으로 접촉한 상태를 generic world collision로 검사한 것이므로, 다른 환경 충돌을 숨기는 전역 mask가 아니라 source-bound transient support-contact model이 필요하다.</li>
+<li>Detach 직후 release envelope는 16.895760초의 <code>left_middle_1</code>에서 -16.106 mm다. 현재 allowed contact는 distal geometry만 포함하므로 proximal link를 근거 없이 허용하지 않고 grasp/release 형상을 수정해야 한다.</li>
+<li>11개 abort collision pass 중 8개가 실패했다. Early dynamic route 2개와 attached/release route 3개는 작은 swept self cost만 남았고, 나머지는 nominal과 같은 object/support/release 병목을 상속했다. Abort threshold를 따로 완화하지 않는다.</li>
+</ul>
+
+<p>r13은 RTX 3090, Torch 2.5.1+cu121, CUDA 12.1과 고정된 cuRobo revision에서 실행했다. 37개 outcome과 모든 component diagnostic은 r9와 동일했다. Witness 추출은 0.605초의 별도 진단 비용이었으며 event p50/p95에는 포함되지 않는다.</p>
+
 <h2>검증 결과</h2>
 <ul>
 <li>Full-task validation, producer lease, full command와 abort 집중 테스트 21개가 통과했다.</li>
@@ -98,13 +117,14 @@
 <li>Actual resident template의 corrected prefix benchmark는 100회 중 deadline miss 0이었지만 collision 때문에 명시적으로 거절됐다. 이 결과는 performance pass를 collision pass로 바꾸지 않는다.</li>
 <li>Partition contract, Torch backend, cuRobo factory와 full-task collision 집중 회귀 29개가 로컬에서 통과했고 RTX 환경의 최신 partition 집중 회귀 17개가 통과했다.</li>
 <li>RTX r8과 r9의 exact 37-pass outcome과 component diagnostic이 모두 동일했다. 최신 event evidence schema는 전체 lifecycle hash 대신 dynamic input digest를 요구한다.</li>
+<li>RTX r13은 r9의 37-pass outcome과 component diagnostic을 다시 동일하게 재현했다. Collision witness fixture 7개도 locked cuRobo 환경에서 통과했다.</li>
 </ul>
 
 <h2>현재 제한과 다음 단계</h2>
 <p>Actual full-task validator와 실시간 event partition은 구현됐지만 현재 singleton grasp와 command가 gate를 통과하지 않는다. 또한 partition digest를 controller lease가 아직 재현하지 않고 Isaac RGB runner도 이 concrete validator를 호출하지 않는다. 따라서 10.843 ms component가 확인됐다는 사실을 working grasp demo 또는 end-to-end latency로 승격하지 않는다.</p>
 <ol>
-<li>보존된 source-002 shortlist 8개를 static quality가 아니라 동일한 37-pass startup/event gate로 일괄 평가한다. Static contact count가 많다는 이유로 현재 rank를 임의 교체하지 않는다.</li>
-<li>모든 후보가 실패하면 nominal contact/attach witness를 기준으로 object-relative grasp 또는 guarded approach를 재최적화한다. Attached robot-object, object-world와 release-envelope failure를 하나의 threshold 변경으로 덮지 않는다.</li>
+<li>완료한 8개 shortlist 일괄 qualification 결과 rank 1만 dense-valid였으므로, 8.641667초 <code>left_ring_2</code>와 13.028156초 <code>left_middle_1</code> witness를 objective로 삼아 object-relative grasp·guarded closure·운반 속도를 공동 재최적화한다.</li>
+<li>Attach 경계의 의도된 벨트 지지 접촉은 다른 object-world 충돌을 숨기지 않는 obstacle-specific transient support model로 표현한다. Release의 proximal link 충돌은 contact allowlist 확장이 아니라 grasp/release 형상으로 해결한다.</li>
 <li>Partition startup certificate와 event result digest를 validated lease와 controller handoff에 추가하고, 둘 중 하나라도 foreign·stale·reordered이면 publication을 차단한다.</li>
 <li>Isaac RGB camera에서 얻은 object identity, stable pose, planar x/y/yaw와 belt velocity를 dynamic event input으로 연결한다. Perception uncertainty와 timestamp는 collision margin과 별개로 deadline/slack gate가 소비해야 한다.</li>
 <li>실제 accepted route가 생긴 뒤에만 Isaac physics/controller를 같은 command에 연결하고, perception→selection→GPU validation→handoff→grasp→drop 상태를 실제 시간 색상 overlay로 영상화한다.</li>
