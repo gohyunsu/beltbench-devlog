@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Multi-pose resident grasp atlas · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-104 · 2026-08-28 · multi-pose resident grasp atlas</div>
+<h1>Shared grasp는 offline source로 사용하고, runtime에는 검증된 pose×yaw×시간 atlas만 상주시킨다.</h1>
+<p class="lede">Table pose를 사용자가 지정하지 않는 conveyor runtime을 위해 두 stable-pose 후보의 grasp를 같은 robot·workcell·timing gate로 다시 평가했다. 실시간 경로는 원격 저장소를 검색하지 않는다. Startup에 검증한 bounded atlas를 메모리에 올리고, RGB가 판별한 stable-pose class·belt-frame 위치·초기 yaw와 uncertainty로 후보를 조회한다.</p>
+
+<div class="callout"><strong>현재 판정:</strong> BeltBench <a href="https://github.com/gohyunsu/beltbench/commit/98199545ef9aa751139d416832ecd07387bb75af"><code>9819954</code></a>와 <a href="https://github.com/gohyunsu/beltbench/commit/096ac170017b6c42bef27faafd4dcb6fe1012045"><code>096ac17</code></a>에서 source-closed pose context와 resident atlas를 구현했다. RTX 3090의 10,000회 lookup은 모두 0.36 ms 이하였다. 다만 한 pose의 adaptive yaw coverage는 9,894/10,000이므로 남은 구간은 fallback 없이 no-pick으로 닫는다. Stable-pose perception과 moving grasp capability 검증 전까지 실행 권한은 없다.</div>
+
+<h2>문제와 영향</h2>
+<p>이전 단일 pose 가정은 실제 RGB 입력에서 물체가 어느 안정 자세로 놓였는지 알 수 없다는 조건을 다루지 못했다. 반대로 event마다 shared data를 순회하거나 grasp를 새로 생성하면 latency가 비결정적이고 source ancestry도 흔들린다. 따라서 expensive evaluation을 offline으로 옮기고 online 작업량을 고정해야 한다.</p>
+
+<h2>채택한 경계</h2>
+<table class="table">
+<tr><th>단계</th><th>동작</th></tr>
+<tr><td>Offline</td><td><code>(object, stable pose, arm, hand)</code>별 proposal을 intrinsic filter, IK·collision, yaw·intercept horizon 기준으로 독립 평가한다.</td></tr>
+<tr><td>Startup</td><td>허용된 stable pose 전체를 덮는 local bundle을 재검증하고 immutable index를 메모리에 적재한다.</td></tr>
+<tr><td>Online RGB</td><td>Object·stable-pose hypothesis·belt-frame x/y·초기 yaw와 uncertainty를 추정한다.</td></tr>
+<tr><td>Selection</td><td>Exact pose key와 yaw support로 resident 후보를 bounded lookup한 뒤 GPU exact planning·collision·timing gate에 전달한다.</td></tr>
+</table>
+<p>Nearest-pose fallback, 서로 다른 pose의 grasp union, online grasp generation은 사용하지 않는다. Unsupported 또는 ambiguous pose는 no-pick이다.</p>
+
+<h2>관찰 결과</h2>
+<table class="table">
+<tr><th>Stable pose</th><th>Yaw×horizon</th><th>Robot-feasible pair</th><th>Atlas grasp</th></tr>
+<tr><td><code>source-001</code></td><td>12×3</td><td>629/1,584</td><td>41</td></tr>
+<tr><td><code>source-002</code> baseline</td><td>12×3</td><td>651/1,584</td><td>42</td></tr>
+<tr><td><code>source-002</code> adaptive</td><td>13×3</td><td>673/1,716</td><td>42</td></tr>
+</table>
+<p>주요 탈락 원인은 pregrasp IK였고 일부 후보는 clearance 또는 object collision에서 탈락했다. 두 pose 모두 같은 threshold를 사용했으며 결과에 맞춰 기준을 완화하지 않았다.</p>
+
+<h2>Yaw coverage 진단</h2>
+<p><code>source-002</code> baseline은 30°와 60° context 사이 공통 grasp가 없었다. 두 집합을 합치는 대신 45° midpoint를 추가했다. 10,000회 uncertainty-aware query의 non-empty 결과는 9,114회에서 9,894회로 개선됐다. 평균 lookup은 0.181 ms, p99는 0.300 ms였다.</p>
+<p>남은 106회는 lookup latency가 아니라 측정 yaw의 3σ support를 함께 만족하는 grasp가 없는 coverage 실패다. 현재는 no-pick으로 처리하며, 인접 yaw를 더 평가하거나 해당 stable pose의 grasp를 추가 생성하는 방법으로만 개선한다.</p>
+
+<h2>Table pose가 주어지지 않는 조건</h2>
+<p>여기서 임의 table pose는 모든 6-DoF 자세가 아니라 offline settling과 perception qualification으로 승인된 유한 stable-pose class 중 하나를 뜻한다. Runtime 입력은 object ID와 RGB frame이다. Backend가 stable-pose hypothesis, belt-frame x/y, yaw와 uncertainty를 산출하고, constant-orientation conveyor predictor가 intercept 위치를 계산한다.</p>
+<p>Stable-pose class를 외부에서 지정할 필요는 없지만 RGB가 class를 안정적으로 판별했다는 qualification은 필요하다. 알려지지 않은 자세나 모호한 관측을 가장 가까운 class로 강제 배정하지 않는다.</p>
+
+<h2>발생한 문제와 해결</h2>
+<table class="table">
+<tr><th>증상</th><th>원인</th><th>해결·결과</th></tr>
+<tr><td>처음 만든 pose context가 source verifier에서 거부됨</td><td>파생 artifact와 authoritative evaluation의 source identity가 달랐다.</td><td>검증 우회 없이 authoritative source를 기준으로 다시 컴파일했다.</td></tr>
+<tr><td>Adaptive atlas도 일부 yaw에서 no-pick</td><td>Yaw uncertainty가 세 context를 동시에 지지하지만 세 집합의 공통 grasp가 없었다.</td><td>Threshold 완화 대신 coverage gap으로 기록하고 실행을 차단했다.</td></tr>
+<tr><td>Benchmark evidence의 시간 일관성 검사 실패</td><td>Artifact 저장소와 compute host의 filesystem clock domain이 달랐다.</td><td>Source 검증과 timing evidence의 저장 위치를 분리해 compute-local clock에서 다시 측정했다.</td></tr>
+</table>
+
+<h2>검증과 다음 작업</h2>
+<ul>
+<li>Pose-context compiler·atlas·fallback 관련 테스트 62/62 통과.</li>
+<li>RTX workstation 전체 suite: 1,768 passed, 15 skipped, 92 subtests passed.</li>
+<li>현재 stable-pose campaign, open-set RGB qualification, retention·moving-contact capability가 승인되지 않아 production deployment는 만들지 않았다.</li>
+</ul>
+<ol>
+<li>Simulation RGB sensor의 stable-pose class·x/y·yaw·covariance 출력을 현재 runtime contract에 연결한다.</li>
+<li>Unknown pose·모호한 yaw·가림을 포함한 synthetic perception qualification을 수행한다.</li>
+<li>Resident selection 이후 cuRobo exact planning과 Isaac Sim camera/control loop를 actual-time trace로 결속한다.</li>
+</ol>
+
+<p><a href="multi-pose-grasp-generation-support-normal-approach.html">ISSUE-103 multi-pose grasp generation</a> · <a href="object-only-multi-stable-pose-runtime.html">ISSUE-096 object-only runtime</a> · <a href="realtime-conveyor-architecture.html">ISSUE-015 real-time architecture</a></p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
