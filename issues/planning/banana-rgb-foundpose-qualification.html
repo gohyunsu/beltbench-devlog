@@ -44,6 +44,10 @@
 <tr><td>Per-view FoundPose PnP가 80.6–230 mm translation error</td><td>일반 6-DoF PnP가 알려진 stable pose와 belt-plane 제약을 사용하지 않음</td><td>PnP 결과를 버리고 FoundPose 2D-3D match만 stable-pose constrained 3-DoF solver에 전달했다.</td></tr>
 <tr><td>Top-60 match가 독립 inlier 60개처럼 계산됨</td><td>Cyclic-buddy가 여러 query를 같은 representation vertex에 연결했고 adapter가 ID를 버림</td><td><a href="https://github.com/gohyunsu/beltbench/commit/f183ee9"><code>f183ee9</code></a>에서 query ID와 vertex ID를 각각 한 번만 허용했다. 실제 unique support는 hypothesis당 15–39개였다.</td></tr>
 <tr><td>Offline qualifier와 live backend의 acceptance가 다름</td><td>Qualifier가 solver gate만 적용하고 runtime deadline·cross-camera·covariance gate를 적용하지 않음</td><td><a href="https://github.com/gohyunsu/beltbench/commit/e730d0f"><code>e730d0f</code></a>에서 동일한 RGB planar acquisition policy를 사용하고 total acquisition latency까지 evidence에 결속했다.</td></tr>
+<tr><td>YOLOE를 proposal로만 보면 통과할 것이라는 가정</td><td>불합격 14 view 중 완전 누락은 하나뿐이었지만, FoundPose는 mask를 crop뿐 아니라 feature selection에도 사용하므로 낮은 pixel precision을 무시할 수 없음</td><td>Frozen proposal gate도 106/120으로 실패했다. 열린 corpus에 맞춰 threshold를 낮추지 않고 proposal·exact mask·pose authority를 분리했다.</td></tr>
+<tr><td>Evaluator corpus를 바로 pose replay에 연결할 수 없음</td><td>격리 candidate NPZ가 RGB·intrinsic·extrinsic은 보존하지만 camera-source provenance는 보존하지 않음</td><td>기존 파일을 추정으로 이어 붙이지 않았다. 원본 FoundPose capture에서 object mask를 읽지 않고 RGB candidate를 다시 추출했다.</td></tr>
+<tr><td>진단 실험이 qualification처럼 보일 위험</td><td>기존 qualified composer는 합격 mask report를 강제하므로 실패 결과를 넣을 수 없고, 이를 느슨하게 만들면 authority 경계가 깨짐</td><td><a href="https://github.com/gohyunsu/beltbench/commit/4a02e33"><code>4a02e33</code></a>에서 공통 provenance join을 추출하고 별도 <code>unqualified_diagnostic_only</code> composer를 추가했다. 이 경로는 항상 <code>deployment_eligible=false</code>, <code>component_gate_passed=false</code>다.</td></tr>
+<tr><td>첫 diagnostic 실행이 pose 전에 중단</td><td>FoundPose venv의 stale path가 exact checkout이 아닌 <code>beltbench-isaac-runtime</code> DINOv2를 import</td><td>Runner의 exact-source 검사가 오염을 거부했다. exact checkout의 DINOv2·BOP path를 앞에 고정해 재실행했다.</td></tr>
 </table>
 
 <h2>개발 통과와 holdout 실패</h2>
@@ -56,15 +60,24 @@
 </table>
 <p>Holdout의 여섯 표본은 cross-camera yaw disagreement, 두 표본은 독립 inlier fraction으로 거부됐다. Accepted subset도 yaw와 position truth gate를 넘었다. 보고서 SHA-256 <code>d55e5678...9a3d464</code>를 negative evidence로 보존한다. 이미 연 holdout에 맞춰 threshold를 낮추거나 v2를 다시 튜닝하지 않는다.</p>
 
+<h2>YOLOE proposal과 pose diagnostic도 별도로 실패했다</h2>
+<table class="table">
+<tr><th>단계</th><th>결과</th><th>판정</th></tr>
+<tr><td>Frozen proposal gate</td><td>106/120 batch, p95 14.396 ms. 실패 view는 precision 11, recall 4, bbox edge 1건이며 중복 가능</td><td>95% batch 기준 미달. Report SHA <code>feaa578f...6645062</code></td></tr>
+<tr><td>원본 capture truth-free YOLOE</td><td>240 view 중 accepted 235, duplicate consolidation 4, ambiguous 1. Mean/p95 10.226/15.148 ms</td><td>진단 입력만 생성, mask authority 없음</td></tr>
+<tr><td>YOLOE→FoundPose 120 replay</td><td>115/120 accepted, yaw max/p95 0.117737/0.057659 rad, position max/p95 12.026/9.342 mm, total p95 326.498 ms</td><td>Frozen geometry gate 실패, component gate 강제 실패. Report SHA <code>cfdcd884...a6f86</code></td></tr>
+</table>
+<p>동일 RGB에서 static mask는 111/120, YOLOE mask는 115/120을 수락했다. 그러나 두 방법이 모두 수락한 106 sample에서 YOLOE가 yaw를 개선한 경우는 56개, position을 개선한 경우는 51개뿐이고 median 변화는 거의 0이었다. YOLOE가 일관되게 더 좋은 foreground를 제공한 것이 아니라 mask 경계 변화가 correspondence outlier를 다른 yaw·시점으로 이동시켰다. 현재 병목은 단순 detector recall이 아니라 mask와 FoundPose correspondence/solver의 결합 민감도다.</p>
+
 <h2>실시간 해석</h2>
 <p>300–350 ms의 one-shot acquisition은 upstream event budget 안에는 들어가지만 15/30/60 Hz tracker로 사용할 수는 없다. 실제 online graph는 object가 넉넉한 upstream 구간에 들어오면 RGB planar pose를 한 번 얻고, 이후에는 belt encoder translation과 constant yaw를 60 Hz로 전파해야 한다. 이번 translated sweep의 반복 FoundPose는 steady-state 설계가 아니라 trigger 위치 변화에 대한 robustness stress test다.</p>
 <p>그러나 이 구분이 holdout 실패를 없애지는 않는다. 초기 trigger가 16 mm 범위에서 달라질 수 있고 physical RGB는 더 큰 exposure·blur·calibration 변화를 가진다. 따라서 현재 banana FoundPose는 offline candidate이며 simulation·physical runtime authority는 아니다.</p>
 
 <h2>다음 단계</h2>
 <ol>
-<li>YOLOE를 pixel-perfect silhouette가 아니라 object proposal/crop provider로 평가하는 별도 계약을 만든다. Wrong instance, ambiguity, object containment, crop stability와 latency를 gate한다.</li>
-<li>Proposal mask를 입력으로 CAD-constrained pose가 최종 x/y/yaw를 결정하게 하고, pose truth와 cross-camera consistency를 별도로 qualification한다.</li>
-<li>새 upstream trigger-zone campaign을 만들어 위치 jitter, RGB renderer variation, segmentation과 timing을 함께 평가한다. 이번 holdout은 재사용하지 않는다.</li>
+<li>새 upstream trigger-zone event campaign을 먼저 고정한다. 매 frame 두 카메라가 모두 완벽해야 한다고 가정하지 말고, lead-time 안에서 다중 frame 재시도로 유효한 pose 하나를 얻는 event-level 성공률과 deadline을 평가한다.</li>
+<li>RGB proposal, foreground mask, CAD correspondence, planar solver의 측정치를 각각 기록해 어느 경계에서 outlier가 생겼는지 분리한다. 현재 열린 120 sample로 threshold를 다시 튜닝하지 않는다.</li>
+<li>초기 pose가 승인되면 동일 timestamp에서 belt encoder로 현재 위치를 보정하고, 이후 yaw 고정·translation-only 60 Hz propagation으로 planning에 전달한다.</li>
 <li>Pose가 atlas의 지원 yaw 60–210°에 들어올 때만 grasp를 반환하고 나머지는 no-pick으로 표시한다. Nearest-yaw fallback은 두지 않는다.</li>
 <li>Pepsi Light actual-time 영상은 symmetric baseline으로 유지하고, banana 영상은 perception→atlas→no-pick/pick decision→encoder tracking이 동일 trace로 닫힌 뒤 두 번째 시연으로 추가한다.</li>
 </ol>
