@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Banana physics-time no-pick replay · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-107 · 2026-08-30 · physics-time no-pick replay</div>
+<h1>실패한 RGB pose를 성공 애니메이션으로 바꾸지 않고, planner 앞에서 멈춘다.</h1>
+<p class="lede">Banana <code>source-001</code>의 두 Isaac RGB frame, YOLOE proposal, FoundPose planar retry와 pose admission을 한 물리시간 축에 재생했다. 최신 frame 재시도로 개별 측정은 회복됐지만 고정된 전체 pose 품질 기준이 실패했으므로 pose를 publish하지 않았고 atlas·planner·robot command도 호출하지 않았다.</p>
+
+<video controls autoplay loop muted playsinline preload="metadata" style="display:block;width:100%;max-width:1280px;background:#111" src="../../assets/videos/banana-physics-time-no-pick-a0e8e9d-v2.mp4"></video>
+<p class="crumb">120 frames · 30 fps · 1280×720 · 4.0 s · simulation time scale 1.0×</p>
+
+<h2>무엇이 실제 입력이고 무엇이 재생인가</h2>
+<table class="table">
+<tr><th>화면 요소</th><th>근거</th><th>권한</th></tr>
+<tr><td>두 RGB panel</td><td>Isaac physics-time capture의 실제 저장 RGB</td><td>Source-bound sensor evidence</td></tr>
+<tr><td>YOLOE mask panel</td><td>동일 RGB에서 생성한 실제 proposal mask</td><td>Unqualified proposal only</td></tr>
+<tr><td>YOLOE·FoundPose 시간</td><td>각 retry attempt에서 측정해 저장한 offline GPU compute duration</td><td>Physics-frame arrival에 합성한 1.0× replay</td></tr>
+<tr><td>Overview의 banana 위치</td><td>캡처 evaluator truth</td><td>시각 설명 전용, 어떤 판단도 구동하지 않음</td></tr>
+<tr><td>Robot hold와 no-pick</td><td>Typed diagnostic admission trace</td><td>실제 저장된 fail-closed 결정</td></tr>
+</table>
+<div class="callout warn"><strong>이 영상은 integrated live inference 주장이 아니다.</strong> 저장된 physics-time RGB와 측정 offline compute를 인과 순서대로 재생하며 decision을 다시 계산하지 않는다. 따라서 professor-facing positive grasp demo를 대체하지 않고, 실패 입력이 실행 경계에서 올바르게 차단되는 증거로 사용한다.</div>
+
+<h2>문제, 원인, 해결</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결과 결과</th></tr>
+<tr><td>Retry report가 선택 결과만 남겨 전체 시간을 재현할 수 없음</td><td>실패 후 버려진 attempt의 stage duration이 schema에 없었음</td><td><code>64e97e9</code>에서 schema 1.2로 모든 실제 소비 attempt의 YOLOE·FoundPose 시간을 보존하고 합계·순서를 검증했다.</td></tr>
+<tr><td>개별 pose measurement 수락이 component 승인처럼 보일 수 있음</td><td>Provider measurement quality와 corpus-level pose qualification이 다른 gate임</td><td>Diagnostic admission 계약을 별도로 만들고 production runtime admission은 수정하지 않았다. Component 불합격이면 pose publish부터 command까지 모두 false다.</td></tr>
+<tr><td>두 번째 frame이 첫 attempt 완료 전에 도착함</td><td>Generation 319는 100.000 ms에 도착하지만 capacity-one worker는 127.473 ms까지 사용 중임</td><td>Arrival과 processing index를 분리했다. 최신 generation을 하나만 보존하고 worker가 빈 즉시 처리한다.</td></tr>
+<tr><td>단계 텍스트만으로 상태 전환을 읽기 어려움</td><td>Sensor, proposal, pose, admission과 planner가 같은 표현을 사용함</td><td>RGB·YOLOE·FoundPose를 서로 다른 색으로 표시하고 pose admission 실패는 빨강, 미실행 atlas·planner는 회색으로 유지했다.</td></tr>
+<tr><td>단계가 늘어나 planner row가 화면 밖으로 밀림</td><td>고정 row spacing이 7단계 history를 수용하지 못함</td><td><code>a0e8e9d</code>에서 사용 가능한 panel 높이에 맞춰 간격을 계산한다. 최종 contact sheet에서 planner row까지 확인했다.</td></tr>
+</table>
+
+<h2>yaw-01 실제 시간축</h2>
+<table class="table">
+<tr><th>Event time</th><th>상태</th><th>결과</th></tr>
+<tr><td>0.000 ms</td><td>Generation 313 processing 시작</td><td>YOLOE 후 FoundPose 실행</td></tr>
+<tr><td>100.000 ms</td><td>Generation 319 도착</td><td>Worker busy, capacity-one latest slot에서 대기</td></tr>
+<tr><td>127.473 ms</td><td>Generation 313 완료</td><td>Provider measurement quality 불합격</td></tr>
+<tr><td>127.473 ms</td><td>Generation 319 processing 시작</td><td>Stale generation을 누적하지 않고 최신 frame만 소비</td></tr>
+<tr><td>467.968 ms</td><td>Generation 319 완료</td><td>개별 measurement 수락, 그러나 campaign position max/p95 12.291/9.000149 mm로 component 불합격</td></tr>
+<tr><td>이후 2.0 s</td><td>No-pick hold</td><td>Pose publish, atlas query, planner, robot command 모두 미실행</td></tr>
+</table>
+
+<h2>검증된 산출물</h2>
+<table class="table">
+<tr><th>Artifact</th><th>SHA-256</th></tr>
+<tr><td>Retry report schema 1.2</td><td><code>11c2aea9d07f...920b8</code></td></tr>
+<tr><td>Typed no-pick trace</td><td><code>1119473a0f96...4f68</code></td></tr>
+<tr><td>Render report</td><td><code>d4f18cd1dae3...f05a</code></td></tr>
+<tr><td>Source replay MP4 (mpeg4)</td><td><code>ebd59afdb507...9fe0</code></td></tr>
+<tr><td>Devlog presentation derivative (H.264/yuv420p)</td><td><code>e6bf03cd9397...f868f</code></td></tr>
+</table>
+<p>렌더는 clean revision <a href="https://github.com/gohyunsu/beltbench/commit/a0e8e9d"><code>a0e8e9d</code></a>에서 수행했다. Source MP4는 120/120 frame, 30 fps, 4.000 s이며 render report의 source revision·trace SHA·capture SHA와 독립 계산한 해시가 일치한다. 위 player는 브라우저 호환성을 위해 같은 120 frame을 H.264로 재인코딩한 presentation derivative이며 판단 근거가 아니다.</p>
+
+<h2>다음 경계</h2>
+<ol>
+<li>동일 queue와 typed admission을 저장 frame replay가 아닌 하나의 live Isaac sensor process에 연결해 camera capture, YOLOE와 FoundPose의 wall-clock contention을 측정한다.</li>
+<li>현재 열린 120 sample의 threshold를 조정하지 않는다. 별도 미개봉 위치·yaw corpus에서 pose component가 승인되어야만 encoder state와 resident atlas query를 실행한다.</li>
+<li>Atlas가 지원하는 60–210° yaw에서만 grasp를 반환하고 나머지는 명시적 no-pick으로 유지한다. Nearest-yaw 또는 Pepsi fallback은 금지한다.</li>
+<li>Positive banana 영상은 pose 승인 뒤 exact selected pose→encoder propagation→atlas→planning→physics grasp가 한 orchestration core에서 실제로 실행될 때만 생성한다.</li>
+</ol>
+<p><a href="banana-rgb-foundpose-qualification.html">RGB FoundPose qualification</a>과 <a href="banana-source-001-pick-atlas.html">source-001 pick atlas</a>가 앞뒤 권한 경계를 설명한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
