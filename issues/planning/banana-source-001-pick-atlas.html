@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Banana source-001 pick atlas · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-105 · 2026-08-30 · asymmetric target-hand pick atlas</div>
+<h1>대칭 물체 baseline을 넘어 Banana의 full-yaw pick 가능 영역을 source-close한다.</h1>
+<p class="lede">NAS의 물리 시행, stable-pose scene, mesh와 target-hand 후보를 다시 비교해 첫 비대칭 시연 객체를 <code>banana/source-001</code>로 고정했다. Inspire Left의 정적 성공 prior를 별도 보존하고 187개 proposal을 독립 평가한 뒤, xArm6 endpoint를 12 yaw와 3 intercept horizon에서 검사했다. 최종 atlas는 36 cell 중 18개와 grasp 1개를 보존하며 1,124개 source를 재검증했다. 이 결과는 pick-only endpoint coverage이며 RGB pose, complete moving trajectory, contact dynamics와 hardware 실행 권한은 포함하지 않는다.</p>
+
+<h2>왜 Banana인가</h2>
+<table class="table">
+<tr><th>객체</th><th>확인된 근거</th><th>결정</th></tr>
+<tr><td><code>banana/source-001</code></td><td>정확한 Inspire Left v7 시행의 성공 7개가 한 stable pose에 명확히 매핑된다. Visual mesh는 watertight이고 symmetry는 <code>none</code>이다.</td><td>첫 비대칭 positive demo</td></tr>
+<tr><td><code>blue_vase</code></td><td>왼손 정적 성공 기록은 강하지만 visual contact surface가 non-watertight다.</td><td>Contact surface를 교체하거나 자격 검증한 뒤 두 번째 사례</td></tr>
+<tr><td><code>pepsi_light</code></td><td>기존 pipeline과 자료가 가장 풍부하지만 회전 대칭성이 강하다.</td><td>대칭성 활용 baseline</td></tr>
+<tr><td><code>attached_container</code></td><td>왼손 성공 기록은 있으나 open/concave surface에서 signed-contact model이 큰 penetration을 보고했다.</td><td>Contact-model regression</td></tr>
+<tr><td><code>container_pink</code></td><td>Target-hand source pose 후보가 독립 contact/task-wrench gate를 통과하지 못했다.</td><td>Negative coverage</td></tr>
+</table>
+<p>이 선택은 형상이 어려워 보이는 순서가 아니다. Target hand의 실제 시행, stable-pose mapping ambiguity, mesh validity와 비대칭성을 동시에 충족하는지를 기준으로 했다. 보관된 v7 candidate에는 episode result directory가 없으므로 모든 proposal을 성공으로 승격하지 않았다. 성공 7개는 summary 기반 static physical prior, 187개 candidate는 outcome-unknown proposal로 분리했다.</p>
+
+<h2>Capability를 먼저 분리했다</h2>
+<p>두 intrinsic survivor는 접근·closure·retention의 정적 pick geometry는 통과했지만 release path failure가 남았다. Drop-release를 요구하면 worklist가 비어 robot endpoint를 평가할 수 없었다. Release gate를 지우는 대신 <code>pick_only → robot endpoint → dynamic retention/release → drop admission</code> 순서로 단계를 분리했다.</p>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/434a04b"><code>434a04b</code></a>와 <a href="https://github.com/gohyunsu/beltbench/commit/6a320d9"><code>6a320d9</code></a>는 deployment verifier도 policy의 capability-specific worklist를 재구성하게 했다. 실제 nominal assessment는 92개 source를 검증했고 후보 2개×horizon 3개가 모두 <code>pregrasp_ik</code>에서 실패했다. 이를 object 실패로 확대하지 않고 단일 yaw robot context의 negative evidence로 제한했다.</p>
+
+<h2>Full-yaw endpoint 결과</h2>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/8455965"><code>8455965</code></a>는 대칭 축소가 없는 30° 간격 12 yaw, 4.6/4.8/5.0초 horizon, <code>pick_only</code> hard gate를 선언했다. Upstream에서 0.04 m/s로 들어오는 object observation으로 12개 prediction을 생성했고 23개 source를 독립 재현했다. 같은 model context를 한 번 준비한 batch evaluator가 모든 yaw를 순서대로 검사했다.</p>
+<table class="table">
+<tr><th>Yaw</th><th>Feasible pair</th><th>판정</th></tr>
+<tr><td>0°, 30°</td><td>0 / 6</td><td>두 grasp 모두 pregrasp IK 실패</td></tr>
+<tr><td>60°, 90°, 120°, 150°, 180°, 210°</td><td>각 3 / 6</td><td><code>autodex-8181213046540b2c8ff6</code>가 세 horizon에서 통과</td></tr>
+<tr><td>240°, 270°, 300°, 330°</td><td>0 / 6</td><td>두 grasp 모두 pregrasp IK 실패</td></tr>
+</table>
+<p>지원 yaw에서 두 번째 grasp는 매 horizon의 <code>grasp_robot_object_penetration</code>으로 거절됐다. Threshold를 낮추거나 nearest-yaw fallback을 넣지 않았다. Runtime은 RGB가 추정한 full yaw와 covariance가 지원 cell을 안정적으로 bracket할 때만 후보를 반환해야 한다.</p>
+
+<h2>실패 run과 원인</h2>
+<table class="table">
+<tr><th>증상</th><th>원인</th><th>수정과 결과</th></tr>
+<tr><td>Nominal assessment는 생성됐지만 verifier가 worklist 불일치로 거부</td><td>Verifier가 policy의 <code>pick_only</code> 대신 legacy drop-release worklist를 비교</td><td>Capability별 worklist를 producer·verifier 전체에 적용했다. 관련 회귀 51개와 실제 92-source assessment가 통과했다.</td></tr>
+<tr><td>첫 atlas compile이 <code>intrinsic evaluation missing</code>으로 중단</td><td>Shortlist input loader가 verified assessment candidates 대신 legacy drop-release subset만 로드</td><td>Assessment가 명시한 candidate ID만 로드하도록 API를 변경하고 누락·중복을 거부했다.</td></tr>
+<tr><td>두 번째 atlas는 36 cell을 썼지만 verifier가 prediction association을 거부</td><td>Prediction batch가 고정한 policy/calibration과 내용은 같지만 다른 checkout 경로를 compiler에 전달</td><td>실패 artifact를 승인하지 않고 보존했다. Compiler가 prediction batch의 exact static source 경로를 쓰지 않으면 쓰기 전에 거부하도록 preflight를 추가했다.</td></tr>
+<tr><td>Pick-only registry가 release failure 때문에 후보를 거부</td><td>Registry와 shortlist context가 모든 failure를 drop-release 기준으로 해석</td><td><a href="https://github.com/gohyunsu/beltbench/commit/3fc5304"><code>3fc5304</code></a>와 <a href="https://github.com/gohyunsu/beltbench/commit/b27224e"><code>b27224e</code></a>에서 공통 capability failure classifier와 assessment-scoped loading을 적용했다. Release failure는 drop capability에는 남고 pick capability만 보존된다.</td></tr>
+</table>
+
+<h2>검증된 atlas와 lookup</h2>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/0ee5b0c"><code>0ee5b0c</code></a>에서 관련 회귀 67개가 통과했다. 최종 <code>banana-source-001-xarm6-pick-context-atlas-0ee5b0c-v1</code>은 12 yaw×3 horizon의 36 cell, 지원 cell 18개, distinct grasp 1개를 담는다. 독립 verifier는 direct/transitive source 1,124개와 derived order를 재현했다. Atlas SHA-256은 <code>eb4825d734d69b1429a5bf19bba73498f73cb5a44d5291b8a3a5db89fab8ede8</code>이다.</p>
+<table class="table">
+<tr><th>10,000 resident query</th><th>측정값</th></tr>
+<tr><td>Accepted</td><td>4,478</td></tr>
+<tr><td>Mean / p50</td><td>82.510 / 79.438 µs</td></tr>
+<tr><td>p95 / p99 / max</td><td>89.560 / 116.320 / 149.797 µs</td></tr>
+</table>
+<p>Benchmark는 startup source verification과 atlas load를 제외한 resident lookup만 측정한다. Accepted query는 sampled endpoint cell에 공통 grasp가 있다는 뜻이며, complete trajectory, timing, moving collision, contact, stop path나 controller handoff가 통과했다는 뜻이 아니다.</p>
+
+<h2>권한 경계와 다음 단계</h2>
+<ol>
+<li>Stable pose와 conveyor calibration은 provisional이다. Simulation에서는 exact source를 사용하되 physical deployment에는 measured plane, travel direction과 robot-base transform이 필요하다.</li>
+<li>현재 입력 yaw는 offline grid다. Isaac RGB sensor에서 banana mask, stable pose, planar position, full yaw와 covariance를 실제 runtime contract로 생산해야 한다. Ground-truth prim pose는 평가에만 사용한다.</li>
+<li>Atlas가 반환한 candidate를 latest robot state와 timestamped object prediction에 배치하고, cuRobo resident batched IK/collision과 independent complete-path validator로 moving prefix·retention·abort를 검사해야 한다.</li>
+<li>Release failure는 남아 있다. 첫 영상은 pick-only guarded retention까지 분리해 검증하고, bin drop은 dynamic opening·detach·containment qualification을 통과한 뒤 추가한다.</li>
+<li>교수용 영상은 actual RGB perception과 online atlas decision이 같은 trace에 연결되고 Isaac articulation/contact feedback이 실제 command를 실행할 때만 새 positive evidence로 채택한다.</li>
+</ol>
+<p><a href="grasp-filter-yaw-batch-regeneration.html">Full-yaw batch 원칙</a>, <a href="rgb-camera-pipeline-correction.html">RGB-only 관측 계약</a>, <a href="multi-pose-resident-grasp-atlas.html">grasp qualification 경계</a>가 관련 설계를 설명한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
