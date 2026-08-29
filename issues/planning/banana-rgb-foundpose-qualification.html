@@ -14,7 +14,7 @@
 <main class="wrap article">
 <div class="eyebrow">ISSUE-106 · 2026-08-30 · asymmetric RGB planar pose</div>
 <h1>Banana를 첫 비대칭 객체로 유지하되, RGB pose holdout 실패를 숨기지 않는다.</h1>
-<p class="lede">NAS 후보를 다시 비교한 결과 <code>banana/source-001</code>보다 먼저 시도할 일반 객체는 없었다. Banana는 watertight 비대칭 mesh, Inspire Left 정적 성공 prior, exact stable-pose mapping, FoundPose representation과 xArm6 pick atlas를 함께 갖는다. 다만 actual-speed 두 카메라 RGB에서 개발 split은 통과했지만 translated holdout은 실패했다. 따라서 object 선택은 유지하고 FoundPose pose authority는 보류한다.</p>
+<p class="lede">NAS 후보를 다시 비교한 결과 <code>banana/source-001</code>보다 먼저 시도할 일반 객체는 없었다. Banana는 watertight 비대칭 mesh, Inspire Left 정적 성공 prior, exact stable-pose mapping, FoundPose representation과 xArm6 pick atlas를 함께 갖는다. 기존 translated holdout에 이어 physics-time trigger-zone retry도 24/24 event를 얻었지만 position gate를 실패했다. 따라서 object 선택은 유지하고 FoundPose pose authority는 보류한다.</p>
 
 <h2>객체 선정은 perception 결과와 분리했다</h2>
 <table class="table">
@@ -30,7 +30,7 @@
 <table class="table">
 <tr><th>항목</th><th>고정된 입력</th></tr>
 <tr><td>Sensor</td><td>Isaac RGB 두 대, object mask 기록, observed depth 요청·사용 없음</td></tr>
-<tr><td>Campaign</td><td>24 yaw × 5 belt 위치, 0.04 m/s, x -0.440→-0.424 m</td></tr>
+<tr><td>Campaign</td><td>24 yaw × 5 belt 위치, 0.04 m/s, x -0.440→-0.424 m. Legacy capture와 physics-time replacement를 분리</td></tr>
 <tr><td>Stable pose</td><td><code>banana/source-001</code>, source-bound provisional transform</td></tr>
 <tr><td>FoundPose</td><td><code>paradex2://AutoDex/foundpose_assets/banana/object_repre/v1/banana/1/repre.pth</code>, SHA-256 <code>9375fa33...a30ee9</code></td></tr>
 <tr><td>Evaluation</td><td>Temporal index 0만 development, index 1–4는 정책 고정 후 holdout</td></tr>
@@ -48,6 +48,9 @@
 <tr><td>Evaluator corpus를 바로 pose replay에 연결할 수 없음</td><td>격리 candidate NPZ가 RGB·intrinsic·extrinsic은 보존하지만 camera-source provenance는 보존하지 않음</td><td>기존 파일을 추정으로 이어 붙이지 않았다. 원본 FoundPose capture에서 object mask를 읽지 않고 RGB candidate를 다시 추출했다.</td></tr>
 <tr><td>진단 실험이 qualification처럼 보일 위험</td><td>기존 qualified composer는 합격 mask report를 강제하므로 실패 결과를 넣을 수 없고, 이를 느슨하게 만들면 authority 경계가 깨짐</td><td><a href="https://github.com/gohyunsu/beltbench/commit/4a02e33"><code>4a02e33</code></a>에서 공통 provenance join을 추출하고 별도 <code>unqualified_diagnostic_only</code> composer를 추가했다. 이 경로는 항상 <code>deployment_eligible=false</code>, <code>component_gate_passed=false</code>다.</td></tr>
 <tr><td>첫 diagnostic 실행이 pose 전에 중단</td><td>FoundPose venv의 stale path가 exact checkout이 아닌 <code>beltbench-isaac-runtime</code> DINOv2를 import</td><td>Runner의 exact-source 검사가 오염을 거부했다. exact checkout의 DINOv2·BOP path를 앞에 고정해 재실행했다.</td></tr>
+<tr><td><code>actual-speed</code> capture의 frame 간격이 일정하지 않음</td><td>물체 위치만 100 ms 간격으로 설정했지만 Isaac sensor의 실제 measurement timestamp를 각 위치에서 검증하지 않음</td><td><a href="https://github.com/gohyunsu/beltbench/commit/3aff650"><code>3aff650</code></a>에서 5개 physics frame을 모두 render하고 schedule coverage·timestamp·displacement·implied speed를 fail-closed 검증했다.</td></tr>
+<tr><td>모든 frame을 render해도 한 구간이 83.33 ms, 다음 구간이 116.67 ms</td><td>Isaac Camera <code>rendering_time</code>이 render generation과 일대일로 안정적이지 않음</td><td><a href="https://github.com/gohyunsu/beltbench/commit/01e0e60"><code>01e0e60</code></a>에서 새 render generation을 <code>World.current_time</code>에 즉시 latch했다. 96개 구간 모두 100.000005 ms가 됐다.</td></tr>
+<tr><td>Retry 보고서로 planning을 연결하려면 원본 report를 다시 join해야 함</td><td>선택 generation만 남기고 accepted pose·covariance·measurement timestamp를 버림</td><td><a href="https://github.com/gohyunsu/beltbench/commit/f0e8e46"><code>f0e8e46</code></a>에서 선택 measurement 24개를 그대로 보존했다. Replay timing은 live가 아니라 <code>physics frame arrival + measured offline compute</code>로 명시했다.</td></tr>
 </table>
 
 <h2>개발 통과와 holdout 실패</h2>
@@ -69,15 +72,25 @@
 </table>
 <p>동일 RGB에서 static mask는 111/120, YOLOE mask는 115/120을 수락했다. 그러나 두 방법이 모두 수락한 106 sample에서 YOLOE가 yaw를 개선한 경우는 56개, position을 개선한 경우는 51개뿐이고 median 변화는 거의 0이었다. YOLOE가 일관되게 더 좋은 foreground를 제공한 것이 아니라 mask 경계 변화가 correspondence outlier를 다른 yaw·시점으로 이동시켰다. 현재 병목은 단순 detector recall이 아니라 mask와 FoundPose correspondence/solver의 결합 민감도다.</p>
 
+<h2>Physics-time trigger-zone retry 결과</h2>
+<p>Legacy <code>b0c42a6</code> capture는 이름과 달리 96개 frame interval이 약 33–167 ms로 흔들렸다. 따라서 location robustness evidence로만 남기고 actual-time 주장에서는 제외했다. Replacement capture <code>01e0e60</code>은 96개 interval 모두 100.000005 ms, displacement 4 mm, implied speed 0.039999998 m/s를 만족했다. Capture report SHA-256은 <code>973dada7...304f873</code>다.</p>
+<table class="table">
+<tr><th>단계</th><th>Physics-time replacement 결과</th><th>판정</th></tr>
+<tr><td>YOLOE two-view</td><td>120/120 bundle, mean/p95 9.075/10.852 ms. View outcome 235 accepted, 4 consolidated, 1 ambiguous</td><td>속도는 충분하지만 unqualified proposal. Report SHA <code>05f6bd44...2e2ba56</code></td></tr>
+<tr><td>FoundPose planar</td><td>116/120 accepted, yaw max/p95 0.10487/0.05434 rad, position max/p95 13.132/9.841 mm, total p95 359.358 ms</td><td>Yaw max, position max/p95 실패. Report SHA <code>1d9abe5f...2d13d05</code></td></tr>
+<tr><td>Latest-frame retry</td><td>24/24 event, first-pass 23/24, 1 event recovered, 최대 2회, completion max/p95 467.968/374.206 ms</td><td>Retry mechanics 통과. Selected pose position max/p95 12.291/9.000149 mm로 pose gate 실패</td></tr>
+</table>
+<p>9.000149 mm는 반올림하면 9 mm처럼 보이지만 고정 gate를 초과한다. 더 중요한 최대 오차도 12.291 mm다. Retry report schema 1.1은 선택된 pose·covariance·generation·timestamp를 모두 보존하며 SHA-256은 <code>ee55cf0a...3964da4b</code>다. 이 결과는 offline inference latency를 physics frame arrival에 합성한 causal replay이므로 integrated live wall-clock evidence로 부르지 않는다.</p>
+
 <h2>실시간 해석</h2>
-<p>300–350 ms의 one-shot acquisition은 upstream event budget 안에는 들어가지만 15/30/60 Hz tracker로 사용할 수는 없다. 실제 online graph는 object가 넉넉한 upstream 구간에 들어오면 RGB planar pose를 한 번 얻고, 이후에는 belt encoder translation과 constant yaw를 60 Hz로 전파해야 한다. 이번 translated sweep의 반복 FoundPose는 steady-state 설계가 아니라 trigger 위치 변화에 대한 robustness stress test다.</p>
+<p>약 359 ms p95의 one-shot acquisition과 374 ms p95 retry completion은 upstream event budget 안에는 들어가지만 15/30/60 Hz tracker로 사용할 수는 없다. 실제 online graph는 object가 넉넉한 upstream 구간에 들어오면 RGB planar pose를 한 번 얻고, 이후에는 belt encoder translation과 constant yaw를 60 Hz로 전파해야 한다. 이번 translated sweep의 반복 FoundPose는 steady-state 설계가 아니라 trigger 위치 변화에 대한 robustness stress test다.</p>
 <p>그러나 이 구분이 holdout 실패를 없애지는 않는다. 초기 trigger가 16 mm 범위에서 달라질 수 있고 physical RGB는 더 큰 exposure·blur·calibration 변화를 가진다. 따라서 현재 banana FoundPose는 offline candidate이며 simulation·physical runtime authority는 아니다.</p>
 
 <h2>다음 단계</h2>
 <ol>
-<li>새 upstream trigger-zone event campaign을 먼저 고정한다. 매 frame 두 카메라가 모두 완벽해야 한다고 가정하지 말고, lead-time 안에서 다중 frame 재시도로 유효한 pose 하나를 얻는 event-level 성공률과 deadline을 평가한다.</li>
+<li>Physics-time upstream trigger-zone과 bounded latest-frame retry mechanics는 고정됐다. 다음에는 동일 queue를 integrated live Isaac sensor process에서 실행해 wall-clock pacing과 GPU contention을 측정한다.</li>
 <li>RGB proposal, foreground mask, CAD correspondence, planar solver의 측정치를 각각 기록해 어느 경계에서 outlier가 생겼는지 분리한다. 현재 열린 120 sample로 threshold를 다시 튜닝하지 않는다.</li>
-<li>초기 pose가 승인되면 동일 timestamp에서 belt encoder로 현재 위치를 보정하고, 이후 yaw 고정·translation-only 60 Hz propagation으로 planning에 전달한다.</li>
+<li>현재 pose campaign은 불합격이므로 planner에 전달하지 않는다. 선택 pose lineage를 이용해 rejection trace를 먼저 닫고, 별도 미개봉 corpus에서 pose gate가 승인된 뒤 동일 timestamp의 belt encoder와 60 Hz translation-only propagation을 연결한다.</li>
 <li>Pose가 atlas의 지원 yaw 60–210°에 들어올 때만 grasp를 반환하고 나머지는 no-pick으로 표시한다. Nearest-yaw fallback은 두지 않는다.</li>
 <li>Pepsi Light actual-time 영상은 symmetric baseline으로 유지하고, banana 영상은 perception→atlas→no-pick/pick decision→encoder tracking이 동일 trace로 닫힌 뒤 두 번째 시연으로 추가한다.</li>
 </ol>
