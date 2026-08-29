@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Banana RGB FoundPose qualification · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-106 · 2026-08-30 · asymmetric RGB planar pose</div>
+<h1>Banana를 첫 비대칭 객체로 유지하되, RGB pose holdout 실패를 숨기지 않는다.</h1>
+<p class="lede">NAS 후보를 다시 비교한 결과 <code>banana/source-001</code>보다 먼저 시도할 일반 객체는 없었다. Banana는 watertight 비대칭 mesh, Inspire Left 정적 성공 prior, exact stable-pose mapping, FoundPose representation과 xArm6 pick atlas를 함께 갖는다. 다만 actual-speed 두 카메라 RGB에서 개발 split은 통과했지만 translated holdout은 실패했다. 따라서 object 선택은 유지하고 FoundPose pose authority는 보류한다.</p>
+
+<h2>객체 선정은 perception 결과와 분리했다</h2>
+<table class="table">
+<tr><th>후보</th><th>NAS에서 확인한 장점</th><th>차단 요인과 역할</th></tr>
+<tr><td><code>banana/source-001</code></td><td>Symmetry 없음, watertight surface, Left 성공 prior 7개, exact FoundPose representation, pick atlas grasp 1개</td><td>첫 asymmetric positive target. RGB pose와 full moving command는 별도 검증</td></tr>
+<tr><td><code>blue_vase</code></td><td>강한 Left 정적 성공 기록과 비대칭 외형</td><td>Non-watertight signed-contact surface를 교체하거나 검증한 뒤 두 번째 객체</td></tr>
+<tr><td><code>pepsi_light</code></td><td>기존 simulation·planning evidence가 가장 풍부</td><td>회전 대칭 baseline. 일반 yaw 검증을 대신할 수 없음</td></tr>
+<tr><td><code>attached_container</code></td><td>Left 시행 기록</td><td>Open/concave contact model regression 용도</td></tr>
+</table>
+<p>즉 perception이 한 번 실패했다고 쉬운 대칭 물체로 바꾸지 않는다. 반대로 정적 grasp prior가 있다는 이유만으로 perception과 moving execution이 검증됐다고 간주하지도 않는다.</p>
+
+<h2>입력과 provenance</h2>
+<table class="table">
+<tr><th>항목</th><th>고정된 입력</th></tr>
+<tr><td>Sensor</td><td>Isaac RGB 두 대, object mask 기록, observed depth 요청·사용 없음</td></tr>
+<tr><td>Campaign</td><td>24 yaw × 5 belt 위치, 0.04 m/s, x -0.440→-0.424 m</td></tr>
+<tr><td>Stable pose</td><td><code>banana/source-001</code>, source-bound provisional transform</td></tr>
+<tr><td>FoundPose</td><td><code>paradex2://AutoDex/foundpose_assets/banana/object_repre/v1/banana/1/repre.pth</code>, SHA-256 <code>9375fa33...a30ee9</code></td></tr>
+<tr><td>Evaluation</td><td>Temporal index 0만 development, index 1–4는 정책 고정 후 holdout</td></tr>
+</table>
+
+<h2>문제, 원인, 수정</h2>
+<table class="table">
+<tr><th>관찰한 문제</th><th>원인</th><th>해결과 결과</th></tr>
+<tr><td>최신 RGB capture를 qualifier가 입력 단계에서 거부</td><td>Qualifier는 legacy <code>object_glb</code> provenance만 허용했고 최신 capture는 <code>object_manifest + object_visual_mesh</code>를 사용</td><td><a href="https://github.com/gohyunsu/beltbench/commit/39f4a20"><code>39f4a20</code></a>에서 두 source variant를 상호배타적으로 허용하고 incomplete·mixed source를 거부했다.</td></tr>
+<tr><td>YOLOE exact-mask qualification이 106/120 batch에 머묾</td><td>Downstream view에서 banana의 오목한 안쪽 곡선과 그림자를 하나의 연결 mask로 채움</td><td>Largest-component cleanup은 연결 overfill을 고칠 수 없어 채택하지 않았다. YOLOE는 proposal 후보이며 exact silhouette authority가 아니다.</td></tr>
+<tr><td>Per-view FoundPose PnP가 80.6–230 mm translation error</td><td>일반 6-DoF PnP가 알려진 stable pose와 belt-plane 제약을 사용하지 않음</td><td>PnP 결과를 버리고 FoundPose 2D-3D match만 stable-pose constrained 3-DoF solver에 전달했다.</td></tr>
+<tr><td>Top-60 match가 독립 inlier 60개처럼 계산됨</td><td>Cyclic-buddy가 여러 query를 같은 representation vertex에 연결했고 adapter가 ID를 버림</td><td><a href="https://github.com/gohyunsu/beltbench/commit/f183ee9"><code>f183ee9</code></a>에서 query ID와 vertex ID를 각각 한 번만 허용했다. 실제 unique support는 hypothesis당 15–39개였다.</td></tr>
+<tr><td>Offline qualifier와 live backend의 acceptance가 다름</td><td>Qualifier가 solver gate만 적용하고 runtime deadline·cross-camera·covariance gate를 적용하지 않음</td><td><a href="https://github.com/gohyunsu/beltbench/commit/e730d0f"><code>e730d0f</code></a>에서 동일한 RGB planar acquisition policy를 사용하고 total acquisition latency까지 evidence에 결속했다.</td></tr>
+</table>
+
+<h2>개발 통과와 holdout 실패</h2>
+<table class="table">
+<tr><th>Metric</th><th>Development 24</th><th>Translated holdout 96</th><th>고정 기준</th></tr>
+<tr><td>Measurement acceptance</td><td>23/24, 95.83%</td><td>88/96, 91.67%</td><td>≥95%</td></tr>
+<tr><td>Yaw max / p95</td><td>0.077302 / 0.059578 rad</td><td>0.092353 / 0.067561 rad</td><td>≤0.08 / 0.06 rad</td></tr>
+<tr><td>Position max / p95</td><td>8.934 / 8.819 mm</td><td>15.500 / 12.623 mm</td><td>≤10 / 9 mm</td></tr>
+<tr><td>Total acquisition max / p95</td><td>302.527 / 301.243 ms</td><td>408.785 / 346.993 ms</td><td>≤950 ms per event</td></tr>
+</table>
+<p>Holdout의 여섯 표본은 cross-camera yaw disagreement, 두 표본은 독립 inlier fraction으로 거부됐다. Accepted subset도 yaw와 position truth gate를 넘었다. 보고서 SHA-256 <code>d55e5678...9a3d464</code>를 negative evidence로 보존한다. 이미 연 holdout에 맞춰 threshold를 낮추거나 v2를 다시 튜닝하지 않는다.</p>
+
+<h2>실시간 해석</h2>
+<p>300–350 ms의 one-shot acquisition은 upstream event budget 안에는 들어가지만 15/30/60 Hz tracker로 사용할 수는 없다. 실제 online graph는 object가 넉넉한 upstream 구간에 들어오면 RGB planar pose를 한 번 얻고, 이후에는 belt encoder translation과 constant yaw를 60 Hz로 전파해야 한다. 이번 translated sweep의 반복 FoundPose는 steady-state 설계가 아니라 trigger 위치 변화에 대한 robustness stress test다.</p>
+<p>그러나 이 구분이 holdout 실패를 없애지는 않는다. 초기 trigger가 16 mm 범위에서 달라질 수 있고 physical RGB는 더 큰 exposure·blur·calibration 변화를 가진다. 따라서 현재 banana FoundPose는 offline candidate이며 simulation·physical runtime authority는 아니다.</p>
+
+<h2>다음 단계</h2>
+<ol>
+<li>YOLOE를 pixel-perfect silhouette가 아니라 object proposal/crop provider로 평가하는 별도 계약을 만든다. Wrong instance, ambiguity, object containment, crop stability와 latency를 gate한다.</li>
+<li>Proposal mask를 입력으로 CAD-constrained pose가 최종 x/y/yaw를 결정하게 하고, pose truth와 cross-camera consistency를 별도로 qualification한다.</li>
+<li>새 upstream trigger-zone campaign을 만들어 위치 jitter, RGB renderer variation, segmentation과 timing을 함께 평가한다. 이번 holdout은 재사용하지 않는다.</li>
+<li>Pose가 atlas의 지원 yaw 60–210°에 들어올 때만 grasp를 반환하고 나머지는 no-pick으로 표시한다. Nearest-yaw fallback은 두지 않는다.</li>
+<li>Pepsi Light actual-time 영상은 symmetric baseline으로 유지하고, banana 영상은 perception→atlas→no-pick/pick decision→encoder tracking이 동일 trace로 닫힌 뒤 두 번째 시연으로 추가한다.</li>
+</ol>
+<p><a href="banana-source-001-pick-atlas.html">Banana pick atlas</a>, <a href="rgb-camera-pipeline-correction.html">RGB-only 관측 계약</a>, <a href="planar-yaw-backend-promotion.html">planar backend 승격 원칙</a>이 관련 경계를 설명한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
