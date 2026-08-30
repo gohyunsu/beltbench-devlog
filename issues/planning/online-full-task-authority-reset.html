@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Online full-task authority reset · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-108 · 2026-08-30 · online full-task authority reset</div>
+<h1>Nearest grasp를 금지하지 않고 후보 검색과 실행 권한을 분리한다.</h1>
+<p class="lede">기존 Isaac positive demo는 RGB observation 뒤 resident full-command를 선택하고 시간·위치를 보정했다. 이는 perception과 controller 연결 회귀에는 유용하지만, 현재 object pose와 robot state에서 full task를 새로 생성하는 목표의 증거가 아니다. Production topology를 grasp retrieval, intercept batch, online motion generation, exact validation, maximin selection 순서로 다시 고정했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/7714470"><code>beltbench@7714470</code></a>은 candidate-only nearest grasp와 observation-after-command causality 계약을 구현한다. 이 변경은 실제 cuRobo full-task command나 professor video를 생성하지 않았으며, 설정된 239 ms observation-to-command budget도 아직 RTX 측정 결과가 아니다.</div>
+
+<h2>문제 정의를 다시 고정한 이유</h2>
+<p>실제 시스템에서는 stable pose, planar position, full yaw, belt phase, 현재 arm/hand <code>q/qd/qdd</code>를 observation 이전에 알 수 없다. 따라서 이 값들로 결정되는 grasp, intercept time, IK branch, trajectory와 collision 결과도 online이어야 한다. 반면 CAD, stable-pose 후보, symmetry metadata, target-hand static grasp와 static 성공 evidence, calibration, collision model과 warmed solver resource는 offline/startup에 둘 수 있다.</p>
+<p>기존 <code>compatible_grasps()</code>는 exact object·stable pose·hand·capability·quality gate 뒤 static margin으로 정렬하고 <code>validated[0]</code> 하나를 선택했다. 이는 정적 library resolution에는 타당하지만 현재 hand pose와 complete path를 고려한 online 후보 search는 아니다. 또한 문서의 “nearest-neighbor grasp 금지”가 다른 stable pose로 넘어가는 fallback과 같은 context 안의 bounded nearest shortlist를 구분하지 못했다.</p>
+
+<h2>Nearest grasp의 새 역할</h2>
+<table class="table">
+<tr><th>경계</th><th>허용</th><th>금지</th></tr>
+<tr><td>Hard context</td><td>동일 object, admitted stable pose, target hand, task capability와 static evidence</td><td>다른 object·pose·hand에서 이름이나 거리로 대체</td></tr>
+<tr><td>거리</td><td>현재 추정 object frame에서 hand-root translation과 SO(3) geodesic rotation의 bounded SE(3) 거리</td><td>측정 yaw를 저장 yaw로 반올림하거나 stable pose를 nearest class로 변경</td></tr>
+<tr><td>출력</td><td>최대 K개의 planner candidate 또는 solver seed</td><td>Nearest 결과를 그대로 controller command로 실행</td></tr>
+<tr><td>최종 판단</td><td>현재 track·belt·robot state의 online full-path IK, collision, timing과 maximin 검증</td><td>Static quality나 거리 하나로 pick 승인</td></tr>
+</table>
+<p>Object-relative grasp는 측정된 full object pose로 직접 변환한다. 대칭성은 별도 source-closed equivalence가 승인된 경우에만 upstream canonicalization에 사용한다. 일반 비대칭 object에서는 full yaw를 보존한다.</p>
+
+<h2>구현한 계약</h2>
+<table class="table">
+<tr><th>계약</th><th>역할</th><th>권한</th></tr>
+<tr><td><code>BoundedNearestGraspPolicy</code></td><td>Candidate count, translation/rotation bound와 metric scale 고정</td><td><code>execution_authority=none</code></td></tr>
+<tr><td><code>OnlineGraspCandidateBatch</code></td><td>Track·robot hash/timestamp 이후 exact-context grasp를 SE(3) 거리로 정렬</td><td>Candidate only, <code>execution_authorized=false</code></td></tr>
+<tr><td><code>OnlinePlanningInputReference</code></td><td>RGB frame set, conveyor state, robot state, object track의 순서·timestamp·digest 결속</td><td>Simulator truth는 구조적으로 false</td></tr>
+<tr><td><code>OnlineCommandAdmission</code></td><td>Candidate batch, selected grasp, planner/validator timestamp, exact check report와 command hash 결속</td><td>모든 검증 통과 때만 <code>handoff_eligible=true</code></td></tr>
+<tr><td><code>rgb_online_full_task_v4</code></td><td>18단계 provider-neutral application graph와 capacity-one mailbox 고정</td><td>Budget requirement only; runtime evidence 아님</td></tr>
+</table>
+
+<h2>Production stage 순서</h2>
+<pre>RGB/encoder/robot state
+  -> segmentation -> CAD pose -> planar fit -> acquisition gate
+  -> constant-yaw belt tracking
+  -> same-context grasp candidates
+  -> future intercept candidate batch
+  -> online full-task motion generation from current q/qd/qdd
+  -> exact command validation
+  -> robust maximin selection
+  -> capacity-one future-start controller lease
+  -> feedback, lifecycle, asynchronous evidence</pre>
+<p><code>resident_decision</code>과 <code>correction_envelope</code>는 이 topology의 command authority가 아니다. 기존 full-command, path family와 trajectory는 회귀 또는 <code>solver_seed_only</code>로만 남는다. Cached command, precomputed-command execution authority, simulator truth와 CPU planner fallback은 admission에서 모두 false다.</p>
+
+<h2>개발 중 발견한 문제와 해결</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결과 결과</th></tr>
+<tr><td>Nearest를 전부 금지하면 현재 state에 가까운 seed를 빠르게 찾을 수 없음</td><td>Cross-pose fallback과 same-context shortlist를 같은 용어로 취급함</td><td>Exact hard gate 뒤 candidate-only bounded nearest를 허용하고 execution authority를 별도 admission으로 이동했다.</td></tr>
+<tr><td>초기 구현의 distance field를 payload에서 바꿔도 통과할 수 있음</td><td>Transform에서 distance를 재계산하지 않고 저장 숫자의 범위와 정렬만 검사함</td><td>Translation, rotation과 weighted distance를 exact transforms에서 재계산하고 1e-12 tolerance로 검증한다.</td></tr>
+<tr><td>Direct dataclass 생성에서 NaN 또는 boolean generation이 비교식을 우회할 가능성</td><td>Loader는 type을 검사했지만 direct constructor의 <code>validate()</code>가 모든 숫자 타입을 다시 확인하지 않음</td><td>Candidate, batch, input, validation과 admission의 finite/type 검사를 직접 추가하고 변조 test를 만들었다.</td></tr>
+<tr><td>Candidate batch와 command input의 track/robot ancestry가 따로 존재함</td><td>각 artifact hash는 있었지만 서로 같은 source인지 비교하지 않음</td><td>ID, SHA-256과 timestamp를 command admission에서 exact equality로 결속했다.</td></tr>
+<tr><td>ADR 하단이 resident path-family D2를 production 순서로 유지함</td><td>상단의 8월 29일 online decision 뒤 과거 구현 순서를 갱신하지 않음</td><td>Event-driven online generation과 exact validation 순서로 교체하고 unbounded per-tick replanning만 기각했다.</td></tr>
+<tr><td>전체 suite에서 기존 resident test 1건이 10초 deadline을 초과</td><td>고비용 전체 suite 부하와 wall-clock fixture가 겹쳐 <code>validated_lease_binding</code> 전에 deadline이 지남</td><td>전체 결과를 실패로 보존하고 같은 test를 단독 재실행했다. 단독 실행은 통과해 기능 회귀가 아니라 부하 민감 timeout으로 분류했다.</td></tr>
+</table>
+
+<h2>검증 결과</h2>
+<ul>
+<li>Online grasp, command admission과 realtime topology targeted suite: <code>45 passed</code>.</li>
+<li>전체 suite: <code>2058 passed, 68 skipped, 1 failed</code>, 113 subtests, 749.28초. 실패는 위의 기존 10초 wall-clock timeout이다.</li>
+<li>실패 test 단독 재실행: <code>1 passed</code>, setup 포함 68.66초.</li>
+<li>Distance 변조, cross-pose/hand/object fallback, timestamp 역전, simulator truth, cached/precomputed command authority와 rejected collision report를 모두 fail-closed로 확인했다.</li>
+<li>RTX cuRobo integrated latency, actual online full-task command, Isaac measured execution과 영상은 아직 생성하지 않았다.</li>
+</ul>
+
+<h2>다음 단계</h2>
+<ol>
+<li>NAS source-closed Pepsi와 banana grasp를 새 candidate batch 입력으로 materialize하되 runtime NAS traversal은 하지 않는다.</li>
+<li>현재 track과 <code>q/qd/qdd</code>에서 복수 intercept와 approach-to-retreat command를 생성하는 provider-neutral orchestrator를 구현한다.</li>
+<li>RTX 3090의 warmed fixed-shape cuRobo backend를 연결하고 GPU failure를 no-pick으로 유지한 채 p50/p95/p99를 측정한다.</li>
+<li>동일 core를 Isaac RGB, encoder, articulation feedback과 controller adapter에 연결하고 prim truth 없이 다양한 xy/yaw/speed/initial q trial을 실행한다.</li>
+<li>통과한 measured trace에서만 단계 색상과 actual-time video를 생성한다.</li>
+</ol>
+<p><a href="realtime-full-task-inference-reaudit.html">이전 full-task 재감사</a>와 <a href="grasp-selection-filter-reaudit.html">AutoDex static filter 재감사</a>가 이 변경의 이전 권한 경계를 설명한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
