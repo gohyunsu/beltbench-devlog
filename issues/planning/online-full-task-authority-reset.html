@@ -16,7 +16,7 @@
 <h1>Nearest grasp를 금지하지 않고 후보 검색과 실행 권한을 분리한다.</h1>
 <p class="lede">기존 Isaac positive demo는 RGB observation 뒤 resident full-command를 선택하고 시간·위치를 보정했다. 이는 perception과 controller 연결 회귀에는 유용하지만, 현재 object pose와 robot state에서 full task를 새로 생성하는 목표의 증거가 아니다. Production topology를 grasp retrieval, intercept batch, online motion generation, exact validation, maximin selection 순서로 다시 고정했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/7714470"><code>beltbench@7714470</code></a>은 candidate-only nearest grasp와 observation-after-command causality 계약을 구현한다. 이 변경은 실제 cuRobo full-task command나 professor video를 생성하지 않았으며, 설정된 239 ms observation-to-command budget도 아직 RTX 측정 결과가 아니다.</div>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/2c73b8a"><code>beltbench@2c73b8a</code></a>은 candidate-only nearest grasp와 observation-after-command causality에 더해 실제 NAS atlas를 startup에서 transitive 검증하고 static grasp만 resident memory로 추출한다. 두 source는 모두 provisional이므로 production pick과 professor positive video 권한은 아직 없다.</div>
 
 <h2>문제 정의를 다시 고정한 이유</h2>
 <p>실제 시스템에서는 stable pose, planar position, full yaw, belt phase, 현재 arm/hand <code>q/qd/qdd</code>를 observation 이전에 알 수 없다. 따라서 이 값들로 결정되는 grasp, intercept time, IK branch, trajectory와 collision 결과도 online이어야 한다. 반면 CAD, stable-pose 후보, symmetry metadata, target-hand static grasp와 static 성공 evidence, calibration, collision model과 warmed solver resource는 offline/startup에 둘 수 있다.</p>
@@ -66,9 +66,24 @@
 <tr><td>전체 suite에서 기존 resident test 1건이 10초 deadline을 초과</td><td>고비용 전체 suite 부하와 wall-clock fixture가 겹쳐 <code>validated_lease_binding</code> 전에 deadline이 지남</td><td>전체 결과를 실패로 보존하고 같은 test를 단독 재실행했다. 단독 실행은 통과해 기능 회귀가 아니라 부하 민감 timeout으로 분류했다.</td></tr>
 </table>
 
+<h2>실제 NAS source를 연결하며 확인한 사실</h2>
+<p><code>/mnt/paradex2</code> 원본을 수정하지 않고 <code>/mnt/paradex2/hyunsu/beltbench</code>의 source-closed atlas를 읽었다. 새 manifest는 archive-relative path와 exact SHA-256, object·stable pose·arm·hand·capability, expected grasp count를 고정한다. Startup loader는 atlas의 모든 transitive source를 다시 검증하지만 event callback에는 atlas나 NAS path를 전달하지 않는다. 미리 계산된 yaw×horizon context cell은 전부 버리고 <code>ObjectRelativeGrasp</code>만 bounded context slice에 남긴다.</p>
+<table class="table">
+<tr><th>Source</th><th>Startup 재검증</th><th>Resident 결과</th><th>현재 권한</th></tr>
+<tr><td><code>banana/source-001/inspire_left/pick_only</code></td><td>atlas <code>eb4825d...fab8ede8</code>, transitive 1,124개</td><td>grasp 1개</td><td><code>provisional_diagnostic_only</code></td></tr>
+<tr><td><code>pepsi_light/source-001/inspire_left/drop_release</code></td><td>atlas <code>3641f648...7a8a555</code>, transitive 4,532개</td><td>grasp 41개</td><td><code>provisional_diagnostic_only</code></td></tr>
+</table>
+<p>Startup 전체 검증은 RTX 3090 workstation에서 14.782891초 걸렸다. 이는 event latency가 아니라 process startup 비용이다. 이후 exact context lookup 10,000회는 p50/p95/p99/max 1.007/1.095/1.170/100.700 µs였다. Pepsi 41개를 hard gate하고 current object frame의 hand-root와 SE(3) 거리로 top-8을 만드는 1,000회 측정은 6.833/7.193/7.478/8.858 ms였다. Nearest는 <code>bodex-aa72af823f177dc4</code>였지만 batch와 candidate 모두 <code>execution_authorized=false</code>다.</p>
+
+<h2>왜 아직 검증된 Pepsi grasp라고 부를 수 없는가</h2>
+<p>NAS pose-resolution report는 provider <code>inspire</code>의 정적 성공을 source-000 2건, source-001 3건, source-002 0건으로 보존한다. 그러나 report 자체가 provider Inspire와 target <code>inspire_left</code>의 chirality·joint·contact mapping을 unresolved로 둔다. 별도 selected-100 Pepsi catalog의 2 success/1 failure는 Allegro hand다. 따라서 두 결과는 좋은 proposal prior이지만 현재 41개 target-left BODex grasp를 <code>hardware_static</code>으로 승격하지 못한다. Atlas grasp도 모두 <code>validation_scope=unvalidated</code>, atlas도 <code>execution_blocked=true</code>다.</p>
+<p>이 한계를 loader가 숨기지 않는다. Production request는 <code>provisional_grasp_not_admitted</code>, exact object/pose/hand/capability source가 없으면 <code>no_registered_grasp_source</code>로 종료한다. Diagnostic에서 nearest candidate를 얻더라도 이후 현재 track의 intercept, 현재 robot state의 IK, complete-path collision·timing, closure·lift·drop·retreat와 maximin 검증을 모두 새로 실행해야 한다.</p>
+
 <h2>검증 결과</h2>
 <ul>
 <li>Online grasp, command admission과 realtime topology targeted suite: <code>45 passed</code>.</li>
+<li>Registry 추가 후 RTX targeted suite: <code>50 passed in 0.59 s</code>.</li>
+<li>실제 NAS startup loader: banana 1,124개와 Pepsi 4,532개 transitive source 재검증 통과.</li>
 <li>전체 suite: <code>2058 passed, 68 skipped, 1 failed</code>, 113 subtests, 749.28초. 실패는 위의 기존 10초 wall-clock timeout이다.</li>
 <li>실패 test 단독 재실행: <code>1 passed</code>, setup 포함 68.66초.</li>
 <li>Distance 변조, cross-pose/hand/object fallback, timestamp 역전, simulator truth, cached/precomputed command authority와 rejected collision report를 모두 fail-closed로 확인했다.</li>
@@ -77,7 +92,7 @@
 
 <h2>다음 단계</h2>
 <ol>
-<li>NAS source-closed Pepsi와 banana grasp를 새 candidate batch 입력으로 materialize하되 runtime NAS traversal은 하지 않는다.</li>
+<li>현재 provisional source를 승격하려 하지 말고, target-hand static qualification을 별도 evidence로 완료하거나 production no-pick을 유지한다.</li>
 <li>현재 track과 <code>q/qd/qdd</code>에서 복수 intercept와 approach-to-retreat command를 생성하는 provider-neutral orchestrator를 구현한다.</li>
 <li>RTX 3090의 warmed fixed-shape cuRobo backend를 연결하고 GPU failure를 no-pick으로 유지한 채 p50/p95/p99를 측정한다.</li>
 <li>동일 core를 Isaac RGB, encoder, articulation feedback과 controller adapter에 연결하고 prim truth 없이 다양한 xy/yaw/speed/initial q trial을 실행한다.</li>
