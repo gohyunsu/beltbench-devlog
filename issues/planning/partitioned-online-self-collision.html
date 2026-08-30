@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Partitioned online self-collision · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-109 · 2026-08-31 · partitioned online self-collision</div>
+<h1>Sphere와 exact mesh의 책임을 나누고 한 개의 online self-collision 판정으로 합친다.</h1>
+<p class="lede">Nearest grasp는 같은 물체·stable pose·hand 안의 top-K 계산 순서로 사용할 수 있다. 하지만 어느 후보를 실행할지는 현재 RGB 관측, belt track과 robot state에서 새로 만든 동일 command tensor를 독립 충돌 검사한 뒤 결정해야 한다. 이번 단계는 부적격 v28 모델을 대체해 204개 pair를 GPU sphere, 네 pair를 exact mesh에 맡기는 source-bound 경계를 구현하고 실제 비용과 남은 실패를 측정했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/2fb8647"><code>beltbench@2fb8647</code></a>은 pair ownership, 동일 command digest, canonical joint order와 continuous limiting-cell 진단을 검증한다. 그러나 측정 입력은 29.81초 legacy full-command이며 actual RGB observation에서 생성한 command가 아니다. 20/10/5 ms sphere 검사는 모두 fail-closed였고 Isaac positive execution도 없으므로 실행 권한은 없다.</div>
+
+<h2>Nearest grasp는 어디까지 허용하는가</h2>
+<table class="table">
+<tr><th>단계</th><th>정책</th></tr>
+<tr><td>Hard context</td><td>동일 object, admitted stable pose, target hand, capability와 source evidence가 먼저 일치해야 한다.</td></tr>
+<tr><td>Candidate retrieval</td><td>측정된 full object pose로 object-relative grasp를 변환하고 bounded SE(3) 거리로 최대 8개를 정렬한다.</td></tr>
+<tr><td>비대칭 object</td><td>측정 yaw를 그대로 보존한다. Source-closed symmetry가 없는 banana류 object를 회전 대칭으로 간주하지 않는다.</td></tr>
+<tr><td>Final selection</td><td>Online IK, self/connector/world/moving-object collision, dynamics, timing과 robust maximin으로 결정한다. Nearest rank와 distance는 final key에 없다.</td></tr>
+<tr><td>후보 부재</td><td>다른 stable pose나 hand의 nearest grasp로 넘어가지 않는다. No-pick 또는 별도로 적격화한 grasp generator를 호출한다.</td></tr>
+</table>
+<p>따라서 nearest 자체가 문제는 아니다. 정적 library의 가까운 grasp를 곧바로 실행 명령으로 승격하거나, 다른 context의 grasp를 fallback하는 것이 문제다. Pepsi top-8 retrieval의 warm p95는 7.193 ms였으므로 지금 병목도 아니다.</p>
+
+<h2>왜 sphere만 쓰지 않았는가</h2>
+<p>v36에서는 exact mesh holdout의 네 false positive를 없애기 위해 관련 sphere를 일괄 축소했다. 필요한 축소량은 다른 표면의 source coverage를 깨뜨렸다. 보기 좋은 parity 수치를 위해 false negative 가능성을 키우는 수정이므로 기각했다.</p>
+<p>v38은 모든 eligible pair를 정확히 한 owner에 배정한다. 204개 일반 pair는 보수적인 cuRobo sphere, source에서 false positive가 확인된 네 hand pair는 HPP-FCL exact mesh, 인접하거나 의미상 검사 대상이 아닌 23개 pair는 명시적 ignore set이 소유한다. Partition digest <code>4f7efad0...d8b4c4</code>, robot config <code>ab0a35ee...e6d43</code>, sphere certificate <code>6c1eb75a...69ddfd</code>, exact certificate <code>d9aae72b...435e5</code>를 함께 결속했다.</p>
+
+<h2>구현 경계</h2>
+<table class="table">
+<tr><th>구성 요소</th><th>역할</th><th>실행 조건</th></tr>
+<tr><td><code>OnlinePartitionedSelfCollisionValidator</code></td><td>Sphere와 exact 결과를 한 개의 <code>robot_self_collision</code> check로 조합</td><td>동일 canonical command digest, partition과 source identity가 모두 같아야 함</td></tr>
+<tr><td>cuRobo sphere evaluator</td><td>모든 candidate를 두 번의 batched FK와 두 번의 self-collision kernel call로 검사</td><td>204개 sphere-owned pair만 평가</td></tr>
+<tr><td><code>OnlineExactSelfCollisionEvaluator</code></td><td>네 exact-owned pair를 bounded continuous mesh 검사</td><td>독립 worker/client protocol로 주입</td></tr>
+<tr><td>Canonical joint mapping</td><td>Arm과 hand column을 이름으로 checker 순서에 재배열</td><td>위치 기반 silent reuse 금지</td></tr>
+</table>
+<p>cuRobo 환경에는 Torch/CUDA가 있지만 Pinocchio가 없고 HPP-FCL 환경에는 Pinocchio/HPP-FCL이 있지만 Torch가 없다. 첫 구현은 concrete HPP class를 cuRobo process에서 import해 시작조차 못 했다. <a href="https://github.com/gohyunsu/beltbench/commit/3ee14be"><code>3ee14be</code></a>에서 typed evaluator protocol로 의존성을 끊었다. Production에서는 두 환경을 억지로 합치거나 CPU fallback을 추가하지 않고 source-bound resident exact worker를 연결한다.</p>
+<p>또한 legacy command는 hand joint를 thumb-first로 저장하지만 v38 checker와 certificate는 index/little/middle/ring/thumb 순서다. <a href="https://github.com/gohyunsu/beltbench/commit/aa96527"><code>aa96527</code></a>에서 이름 기반 canonical mapping을 넣었다. 이 수정이 없으면 숫자 shape는 맞아도 다른 robot state를 검증하게 된다.</p>
+
+<h2>RTX 3090 측정</h2>
+<table class="table">
+<tr><th>검사</th><th>입력 크기</th><th>p50 / p95</th><th>최소 margin과 판정</th></tr>
+<tr><td>Exact mesh</td><td>1,800 knots, 1,799 cells, 225 exact queries</td><td>69.908 / 70.948 ms</td><td>0.173 mm, accepted diagnostic</td></tr>
+<tr><td>Sphere 20 ms</td><td>1,799 cells</td><td>334.964 / 335.204 ms</td><td>0.682724 mm, rejected</td></tr>
+<tr><td>Sphere 10 ms</td><td>3,598 cells</td><td>503.267 / 503.466 ms</td><td>0.220043 mm, rejected</td></tr>
+<tr><td>Sphere 5 ms</td><td>7,178 cells</td><td>834.786 / 837.204 ms</td><td>0.0582265 mm, rejected</td></tr>
+</table>
+<p>Robot config setup은 각 process에서 약 91-93초였다. 이는 acquisition을 열기 전에 한 번 끝낼 resident startup 비용이지 event latency가 아니다. Exact 검사는 legacy full-command 전체를 통과했지만, sphere 연속 검사의 limiting segment는 1683번 post-drop <code>return</code>이었다. 이때 hand는 열려 정지해 있고 arm이 빠르게 움직였으므로 네 exact-hand pair로 위임할 문제가 아니라 arm sphere swept approximation의 보수성 문제다.</p>
+<p>29.81초 legacy template 전체를 5 ms로 더 촘촘히 훑는 것은 실시간 pipeline 최적화가 아니다. Deadline-critical pick/drop의 실제 online command와 post-drop return command를 별도 horizon으로 다루고, 거기서 표시된 cell만 adaptive refinement할 필요가 있는지 다시 판단해야 한다.</p>
+
+<h2>발생한 문제, 원인과 해결</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결과 결과</th></tr>
+<tr><td>Global sphere shrink가 source coverage를 깨뜨림</td><td>네 국소 false positive를 전체 근사 변경으로 해결하려 함</td><td>수정을 기각하고 pair별 sphere/exact ownership을 도입했다.</td></tr>
+<tr><td>cuRobo test가 Pinocchio import에서 중단</td><td>Concrete exact evaluator를 CUDA component가 직접 의존함</td><td>Typed protocol로 분리했다. cuRobo 9개, HPP/source 16개 targeted test가 환경별로 통과했다.</td></tr>
+<tr><td>같은 hand command의 column 의미가 달랐음</td><td>Legacy producer와 v38 checker의 joint order 차이</td><td>Joint name으로 canonical reorder하고 변형 회귀 test를 추가했다.</td></tr>
+<tr><td>20 ms 결과가 rejection 위치를 보여주지 못함</td><td>Continuous result에 limiting knot/cell/segment가 없었음</td><td><a href="https://github.com/gohyunsu/beltbench/commit/2fb8647"><code>2fb8647</code></a>에서 index와 configurable subinterval bound를 추가했다.</td></tr>
+<tr><td>더 작은 timestep일수록 최소 margin이 감소</td><td>빠른 return segment의 swept sphere 근사가 더 보수적으로 드러남</td><td>전역 refinement를 중단하고 actual online short horizon을 먼저 생성·저장·검증하기로 했다.</td></tr>
+</table>
+
+<h2>검증과 남은 경계</h2>
+<ul>
+<li>Partition contract, dependency decoupling, canonical order와 diagnostics 구현: <a href="https://github.com/gohyunsu/beltbench/commit/f4693de"><code>f4693de</code></a>부터 <code>2fb8647</code>.</li>
+<li>Local targeted regression: <code>25 passed, 5 skipped</code>. Skip은 설치되지 않은 optional runtime dependency 경계다.</li>
+<li>RTX cuRobo/Torch component regression: <code>9 passed</code>.</li>
+<li>HPP/source regression: <code>16 passed, 1 skipped</code>. Skip은 HPP 환경의 Torch 부재다.</li>
+<li>현재 모든 benchmark와 materialized v38 artifact는 <code>execution_authorized=false</code>다.</li>
+<li>Actual <code>OnlineMotionGenerationResult</code> persistence, 별도 exact worker IPC, complete collision/lifecycle/dynamics 조합, maximin admission과 Isaac RGB positive execution은 아직 없다.</li>
+</ul>
+
+<h2>다음 단계</h2>
+<ol>
+<li>실제 RGB-derived track, full yaw, belt state와 current robot <code>q/qd/qdd</code>에서 만든 short-horizon <code>OnlineMotionGenerationResult</code>를 그대로 저장한다.</li>
+<li>동일 command tensor를 sphere worker와 exact worker에 전달하고 self/connector/workcell/time-indexed object collision, dynamics와 event lifecycle을 독립 검증한다.</li>
+<li>통과 후보만 nearest rank와 무관한 robust maximin으로 고르고 pick/drop와 post-drop return을 별도 deadline으로 handoff한다.</li>
+<li>동일 application graph에 Isaac RGB sensor와 simulated articulation feedback을 연결한다. Prim truth나 precomputed command로 빈 구간을 채우지 않는다.</li>
+<li>실제 단계 timestamp와 색상 전환이 포함된 positive actual-time 영상을 검증 보고서에서만 생성한다.</li>
+</ol>
+<p><a href="online-full-task-authority-reset.html">이전 online full-task authority reset</a>이 nearest candidate와 command generation 경계를 설명한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
