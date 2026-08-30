@@ -63,6 +63,21 @@
 <li>Nearest rank를 제외한 complete-command maximin으로 후보를 고르고 fail-closed controller lease를 발급한다.</li>
 <li>같은 application graph에 Isaac RGB sensor와 physics/controller adapter를 연결해 varied-yaw actual-time positive/no-pick trial을 기록한다.</li>
 </ol>
+
+<h2>2026-08-31 갱신: Motion request와 target도 data path로 분리</h2>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/dd23221"><code>dd23221</code></a>은 in-memory intercept와 동일 current robot-state object에서 motion deadline을 만들고, candidate/grasp object에서 connector를 거쳐 pregrasp·contact·lift·drop·retreat target을 직접 조합한다. Source-complete request와 target batch는 비동기 materializer가 기존 payload로 재현한다. 같은 candidate ID를 가진 다른 yaw·position evidence도 complete candidate digest 비교로 거부한다.</p>
+<p>첫 RTX smoke에서 request와 target p50은 1.113 ms와 3.974 ms였다. 원인은 계산량이 아니라 builder가 upstream 및 derived contract를 중복 검증한 구조였다. <a href="https://github.com/gohyunsu/beltbench/commit/a2dd9d4"><code>a2dd9d4</code></a>에서 gate를 삭제하지 않고 derived validation을 분리해, 반복 smoke는 0.592 ms와 1.833 ms로 감소했다.</p>
+<table class="table">
+<tr><th>500 varied query, RTX 3090</th><th>p50</th><th>p95</th><th>p99</th></tr>
+<tr><td>Motion request data</td><td>0.579 ms</td><td>0.601 ms</td><td>0.616 ms</td></tr>
+<tr><td>Five-pose Cartesian target data</td><td>1.790 ms</td><td>1.829 ms</td><td>1.855 ms</td></tr>
+<tr><td>Request + target</td><td>2.369 ms</td><td>2.420 ms</td><td>2.442 ms</td></tr>
+<tr><td>Grasp without FK부터 target까지</td><td>4.678 ms</td><td>4.811 ms</td><td>4.916 ms</td></tr>
+<tr><td>전체 source evidence</td><td>1,621 ms</td><td>1,633 ms</td><td>1,634 ms</td></tr>
+</table>
+<p>Qualified grasp 82개에서 매 query마다 intercept pair 32개와 planning target 4개가 유지됐고 server regression 84개가 통과했으며 optional dependency 1개가 skip됐다. Report SHA-256은 <code>d9947c37...551c</code>다. Data path 최대값은 20.390 ms였으므로 hard real-time upper bound는 아직 아니다.</p>
+<div class="callout"><strong>운영 경계:</strong> 1.6초 evidence를 camera frame마다 생성하지 않는다. Selected·terminal·명시적 sample generation만 bounded latest-only worker에 보내고 stale backlog는 폐기·계수한다. 그러나 RGB, FK, IK, joint trajectory, 독립 command validation, controller와 Isaac이 아직 제외됐으므로 실행 권한은 계속 없다.</div>
+<p>다음 구현은 resident full-task planner가 materialized target batch가 아니라 target query를 직접 소비하고, lightweight generation result를 독립 validator로 넘기는 일이다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
 </body>
