@@ -16,7 +16,7 @@
 <h1>Nearest grasp를 금지하지 않고 후보 검색과 실행 권한을 분리한다.</h1>
 <p class="lede">기존 Isaac positive demo는 RGB observation 뒤 resident full-command를 선택하고 시간·위치를 보정했다. 이는 perception과 controller 연결 회귀에는 유용하지만, 현재 object pose와 robot state에서 full task를 새로 생성하는 목표의 증거가 아니다. Production topology를 grasp retrieval, intercept batch, online motion generation, exact validation, maximin selection 순서로 다시 고정했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/b8303c4"><code>beltbench@b8303c4</code></a>은 candidate-only nearest grasp, current-state online intercept, 4-candidate 5-phase cuRobo command generation, exact-command validation 계약과 nearest-rank 비의존 maximin 선택까지 구현한다. 실제 v28 GPU checker adapter, actual online target, controller admission과 Isaac RGB 실행은 아직 연결되지 않았으므로 production pick과 professor positive video 권한은 없다.</div>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/3da1de5"><code>beltbench@3da1de5</code></a>은 candidate-only nearest grasp, current-state online intercept, 4-candidate 5-phase cuRobo command generation, exact-command component validator 계약, GPU joint/subinterval/Jacobian 검사와 nearest-rank 비의존 maximin 선택까지 구현한다. 그러나 v28 sphere model은 source fit에 실패했으며 actual online target, 완전한 collision validator, controller admission과 Isaac RGB 실행도 아직 연결되지 않았다. 따라서 production pick과 professor positive video 권한은 없다.</div>
 
 <h2>문제 정의를 다시 고정한 이유</h2>
 <p>실제 시스템에서는 stable pose, planar position, full yaw, belt phase, 현재 arm/hand <code>q/qd/qdd</code>를 observation 이전에 알 수 없다. 따라서 이 값들로 결정되는 grasp, intercept time, IK branch, trajectory와 collision 결과도 online이어야 한다. 반면 CAD, stable-pose 후보, symmetry metadata, target-hand static grasp와 static 성공 evidence, calibration, collision model과 warmed solver resource는 offline/startup에 둘 수 있다.</p>
@@ -69,6 +69,8 @@
 <tr><td>Fixed batch v2</td><td>4/4 후보가 30회 모두 풀렸지만 필요 없는 PRM graph warmup이 b512 proxy의 start/end collision 경고를 stderr에 남겼다.</td><td>현재 proxy는 graph seed용 self model로 부적합하므로 graph planner를 구성하지 않았다. 경고를 ignore list로 숨기지 않았다.</td></tr>
 <tr><td>Fixed batch v3/v4</td><td>Graph 제거 후 native solve는 안정화됐다. v4 첫 실행은 script path가 cuRobo venv의 오래된 installed BeltBench를 먼저 읽어 report를 만들지 못했다.</td><td>Server checkout을 <code>PYTHONPATH</code>로 명시하고 report 존재를 command 성공 조건에 포함했다. v4는 stderr 0, 30/30 성공했다.</td></tr>
 <tr><td>5-phase v5</td><td>기존 150 ms full-task stage budget은 single phase 185 ms보다도 작았다.</td><td>다섯 phase를 이전 native endpoint에서 연속 실행해 전체 wall latency를 측정했다. Profile을 실측 기반 provisional horizon으로 교체했다.</td></tr>
+<tr><td>Jacobian probe 1차</td><td>121초 robot-config load 뒤 <code>DeviceCfg.tensor_args.dtype</code>에서 실패했다. 고정 cuRobo revision에 없는 과거 API 형태를 가정한 것이 원인이었다.</td><td>소스의 공식 <code>DeviceCfg.device</code>와 <code>DeviceCfg.dtype</code>에 직접 결속했다. 추정 dtype이나 CPU fallback은 넣지 않았다.</td></tr>
+<tr><td>Jacobian probe 2차</td><td>Sphere-heavy v28 config 때문에 startup load가 121.416초였고 첫 CUDA 호출도 199.114 ms였다.</td><td>Startup, first call, warmup, steady-state를 별도 측정했다. Warm 161-sample FK+Jacobian+SVD는 p99 0.419 ms였지만 acquisition 전 resident initialization이 필수임을 명시했다.</td></tr>
 </table>
 
 <h2>RTX 3090 측정 결과</h2>
@@ -76,9 +78,14 @@
 <tr><th>범위</th><th>결과</th><th>해석</th></tr>
 <tr><td>Single phase v4</td><td>4/4 × 30/30, p50/p99 185.428/187.453 ms, 최대 endpoint 0.050 mm/0.001164 rad, report <code>61cf4e7c...e12b46</code></td><td>Current-state fixed batch backend 진단. RGB나 intercept target은 아님.</td></tr>
 <tr><td>Five phase v5</td><td>4/4 × 30/30, chain p50/p95/p99/max 946.999/949.470/950.151/950.367 ms, 최대 endpoint 0.0527 mm/0.001418 rad, report <code>233f4184...8e671</code></td><td>각 단계가 이전 endpoint에서 시작하는 latency 진단. Source path는 solver에 주지 않았지만 target은 source configuration의 FK이므로 실제 online target 증거는 아님.</td></tr>
-<tr><td>Provisional profile</td><td>Generation 1.05 s, exact validation 0.15 s, selection까지 1.25 s, prediction horizon 3.0 s</td><td>150 ms 가정을 폐기했다. Validation과 renderer contention 실측 전에는 integrated realtime pass가 아님.</td></tr>
+<tr><td>Resident wrist kinematics</td><td>161 samples, p50/p95/p99/max 0.366/0.407/0.419/0.420 ms, report <code>d0c91e17...9844b9d</code></td><td>GPU-resident FK+normalized Jacobian+SVD 핵심은 충분히 빠르다. 입력은 accepted solver trajectory를 보간한 진단용이며 actual online command나 collision 증거가 아니다.</td></tr>
+<tr><td>Provisional profile</td><td>Generation 1.05 s, validation-selection reserve 0.18 s, selection까지 1.25 s, prediction horizon 3.0 s</td><td>150 ms 가정을 폐기했다. 완전한 collision validation과 renderer contention 실측 전에는 integrated realtime pass가 아님.</td></tr>
 </table>
 <p>Pinned cuRobo의 <code>plan_grasp</code>는 대안으로 채택하지 않았다. 내부적으로 goalset, approach, grasp, lift에 네 번 <code>plan_pose</code>를 호출하고 fixed tool-axis offset과 contact-link collision toggle을 사용하므로 더 빠르지도 않고 일반 object-relative moving grasp와 동등하지도 않다. 현재 약 1초 planning을 upstream one-shot event로 실행하고, conveyor가 충분히 일찍 camera 영역에 들어오도록 trigger와 intercept horizon을 설계하는 편이 정직하다.</p>
+
+<h2>v28을 collision authority에서 제외한 이유</h2>
+<p>낮은 kernel latency와 collision geometry의 정확성은 별개다. v28 build report 자체가 <code>sphere_fit_quality_accepted=false</code>, <code>execution_authorized=false</code>를 기록한다. 5,882개 sphere를 사용했지만 arm base와 arm links, connector hand side, Inspire proximal links에서 uncovered gap, surface-gap p95, repair residual 또는 volume coverage 기준을 통과하지 못했다. 따라서 과거 holdout kernel이 빠르게 실행되었다는 사실로 source geometry 실패를 덮을 수 없다.</p>
+<p>이번 진단은 같은 <code>robot.yml</code>을 wrist kinematics resource로만 사용하고 <code>compute_spheres=false</code>를 강제했다. 생성된 보고서도 <code>collision_authorized_for_online_validation=false</code>와 <code>execution_authorized=false</code>를 보존한다. Production collision은 replacement sphere model이 exact source-fit policy와 독립 mesh holdout을 통과한 뒤에만 같은 exact-command validator에 들어갈 수 있다.</p>
 
 <h2>개발 중 발견한 문제와 해결</h2>
 <table class="table">
@@ -93,6 +100,8 @@
 <tr><td>GPU endpoint의 float32 반올림이 command의 current-state hash와 달라질 수 있음</td><td>Planner numeric continuity와 command source identity를 같은 equality로 취급함</td><td>Segment 시작은 1e-7 tolerance로 검증하고 command 첫 waypoint는 원본 controller state를 exact 복원한다.</td></tr>
 <tr><td>Nearest candidate가 최종 선택까지 그대로 유지될 수 있음</td><td>Candidate 계산 순서와 안전성 score의 자료구조 경계가 없었음</td><td>검증 결과의 <code>CandidateRobustness</code>와 final key에서 retrieval rank와 distance를 제거했다. 뒤 후보의 bottleneck margin이 크면 뒤 후보가 선택되는 test를 추가했다.</td></tr>
 <tr><td>첫 63-test 회귀에서 config 1건을 찾지 못함</td><td>SSH command가 repo가 아닌 <code>/home/hyunsu</code>에서 시작해 상대 config path가 깨짐</td><td><code>env -C</code>로 repo CWD를 명시했다. 동일 63개가 전부 통과해 코드 회귀가 아닌 실행 조건 오류로 확정했다.</td></tr>
+<tr><td>cuRobo CUDA 환경의 online 묶음 test가 perception import에서 중단됨</td><td>cuRobo 전용 venv에는 Torch/CUDA는 있지만 OpenCV가 없고, HPP 환경에는 OpenCV는 있지만 Torch가 없다.</td><td>의존성을 섞거나 CPU fallback을 추가하지 않고 HPP 계약 test와 CUDA component test를 환경별로 분리했다. CUDA kinematics/dynamics/subinterval targeted set과 HPP orchestration set을 각각 통과시켰다.</td></tr>
+<tr><td>v28을 qualified validator로 부르던 문서 표현</td><td>Kernel holdout·latency 결과와 sphere source-fit 결과를 같은 적격성으로 잘못 합쳤다.</td><td>Build report를 재감사해 19개 failure를 확인하고 backend ID를 <code>pending-qualified-collision-model</code>로 낮췄다. v28은 kinematics 및 negative collision diagnostic에만 사용한다.</td></tr>
 </table>
 
 <h2>실제 NAS source를 연결하며 확인한 사실</h2>
@@ -120,15 +129,18 @@
 <li>실측 profile, interception, generation 전체 targeted 회귀: <code>63 passed, 11 subtests</code>.</li>
 <li>Exact-command validation과 nearest-rank 비의존 selection 신규 test: <code>6 passed</code>.</li>
 <li>신규 경계를 포함한 online pipeline 회귀: RTX 3090 server에서 <code>63 passed</code>.</li>
+<li>Exact dynamics/subinterval/kinematics CUDA targeted tests: <code>10 passed</code>; joint-order 역전과 rank-deficient Jacobian rejection 포함.</li>
+<li>Kinematics probe joint mapping HPP tests: <code>4 passed</code>.</li>
+<li>RTX 3090 resident 161-sample FK+Jacobian+SVD: warm p99 <code>0.419 ms</code>, report SHA-256 <code>d0c91e172eb7e6d04b3411ca7dd26fa9c24448e139ad4a4d60f3c9e949844b9d</code>.</li>
 <li>RTX 5-phase native cuRobo chain: 4 candidates가 30/30 trials에서 전 phase 성공, stderr 0.</li>
-<li>Actual online Cartesian target, independent v28 exact validation, maximin admission, Isaac measured execution과 새 영상은 아직 생성하지 않았다.</li>
+<li>Actual online Cartesian target, qualified independent exact collision validation, maximin admission, Isaac measured execution과 새 영상은 아직 생성하지 않았다.</li>
 </ul>
 
 <h2>다음 단계</h2>
 <ol>
 <li>현재 provisional source를 승격하려 하지 말고, target-hand static qualification을 별도 evidence로 완료하거나 production no-pick을 유지한다.</li>
-<li>새 online command를 기존 resident certificate로 위장하지 말고, qualified v28 cuRobo/Torch collision component를 재사용하는 bounded exact-command validator를 연결한다.</li>
-<li><code>b8303c4</code>의 fixed identity/order 계약에 qualified v28 GPU checker adapter를 연결한다. Joint/workspace/singularity/timing과 self/connector/world/time-indexed moving-object margin을 실제 생성 command에서 산출한다.</li>
+<li>새 online command를 기존 resident certificate로 위장하지 않는다. V28 sphere model은 제외하고 replacement model을 exact source-fit policy와 independent mesh holdout으로 먼저 적격화한다.</li>
+<li><code>b8303c4</code>의 fixed identity/order 계약에 적격 GPU collision adapter를 연결한다. 이미 구현한 joint/workspace/singularity 검사와 함께 self/connector/world/time-indexed moving-object margin을 실제 생성 command에서 산출한다.</li>
 <li>동일 core를 Isaac RGB, encoder, articulation feedback과 controller adapter에 연결하고 prim truth 없이 다양한 xy/yaw/speed/initial q trial을 실행한다.</li>
 <li>통과한 measured trace에서만 단계 색상과 actual-time video를 생성한다.</li>
 </ol>
