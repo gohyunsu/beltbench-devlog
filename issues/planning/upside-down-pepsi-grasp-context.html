@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Upside-down Pepsi grasp context · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-110 · 2026-08-31 · upside-down Pepsi grasp context</div>
+<h1>Upside-down Pepsi를 source-001 nearest grasp로 연결하지 않는다.</h1>
+<p class="lede">Nearest grasp는 같은 stable-pose context 안에서만 유효하다. 기존 Isaac RGB Pepsi 관측은 legacy <code>upside_down</code> pose였고 source-closed class binding은 이를 canonical <code>source-002</code>로 분류한다. 그러나 online registry에는 <code>source-001</code> grasp만 있어, 잘못 연결하면 179도 이상 다른 자세의 grasp를 실행하게 된다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/aef8607"><code>beltbench@aef8607</code></a>은 NAS의 source-002 atlas 42개를 정확한 context로 등록한다. 모두 <code>unvalidated</code>이므로 retrieval은 data availability를 알 수 있지만 planning과 execution은 계속 no-pick이다.</div>
+
+<h2>확인한 identity</h2>
+<table class="table">
+<tr><th>항목</th><th>결과</th><th>권한</th></tr>
+<tr><td>기존 Isaac RGB estimate</td><td>xy [-0.42534, -0.001397] m, yaw -0.348734 rad</td><td>Unqualified diagnostic, command authority 없음</td></tr>
+<tr><td>Legacy pose alias</td><td><code>upside_down -> source-002</code></td><td>Source-closed class binding, runtime string nearest 금지</td></tr>
+<tr><td>잘못된 기존 source</td><td><code>source-001</code> atlas 41개</td><td>다른 stable pose이므로 현재 observation에 사용 금지</td></tr>
+<tr><td>추가한 정확한 source</td><td><code>source-002</code> atlas 42개, SHA <code>c4352383...d3748a</code></td><td><code>provisional_diagnostic_only</code></td></tr>
+</table>
+
+<h2>왜 nearest로 해결할 수 없는가</h2>
+<p><code>source-001</code>과 <code>source-002</code> representative는 약 179.35도 떨어져 있다. 이는 SE(3) threshold를 늘려 해결할 근접 오차가 아니라 stable-pose identity 불일치다. Exact object, canonical stable pose, hand와 capability가 먼저 일치한 뒤에만 그 context 내부의 top-K nearest를 계산한다.</p>
+<p>Source-002 candidate가 registry에 없던 이전 상태는 <code>no_registered_grasp_source</code>를 냈다. 실제로는 proposal이 존재하므로 이 진단도 부정확했다. 새 registry는 세 context를 startup에서 재검증했고 manifest digest <code>456b279e...a48c00</code>을 만들었다: banana/source-001 1개, Pepsi/source-001 41개, Pepsi/source-002 42개다.</p>
+
+<h2>Proposal이 있는데도 no-pick인 이유</h2>
+<p>Source-002의 512개 target-left proposal은 endpoint screening에서 46개, full intrinsic geometry diagnostic에서 44개를 남겼다. 하지만 모든 후보에 세 gate가 남아 있다.</p>
+<ul>
+<li>Intrinsic validation protocol이 아직 <code>provisional</code>이다.</li>
+<li>Complete stable-pose/open-set campaign이 아직 measured 상태가 아니다.</li>
+<li><code>drop_release</code> capability가 독립 검증되지 않았다.</li>
+</ul>
+<p>Atlas의 <code>validation_scope</code>를 문자열만 바꿔 이 gate를 우회하지 않는다. Runtime interception은 <code>unvalidated</code> candidate를 제거하므로 현재 올바른 결과는 no-pick이다.</p>
+
+<h2>Stable pose evidence 재검토</h2>
+<p>Frozen-v3 Isaac settling에서 source-002 자체는 24/24 return, cross-class 0, unresolved 0이었다. 하지만 complete campaign은 global drop 192건 중 11건이 unresolved여서 5.729%를 기록했고 5.0% threshold를 넘었다. Pose 하나만 골라 complete set이 측정됐다고 주장할 수 없다. Threshold와 damping을 결과에 맞춰 조정하지 않고, 같은 acceptance로 repeatability를 재검증해야 한다.</p>
+
+<h2>다음 순서</h2>
+<ol>
+<li>같은 stable-pose/open-set threshold로 독립 settling campaign을 반복하고 complete set acceptance를 닫는다.</li>
+<li>가정과 safety margin을 명시한 simulation intrinsic protocol을 승인한 뒤 46개 survivor만 재평가한다.</li>
+<li>Failure-free <code>drop_release</code> grasp만 <code>offline_intrinsic</code>으로 새 source artifact에 승격한다.</li>
+<li>새 RGB run이 legacy alias가 아니라 canonical <code>source-002</code> track을 publish하게 한다.</li>
+<li>그때 동일 context top-K nearest, fresh interception, online command generation과 독립 collision validation을 실행한다.</li>
+<li>Qualified set이 비어 있을 때만 BODex 또는 다른 grasp generator를 다시 실행한다.</li>
+</ol>
+<p><a href="online-full-task-authority-reset.html">Online full-task authority reset</a>과 <a href="partitioned-online-self-collision.html">partitioned self-collision</a>이 이후 command 경계를 설명한다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
