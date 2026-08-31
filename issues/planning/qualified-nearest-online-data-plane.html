@@ -235,6 +235,37 @@
 </table>
 
 <div class="callout"><strong>객관적 결론:</strong> Nearest grasp는 쓰면 안 되는 것이 아니다. Exact context와 qualification을 먼저 통과한 후보의 bounded compute order로는 유효하고 측정 비용도 작다. 다만 이 run에서 가장 가까운 ranks 1·2가 실패하고 rank 3만 command를 생성했으므로 nearest-1 직접 실행은 실제 증거와도 맞지 않는다. 또한 이번 input은 synthetic provisional이며 command는 independent collision validation, maximin selection, controller handoff와 Isaac execution을 통과하지 않았으므로 grasp demo 성공이나 실시간 실행 권한을 주장하지 않는다.</div>
+
+<h2>2026-09-01 갱신: Resident worker와 최신 generation 경계</h2>
+<p>Isaac Sim의 RGB Python과 잠긴 cuRobo Python을 한 process에 억지로 합치면 dependency 충돌이 생기고, observation마다 cuRobo를 시작하면 startup·warmup만 약 5.6초가 걸린다. 반대로 일반 request queue를 두면 약 60 Hz 상태 입력이 1초 이상 걸리는 planner보다 빨리 누적되어 이미 지나간 물체를 계획하게 된다. 따라서 application graph의 planning 경계를 source-closed resident process와 capacity-one latest-generation mailbox로 분리했다.</p>
+
+<ol>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/3f28328"><code>3f28328</code></a>은 simulation과 physical adapter가 함께 쓰는 RGB-only observation authority, fused track, encoder와 robot-state request를 정의한다. 응답은 candidate 상태와 실제 stage timing만 가지며 command payload와 실행 권한은 없다.</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/392e0b5"><code>392e0b5</code></a>는 exact <code>(object_id, stable_pose_id, calibration_id)</code>별 cuRobo session을 시작 시 한 번 검증·warmup한다. 모든 source path와 byte SHA, cuRobo revision, locked hand joints가 manifest에 고정된다.</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/6af3d79"><code>6af3d79</code></a>은 하나의 remote in-flight request와 하나의 교체 가능한 local pending request만 유지한다. 더 최신 generation이 도착하면 이전 결과는 publish 전에 <code>superseded</code>가 되며 queue는 증가하지 않는다.</li>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/89ba450"><code>89ba450</code></a>과 <a href="https://github.com/gohyunsu/beltbench/commit/a134569"><code>a134569</code></a>는 planning 경계의 canonical clock을 host <code>monotonic</code>으로 고정하고, stale track·encoder·robot feedback을 GPU 호출 전 정상 no-pick으로 분류한다.</li>
+</ol>
+
+<h3>실패를 보존한 이유</h3>
+<table class="table">
+<tr><th>실패</th><th>원인</th><th>해결 및 결과</th></tr>
+<tr><td>Config compiler가 server package를 찾지 못함</td><td>잠긴 Python에 BeltBench를 설치하지 않았고 authoritative checkout이 <code>PYTHONPATH</code>에 없었음</td><td>환경을 변형하거나 복제 설치하지 않고 exact checkout을 명시적으로 import root로 고정했다.</td></tr>
+<tr><td><code>6af3d79-v1</code> worker fault</td><td>동일한 host clock 값에 <code>host_monotonic</code> alias를 남겨 core의 <code>monotonic</code>과 불일치</td><td>adapter boundary에서 canonical label을 사용한다. Isaac simulation timeline 값은 단순 relabel하지 않고 host receipt time으로 별도 stamp해야 한다.</td></tr>
+<tr><td><code>89ba450-v2</code> worker fault</td><td>Probe의 conveyor sample이 20 ms freshness 제한보다 약 3 ms 오래됨</td><td>latest encoder propagation으로 request를 구성하고 freshness를 nearest/GPU 전에 검사한다. stale input은 <code>planning_input_rejected</code> no-pick이다.</td></tr>
+</table>
+
+<h3>RTX 3090 resident process 결과</h3>
+<table class="table">
+<tr><th>항목</th><th>측정값</th></tr>
+<tr><td>Source closure</td><td><code>6ad5a86e...f7428</code>, manifest <code>392e0b5-pepsi-source001-provisional.json</code></td></tr>
+<tr><td>Startup / warmup</td><td>1.6795 s / 3.8763 s, observation 이전 비용</td></tr>
+<tr><td>Online planning span</td><td>1.11453 s</td></tr>
+<tr><td>Stage</td><td>grasp 3.061 ms, prediction 3.223 ms, interception 10.638 ms, request 4.430 ms, target 13.256 ms, generation 1.06954 s</td></tr>
+<tr><td>후보</td><td>296·235·266은 start-lead 부족으로 거부, 351은 <code>generated</code></td></tr>
+<tr><td>Report</td><td><code>/mnt/paradex2/hyunsu/beltbench/evidence/runtime-diagnostics/resident-online-planning/a134569-v3-report.json</code>, SHA-256 <code>4d17212e...eec2</code></td></tr>
+</table>
+
+<div class="callout"><strong>현재 판정:</strong> 이 결과는 resident IPC, source closure, 최신 generation 정책과 observation 이후 fresh cuRobo 생성의 작동 증거다. 그러나 입력 track은 synthetic provisional fixture이고 실제 Isaac RGB inference가 아니다. Independent connector/workcell/moving-object/contact/drop validation, maximin, future-start handoff와 physics execution도 아직 연결되지 않았다. 그러므로 <code>generated_unvalidated</code>는 UI 단계 표시일 뿐이며 grasp·lift·drop 성공이나 실시간 실행 권한을 뜻하지 않는다.</div>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
 </body>
