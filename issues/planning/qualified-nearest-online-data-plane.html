@@ -16,7 +16,7 @@
 <h1>Nearest grasp는 버리지 않고, 후보 검색에만 사용한다.</h1>
 <p class="lede">Nearest 하나를 곧바로 실행하면 현재 robot state, 충돌, 도달 시간과 강건성을 무시한다. 반대로 nearest를 전혀 쓰지 않으면 이미 검증된 정적 grasp library를 효율적으로 좁힐 수 없다. BeltBench는 exact object·stable pose·hand·capability 안의 nearest top-K를 빠른 검색 순서로 사용하고, 최종 실행 후보는 observation 이후 생성·검증한 complete command의 maximin margin으로 다시 고른다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/b554300"><code>beltbench@b554300</code></a>은 Pepsi Light/source-001/Inspire Left/<code>drop_release</code>의 qualified grasp 82개를 상주 index에 올리고, predicted intercept별 nearest top-K, current-state full-task cuRobo command와 독립 timing·grasp-bound contact lifecycle/maximin 경계를 제공한다. Connector/workcell/time-indexed moving-object collision과 drop containment, RGB inference와 Isaac feedback이 아직 완결되지 않았으므로 <code>execution_authorized=false</code>다.</div>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/436417f"><code>beltbench@436417f</code></a>은 Pepsi Light/source-001/Inspire Left/<code>drop_release</code>의 qualified grasp 82개를 상주 index에 올리고, predicted intercept별 nearest top-K와 source-complete evidence, current-state full-task cuRobo command 및 독립 timing·grasp-bound contact lifecycle/maximin 경계를 제공한다. Connector/workcell/time-indexed moving-object collision과 drop containment, RGB inference와 Isaac feedback이 아직 완결되지 않았으므로 <code>execution_authorized=false</code>다.</div>
 
 <h2>문제와 판단</h2>
 <table class="table">
@@ -147,6 +147,25 @@
 
 <h3>검증 결과와 남은 범위</h3>
 <p>RTX 3090 checkout <code>b554300</code>, cuRobo <code>8e734f3</code> 잠긴 environment에서 contact 6개를 포함해 timing, exact backend, GPU kinematics, partitioned self-collision, quintic subinterval과 continuous dynamics 회귀 34/34가 9.971초에 통과했다. 이는 test wall time이며 pipeline latency가 아니다. 또한 event schedule의 기하학적 접촉 성공을 증명하지 않는다. 다음 필수 단계는 예측 시각별 nearest batch의 provenance를 source-complete evidence에 보존하고, 동일 command에 time-indexed moving-object/approach collision과 drop containment를 결속하는 것이다.</p>
+
+<h2>2026-08-31 갱신: Predicted-intercept nearest를 source-complete evidence로 보존</h2>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/55a1f44"><code>55a1f44</code></a>와 <a href="https://github.com/gohyunsu/beltbench/commit/436417f"><code>436417f</code></a>는 observation-time nearest batch와 predicted-intercept nearest batch의 역할을 자료구조에서 분리한다. 기존 <code>grasp_batch</code>는 current robot-state FK, exact object·stable pose·hand context와 source library의 root evidence로 유지한다. 새 <code>PredictedInterceptGraspEvidence</code>는 각 selected prediction sample의 <code>object_from_current_hand</code> reference, top-K grasp 전체, distance/rank와 root batch digest를 보존한다.</p>
+<p>새 online materialization은 <code>predicted_grasp_evidence_complete=true</code>를 명시한다. 이 marker가 있으면 target, motion result, timing/contact validator는 반드시 candidate의 <code>prediction_sample_index</code>와 연결된 evidence에서 grasp ID·SHA-256·retrieval rank가 모두 일치하는 항목을 찾아야 한다. Observation-time batch에 같은 grasp ID가 있더라도 fallback하지 않는다. Marker가 없는 기존 batch만 historical compatibility 경로를 유지하며 current per-intercept evidence로 주장할 수 없다.</p>
+
+<h3>발견한 provenance 문제</h3>
+<p>Data plane은 <code>5bec63f</code>부터 이미 predicted pose마다 nearest를 다시 계산했지만, source evidence materializer는 observation-time batch 하나만 저장했다. 따라서 실제 RTX command가 predicted reference에서 선택한 grasp를 root batch에서 찾지 못하거나, 우연히 같은 ID가 있으면 잘못된 retrieval rank와 reference를 증거로 사용할 수 있었다. Hot path 계산은 맞아도 비동기 evidence와 독립 validator가 이를 재현하지 못하는 상태였다.</p>
+
+<h3>구현과 회귀 중 발생한 문제</h3>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결과 결과</th></tr>
+<tr><td>첫 <code>55a1f44</code> 서버 회귀 75개 중 materialization 계열 5개 실패</td><td>새 validator가 prediction sample index를 시간 오름차순으로 강제했지만, bounded selector는 pick corridor coverage를 위해 중앙·앞·뒤 순으로 선택함</td><td>실제 fixture의 순서 <code>(12, 4, 20, 8)</code>를 확인했다. <code>436417f</code>에서 순서를 보존하고 중복만 금지해 planner compute priority를 바꾸지 않았다.</td></tr>
+<tr><td>같은 track ID로 다른 현재 object pose를 결속할 가능성</td><td>Track context equality만으로는 FK grasp stage와 motion prediction의 transform equality를 증명하지 못함</td><td>Prediction horizon 0의 <code>arm_base_from_object</code>와 current-state grasp evidence pose를 1e-12 absolute tolerance로 비교한 뒤에만 complete evidence를 발행한다.</td></tr>
+<tr><td>여러 consumer가 root <code>grasp_batch.candidates</code>를 직접 순회</td><td>Predicted evidence 도입 전의 단일-batch lookup이 target/result/validator에 각각 복제됨</td><td><code>grasp_candidate_for(candidate)</code>로 통일해 sample index, grasp ID, digest와 retrieval rank를 한 곳에서 fail-closed 검증한다.</td></tr>
+</table>
+
+<h3>검증 결과와 의미</h3>
+<p>RTX 3090 checkout <code>436417f</code>, cuRobo <code>8e734f3</code> 잠긴 environment에서 interception, motion request, Cartesian target, full-task materialization, timing/contact backend, GPU kinematics, partitioned self-collision, subinterval과 continuous dynamics 75/75가 19.382초에 통과했다. 변조한 predicted reference는 context mismatch로 거부되고 complete batch는 payload round-trip 뒤에도 sample별 lineage를 유지한다.</p>
+<div class="callout"><strong>해석:</strong> nearest는 여전히 최종 grasp 선택기가 아니다. 이번 변경은 top-K를 더 강하게 믿게 한 것이 아니라, 어느 predicted pose에서 어떤 top-K를 계산했는지 독립 validator가 재현할 수 있게 한 것이다. 최종 command는 complete collision·moving-contact·drop validation과 nearest-rank 비의존 maximin을 통과해야 한다.</div>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
 </body>
