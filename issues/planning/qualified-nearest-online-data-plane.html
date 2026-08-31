@@ -266,6 +266,29 @@
 </table>
 
 <div class="callout"><strong>현재 판정:</strong> 이 결과는 resident IPC, source closure, 최신 generation 정책과 observation 이후 fresh cuRobo 생성의 작동 증거다. 그러나 입력 track은 synthetic provisional fixture이고 실제 Isaac RGB inference가 아니다. Independent connector/workcell/moving-object/contact/drop validation, maximin, future-start handoff와 physics execution도 아직 연결되지 않았다. 그러므로 <code>generated_unvalidated</code>는 UI 단계 표시일 뿐이며 grasp·lift·drop 성공이나 실시간 실행 권한을 뜻하지 않는다.</div>
+
+<h2>2026-09-01 갱신: Isaac RGB track을 resident worker 입력까지 연결</h2>
+<p>기존 causal perception runtime은 pose가 나오면 즉시 prevalidated command selector를 호출하도록 묶여 있었다. 이 경로를 그대로 재사용하면 새 online planner 앞에서 이미 선택된 legacy command가 개입한다. <a href="https://github.com/gohyunsu/beltbench/commit/0f4fcc8"><code>0f4fcc8</code></a>은 selector가 없는 RGB runtime을 <code>track_ready</code>로 종료하게 하고, command·decision 없이 encoder propagation만 계속할 수 있게 분리했다.</p>
+
+<h3>Frame ancestry와 clock 변환</h3>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/8a845f8"><code>8a845f8</code></a>의 <code>IsaacOnlinePlanningInputAdapter</code>는 최종 pose backend가 실제 소비한 multi-camera RGB generation의 camera/frame ID, mask source와 backend ID를 latch한다. FoundPose가 비동기이므로 RGB가 들어온 step은 <code>acquiring</code>이고 이후 RGB 배열이 없는 poll에서 <code>track_ready</code>가 될 수 있다. Adapter는 이 경우에도 같은 frame generation만 결속하며 camera generation과 tracker generation이 같다고 가정하지 않는다.</p>
+<p>Isaac encoder와 track의 수치 timestamp를 단순히 <code>monotonic</code>이라고 relabel하지 않는다. 원래 <code>isaac_simulation</code> timestamp는 evaluator ancestry에 보존하고, 현재 encoder state가 host에서 수신된 시각으로 matching track과 encoder를 함께 새 snapshot으로 stamp한다. Robot feedback도 같은 host clock에서 읽힌 경우에만 worker request가 구성된다. Simulator pose와 mask truth는 입력에 없고 raw modality는 RGB 하나다.</p>
+
+<h3>60 Hz update를 모두 계획하지 않는 이유</h3>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/b9d5eb8"><code>b9d5eb8</code></a>은 encoder, articulation feedback, causal RGB sensor와 planning adapter를 하나의 actual-time application step으로 조립한다. 그러나 매 encoder propagation을 planning event로 보내지 않는다. 현재 resident generation이 약 1.115초인데 60 Hz request가 계속 들어오면 in-flight 결과가 매번 stale이 되고 최신 pending request만 다시 시작되어 어떤 결과도 publish되지 않는 starvation이 발생한다. 한 RGB acquisition의 첫 최신 robot/track/encoder snapshot만 제출하고 tracking은 계속 수행한다. 재계획은 향후 validator invalidation 같은 명시적 trigger로만 추가해야 한다.</p>
+
+<table class="table">
+<tr><th>검증</th><th>결과</th></tr>
+<tr><td>로컬 perception·input·worker</td><td>비동기 frame latch와 legacy command 차단 포함 59/59</td></tr>
+<tr><td>로컬 application composition</td><td>단일 submission, 지속 propagation, no-pick stage 포함 24/24</td></tr>
+<tr><td>RTX 잠긴 cuRobo Python</td><td>worker contract 11/11, OpenCV 설치 없이 통과</td></tr>
+<tr><td>RTX RGB Python</td><td>RGB/input 33/33, application·encoder·robot 13/13</td></tr>
+<tr><td>배포 revision</td><td><code>b9d5eb8</code></td></tr>
+</table>
+
+<p>화면 단계색도 measured state에서 나온다. RGB segmentation은 주황, pose acquisition은 노랑, planning은 파랑, <code>generated_unvalidated</code>는 성공으로 오인하지 않도록 황색, no-pick과 fault는 붉은색이다.</p>
+
+<div class="callout"><strong>남은 핵심 공백:</strong> 새 composition은 실제 Isaac runner에서 아직 구동되지 않았고 response에는 command가 없다. Online validator에는 dynamics, Jacobian, partitioned self-collision, connector/workcell, timing, contact와 drop component가 있지만 time-indexed moving-object collision은 아직 offline corpus compiler뿐이다. 이 검사가 resident component로 구현되고 동일 generated tensor에서 전체 coverage·maximin·future-start handoff가 끝나기 전에는 grasp animation이나 성공 영상을 만들지 않는다.</div>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
 </body>
