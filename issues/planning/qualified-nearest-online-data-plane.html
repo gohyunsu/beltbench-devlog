@@ -16,7 +16,7 @@
 <h1>Nearest grasp는 버리지 않고, 후보 검색에만 사용한다.</h1>
 <p class="lede">Nearest 하나를 곧바로 실행하면 현재 robot state, 충돌, 도달 시간과 강건성을 무시한다. 반대로 nearest를 전혀 쓰지 않으면 이미 검증된 정적 grasp library를 효율적으로 좁힐 수 없다. BeltBench는 exact object·stable pose·hand·capability 안의 nearest top-K를 빠른 검색 순서로 사용하고, 최종 실행 후보는 observation 이후 생성·검증한 complete command의 maximin margin으로 다시 고른다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/18afb30"><code>beltbench@18afb30</code></a>은 Pepsi Light/source-001/Inspire Left/<code>drop_release</code>의 qualified grasp 82개를 상주 index에 올리고, current track·encoder·stable pose·robot-state lineage를 유지한 prediction과 interception data path를 제공한다. 아직 RGB inference, full-task cuRobo와 Isaac feedback이 연결되지 않았으므로 <code>execution_authorized=false</code>다.</div>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/72ac7f4"><code>beltbench@72ac7f4</code></a>은 Pepsi Light/source-001/Inspire Left/<code>drop_release</code>의 qualified grasp 82개를 상주 index에 올리고, predicted intercept별 nearest top-K, current-state full-task cuRobo command와 독립 timing/maximin 경계를 제공한다. Connector/workcell/moving-object collision과 contact/drop validation, RGB inference와 Isaac feedback이 아직 완결되지 않았으므로 <code>execution_authorized=false</code>다.</div>
 
 <h2>문제와 판단</h2>
 <table class="table">
@@ -108,6 +108,27 @@
 
 <h3>남은 권한 경계</h3>
 <p>이 결과는 실제 resident cuRobo가 online-generated target에서 complete arm/hand command를 만든 첫 positive지만 실행 성공은 아니다. RGB, calibration, stable pose, encoder와 drop pose는 provisional fixture다. Producer는 static-world planning만 수행했고 independent self/connector/world collision, time-indexed moving-object collision, timing, approach·closure, uncertainty validation과 maximin selection이 없다. 따라서 <code>execution_authorized=false</code>를 유지하며, 다음 구현은 동일 command를 독립 validator에 넘기는 일이다.</p>
+
+<h2>2026-08-31 갱신: Timing을 독립 검증하고 actual handoff lead를 재확인</h2>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/72ac7f4"><code>72ac7f4</code></a>는 생성된 command와 exact motion request를 하나의 validation workspace에 결속한다. <code>OnlineCommandTimingValidationComponent</code>는 command event에서 contact 상대 시간을 다시 읽어 planned start와 합치고, predicted contact timestamp, tolerance와 motion-plan deadline을 독립적으로 검사한다. 같은 component가 grasp evidence scope, prediction validity와 latency evidence status를 robustness 값으로 내보내지만 nearest rank와 distance는 읽지 않는다.</p>
+
+<h3>구현 중 발견한 설계 오류</h3>
+<p>첫 초안은 timing check 완료 이후 <code>selection + handoff</code> p95만 deadline에서 뺐다. 그러나 mandatory check order에서 timing 뒤에 self/connector/workcell/moving-object collision, contact order와 drop containment가 남는다. 이 설계는 아직 실행하지 않은 validation 시간을 누락해 start slack을 과대평가한다. 커밋 전에 field와 scope를 <code>remaining_pipeline_latency_p95_s</code>, <code>timing_check_completion_to_controller_commit</code>으로 고쳐 남은 validator 전체, maximin과 handoff를 포함하도록 했다.</p>
+
+<p>예시 profile의 0.18초는 기존 reserve를 옮긴 provisional 값일 뿐 측정 결과가 아니다. 따라서 <code>latency_evidence_valid=false</code>이고 robust selection을 통과할 수 없다. Complete component set을 고정한 뒤 RTX 3090에서 timing-check completion부터 controller commit까지 p50/p95/p99를 측정해야 <code>measured</code>로 승격할 수 있다.</p>
+
+<h3>P95 예측과 actual time의 역할 분리</h3>
+<p>P95 slack이 양수여도 현재 run이 느리면 command start를 이미 놓칠 수 있다. Selection은 maximin 전에 실제 <code>selection_completed_timestamp_s + controller_handoff_lead_s</code>와 후보의 planned start를 다시 비교한다. 더 높은 margin 후보라도 실제 lead를 잃으면 제외한다. 테스트에서는 원래 maximin winner였던 이른 후보를 늦은 selection 시각으로 탈락시키고, start lead가 남은 다른 후보가 선택되는 것을 확인했다.</p>
+
+<h3>검증 결과와 제한</h3>
+<table class="table">
+<tr><th>환경</th><th>결과</th><th>해석</th></tr>
+<tr><td>Local targeted</td><td>Timing 6개, validation/selection 7개 통과</td><td>Contact 재현, provisional latency 차단, 부족 lead rejection, actual-time 후보 교체를 확인했다.</td></tr>
+<tr><td>RTX 3090 cuRobo</td><td>관련 validator 회귀 29/29 통과, 20.570초</td><td>Writable authoritative checkout <code>72ac7f4</code>에서 dynamics, kinematics, subinterval과 partitioned self-collision 조합까지 확인했다. 전체 시간은 test wall time이지 pipeline latency가 아니다.</td></tr>
+<tr><td>Local compileall</td><td>Read-only <code>__pycache__</code> 생성 실패</td><td>소스 syntax 실패가 아니라 현재 local filesystem의 쓰기 제한이다. Import와 server test로 재검증했다.</td></tr>
+</table>
+
+<div class="callout"><strong>현재 no-authority 이유:</strong> timing contract와 actual handoff gate는 생겼지만 connector/workcell/time-indexed moving-object collision, hand contact ordering과 geometric bin containment component가 아직 complete backend에 연결되지 않았다. Provisional RGB/calibration 입력도 그대로다. 다음 단계는 이 항목들을 동일 command tensor에 결속한 뒤 nearest와 무관한 maximin 결과를 실제 RTX report로 남기는 것이다.</div>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
 </body>
