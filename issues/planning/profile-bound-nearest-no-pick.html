@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Profile-bound nearest no-pick · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-112 · 2026-08-31 · motion-limit-bound nearest no-pick</div>
+<h1>Nearest는 유지하되, 실행 한계로 검증되지 않은 경로는 버린다.</h1>
+<p class="lede">Predicted-intercept nearest top-K는 82개 grasp library를 빠르게 줄이는 데 유효하다. 그러나 가까운 자세는 짧은 동작, 충돌 회피, deadline 충족 또는 강건한 실행을 보장하지 않는다. 이번 재검증은 planner를 실제 execution motion-limit profile에 결속하자 이전 rank-3 command가 사라지고 네 후보가 모두 정당한 no-pick이 됨을 확인했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/1ac12c1"><code>beltbench@1ac12c1</code></a>은 resident cuRobo backend가 online request와 같은 motion-limit profile ID·SHA-256을 사용하도록 강제한다. RTX 3090 actual-time probe는 nearest rank 1–4를 실제로 계획했지만 모두 <code>planner_insufficient_start_lead</code>로 거절했다. <code>path_generated=false</code>이며 execution authority는 없다.</div>
+
+<h2>질문에 대한 결론</h2>
+<table class="table">
+<tr><th>항목</th><th>결정</th><th>이유</th></tr>
+<tr><td>Nearest top-K</td><td>사용</td><td>Exact object·stable pose·hand와 각 predicted intercept pose 안에서 저비용 shortlist와 solver seed로 유효하다.</td></tr>
+<tr><td>Nearest-1 직접 실행</td><td>금지</td><td>현재 robot state의 도달 시간, joint limit, 충돌, uncertainty와 controller lead를 보장하지 않는다.</td></tr>
+<tr><td>Nearest rank의 최종 점수 사용</td><td>금지</td><td>Final maximin은 검증된 deadline·collision·workspace·joint·uncertainty slack만 사용해야 한다.</td></tr>
+<tr><td>후보 다양성</td><td>필수</td><td>Fixed GPU batch가 한 grasp의 여러 시각으로만 채워지지 않도록 grasp ID와 contact time을 함께 분산한다.</td></tr>
+<tr><td>후보 실패 시 fallback</td><td>No-pick</td><td>Cached command, 느슨한 profile 또는 다른 stable-pose grasp를 실행하지 않는다.</td></tr>
+</table>
+
+<h2>발견한 결함</h2>
+<p>이전 planner robot config와 independent validation에 쓰는 execution profile이 별도 파일이었지만 online backend는 profile identity를 계약으로 노출하지 않았다. 따라서 cuRobo가 더 빠른 속도·가속도 가정으로 경로를 만들고, 이후 validator가 더 엄격한 한계를 적용할 수 있었다. 이 상태에서 얻은 286-waypoint rank-3 command는 nearest가 옳았다는 증거가 아니라 planner와 validator의 모델이 달랐다는 증거다.</p>
+<p>단순히 cuRobo 값을 execution profile로 덮어쓰는 것도 잘못이다. URDF 또는 source cspace가 더 엄격한 관절 한계를 갖는 경우 그 한계를 완화할 수 있기 때문이다. 각 관절의 position·velocity·acceleration·jerk 범위를 source model과 execution profile의 보수적 교집합으로 만들고, 빈 교집합이면 startup에서 실패하도록 했다.</p>
+
+<h2>구현</h2>
+<ol>
+<li><code>OnlinePoseBatchPlannerBackend</code>가 <code>motion_limit_profile_id</code>와 canonical <code>motion_limit_profile_sha256</code>을 반드시 제공하게 했다.</li>
+<li>Resident cuRobo factory는 ID 문자열이 아니라 실제 <code>RobotMotionLimitProfile</code>을 받아 source robot config의 joint order에 맞춰 conservative intersection을 적용한다.</li>
+<li>Online full-task context는 command policy, request source와 backend profile ID·hash가 하나라도 다르면 query 전에 fail-closed한다.</li>
+<li>Nearest retrieval, per-intercept top-K, fixed-batch grasp/time diversity와 nearest-rank-independent selection 규칙은 그대로 유지했다.</li>
+</ol>
+
+<h2>RTX 3090 결과</h2>
+<p>입력은 Pepsi Light <code>source-001</code>, Inspire Left, object x <code>-0.4 m</code>, y <code>0.02 m</code>, yaw <code>0.35 rad</code>, belt speed <code>0.12 m/s</code>다. Calibration, RGB track, encoder, stable pose와 drop은 여전히 provisional diagnostic fixture이며 simulator truth는 planner에 쓰지 않았다.</p>
+<table class="table">
+<tr><th>Nearest rank</th><th>Contact lead</th><th>Pregrasp</th><th>Moving contact</th><th>결과</th></tr>
+<tr><td>1</td><td>3.399 s</td><td>3.600 s</td><td>2.000 s</td><td><code>planner_insufficient_start_lead</code></td></tr>
+<tr><td>2</td><td>2.119 s</td><td>4.000 s</td><td>1.600 s</td><td><code>planner_insufficient_start_lead</code></td></tr>
+<tr><td>3</td><td>4.599 s</td><td>3.600 s</td><td>2.000 s</td><td><code>planner_insufficient_start_lead</code></td></tr>
+<tr><td>4</td><td>2.759 s</td><td>4.000 s</td><td>2.000 s</td><td><code>planner_insufficient_start_lead</code></td></tr>
+</table>
+<p>Rank 3도 contact까지 4.599초가 남았지만 pregrasp와 moving-contact만 5.6초가 필요해 closure·validation·handoff reserve 이전에 이미 늦다. 네 후보 모두 command를 publish하지 않았다.</p>
+<table class="table">
+<tr><th>구간</th><th>실측</th></tr>
+<tr><td>Startup / warmup</td><td>1.713 s / 3.903 s</td></tr>
+<tr><td>Current FK + nearest</td><td>2.191 ms</td></tr>
+<tr><td>Five-phase cuRobo + compile</td><td>1.213 s</td></tr>
+<tr><td>Online query through command decision</td><td>1.228 s</td></tr>
+<tr><td>Asynchronous evidence materialization</td><td>6.602 s</td></tr>
+<tr><td>Locked server regression</td><td>143 tests, 37.569 s, all pass</td></tr>
+</table>
+
+<h2>증거</h2>
+<table class="table">
+<tr><th>Artifact</th><th>File SHA-256</th></tr>
+<tr><td><code>1ac12c1-profile-bound-v1-report.json</code></td><td><code>457f9a79...2cd2</code></td></tr>
+<tr><td><code>motion-result.json</code></td><td><code>e87a6e49...505e</code></td></tr>
+<tr><td><code>target-batch.json</code></td><td><code>909b3506...ff41</code></td></tr>
+</table>
+<p>원본은 NAS의 <code>/mnt/paradex2/hyunsu/beltbench/evidence/runtime-diagnostics/online-full-task-curobo/</code> 아래 write-once run으로 보존했다. Motion-result와 target-batch canonical digest도 각각 <code>7f2eae2c...f5b5</code>, <code>765aa2f5...1227</code>로 재현된다.</p>
+
+<h2>비판적 해석</h2>
+<p>이번 실패를 horizon 상수만 늘리거나 belt를 영상에서 느리게 만들어 해결하면 안 된다. 현재 canonical conveyor deck은 1 m이고 x=-0.4 m acquisition에서 pick corridor까지의 물리적 거리가 짧다. 측정되지 않은 belt 영역까지 prediction sample을 추가하면 실제 시스템 입력과 다른 simulation shortcut이 된다. 반대로 모든 cycle을 임의의 초기 arm state에서 시작하게 하는 것도 실제 생산 시스템의 운영 정책과 다르다. 로봇은 안전하게 검증된 standby pose로 복귀하고, 그 pose에서 upstream detection zone까지의 최소 lead를 workcell calibration으로 보장하는 편이 합리적이다.</p>
+<p>또한 현재 compiler는 first contact 뒤 attach까지 arm을 정지시킨다. 움직이는 belt에서 closure 중 object-relative pose를 유지하려면 hand가 belt 속도를 따라가야 하므로 이 구간은 production semantics가 아니다. Contact-through-attach chase와 time-indexed moving-object collision을 구현하기 전에는 positive command가 생겨도 실행 가능하다고 볼 수 없다.</p>
+
+<h2>다음 순서</h2>
+<ol>
+<li>Source-qualified standby pose와 measured/provisional workcell layout을 별도 typed contract로 만들고 acquisition lead, horizon과 sample capacity를 belt geometry·speed·motion profile에서 유도한다.</li>
+<li>현재 perception/encoder track만으로 contact-through-closure target을 시간 일관되게 생성하고, simulator object truth 없이 relative chase residual을 검증한다.</li>
+<li>생성된 exact command를 independent dynamics, partitioned self/connector/workcell collision, time-indexed object collision, contact order와 drop containment 순서로 통과시킨다.</li>
+<li>완전한 validator latency와 controller lead를 측정한 뒤 nearest rank를 제외한 maximin으로 선택하고 Isaac RGB varied-yaw trial에 연결한다.</li>
+</ol>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
