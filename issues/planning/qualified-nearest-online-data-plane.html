@@ -78,6 +78,36 @@
 <p>Qualified grasp 82개에서 매 query마다 intercept pair 32개와 planning target 4개가 유지됐고 server regression 84개가 통과했으며 optional dependency 1개가 skip됐다. Report SHA-256은 <code>d9947c37...551c</code>다. Data path 최대값은 20.390 ms였으므로 hard real-time upper bound는 아직 아니다.</p>
 <div class="callout"><strong>운영 경계:</strong> 1.6초 evidence를 camera frame마다 생성하지 않는다. Selected·terminal·명시적 sample generation만 bounded latest-only worker에 보내고 stale backlog는 폐기·계수한다. 그러나 RGB, FK, IK, joint trajectory, 독립 command validation, controller와 Isaac이 아직 제외됐으므로 실행 권한은 계속 없다.</div>
 <p>다음 구현은 resident full-task planner가 materialized target batch가 아니라 target query를 직접 소비하고, lightweight generation result를 독립 validator로 넘기는 일이다.</p>
+
+<h2>2026-08-31 갱신: Nearest의 기준 시점을 intercept로 이동</h2>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/0a2a490"><code>0a2a490</code></a>에서 먼저 provenance 오류를 제거했다. 기존 latency fixture는 합성 calibration과 stable pose를 <code>measured</code>로 표시해 production gate를 통과했다. 수치 성능 측정에는 쓸 수 있어도 measured-input 증거가 될 수 없는 구조였다. <code>measured</code>와 <code>provisional_diagnostic</code>를 상호 배타적으로 분리했고, 후자는 두 source가 모두 <code>provisional</code>이며 tracking도 measured calibration을 요구하지 않을 때만 통과한다. Evidence와 execution authority는 계속 차단된다.</p>
+
+<h3>첫 cuRobo 연결에서 발견한 실패</h3>
+<ol>
+<li><code>0a2a490</code>: nearest top-8을 얻었지만 motion batch 네 칸이 모두 nearest-1 grasp의 서로 다른 시간으로 채워졌다. 원인은 grasp-major 이중 loop였다.</li>
+<li><code>2c1f387</code>: grasp와 시간을 diagonal round-robin으로 배치해 네 grasp를 넣었다. 두 후보는 no-solution, 두 후보는 <code>planner_segment_start_mismatch</code>였다.</li>
+<li><code>3c0d33c</code>: trajectory를 바꾸지 않는 observer로 계측하니 mismatch는 position <code>1.1920929e-7 rad</code>, velocity와 acceleration은 0이었다. cuRobo float32 1 ULP 수준이므로 <code>941087f</code>에서 수치 재현 tolerance만 <code>1e-6</code>으로 명시했다.</li>
+<li><code>941087f</code>: 다섯 phase는 생성됐지만 계획 1.01초, pre-contact 약 2.4초, validation/handoff reserve 0.23초에 비해 물체를 x=-0.14 m에서 보고 horizon을 3초로 둔 입력은 늦었다. 결과는 <code>planner_insufficient_start_lead</code>였다.</li>
+<li><code>5ad4ef8</code>: 물체를 x=-0.4 m에서 관측하고 contact corridor는 [-0.18, 0.2] m로 유지한 채 encoder constant-yaw prediction horizon만 5초로 늘렸다. 그러나 관측 순간 object pose 기준 nearest가 upstream 위치에 따라 바뀌면서 네 pregrasp가 모두 no-solution이 됐다.</li>
+</ol>
+
+<div class="callout"><strong>핵심 원인:</strong> moving pick에서 nearest의 reference는 acquisition 순간의 <code>object_from_current_hand</code>가 아니다. 각 predicted intercept object pose에 현재 FK hand pose를 투영한 reference여야 한다. Query 비용은 top-8 기준 약 0.1 ms이므로 이를 offline으로 옮길 이유도 없다.</div>
+
+<p><a href="https://github.com/gohyunsu/beltbench/commit/5bec63f"><code>5bec63f</code></a>는 selected intercept time마다 resident 82-grasp index를 다시 조회한다. 첫 GPU batch는 가능한 한 서로 다른 time과 grasp ID를 포함한다. 그 결과 네 후보 모두 cuRobo의 pregrasp, moving contact, lift, transfer, retreat 다섯 phase에서 solution을 반환했다. 세 후보는 future-start lead가 부족했고 가장 늦은 contact 후보는 timing을 통과했지만 286 samples가 기존 상한 256을 넘어 거부됐다.</p>
+
+<p><a href="https://github.com/gohyunsu/beltbench/commit/250c919"><code>250c919</code></a>는 trajectory를 downsample하지 않고 bounded command capacity를 384 samples로 조정했다. 50 Hz 기준 7.68초 상한이며 관측된 286 samples를 포함한다. 최종 RTX 3090 결과는 다음과 같다.</p>
+<table class="table">
+<tr><th>항목</th><th>결과</th></tr>
+<tr><td>입력</td><td>Pepsi Light/source-001, Inspire Left, yaw 0.35 rad, belt 0.12 m/s, acquisition x=-0.4 m</td></tr>
+<tr><td>검색</td><td>예측 intercept별 nearest top-8, cuRobo grasp/time slot 4</td></tr>
+<tr><td>Hot path</td><td>현재 FK/nearest부터 command까지 1.070 s</td></tr>
+<tr><td>생성 결과</td><td>1 generated, 3 insufficient future-start lead</td></tr>
+<tr><td>생성 command</td><td>286 waypoints, 6.15 s, contact lead 4.60 s</td></tr>
+<tr><td>Report</td><td><code>online-full-task-curobo/250c919-v1</code>, SHA-256 <code>7b9cc1a2...ca21</code></td></tr>
+</table>
+
+<h3>남은 권한 경계</h3>
+<p>이 결과는 실제 resident cuRobo가 online-generated target에서 complete arm/hand command를 만든 첫 positive지만 실행 성공은 아니다. RGB, calibration, stable pose, encoder와 drop pose는 provisional fixture다. Producer는 static-world planning만 수행했고 independent self/connector/world collision, time-indexed moving-object collision, timing, approach·closure, uncertainty validation과 maximin selection이 없다. 따라서 <code>execution_authorized=false</code>를 유지하며, 다음 구현은 동일 command를 독립 validator에 넘기는 일이다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
 </body>
