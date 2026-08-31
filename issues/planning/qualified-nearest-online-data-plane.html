@@ -16,7 +16,7 @@
 <h1>Nearest grasp는 버리지 않고, 후보 검색에만 사용한다.</h1>
 <p class="lede">Nearest 하나를 곧바로 실행하면 현재 robot state, 충돌, 도달 시간과 강건성을 무시한다. 반대로 nearest를 전혀 쓰지 않으면 이미 검증된 정적 grasp library를 효율적으로 좁힐 수 없다. BeltBench는 exact object·stable pose·hand·capability 안의 nearest top-K를 빠른 검색 순서로 사용하고, 최종 실행 후보는 observation 이후 생성·검증한 complete command의 maximin margin으로 다시 고른다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/4cda817"><code>beltbench@4cda817</code></a>은 Pepsi Light/source-001/Inspire Left/<code>drop_release</code>의 qualified grasp 82개를 상주 index에 올리고, predicted intercept별 nearest top-K와 source-complete evidence, stage-owned actual timestamp, current-state full-task cuRobo command 및 독립 timing·grasp-bound contact lifecycle/maximin 경계를 제공한다. Planning/validation import는 optional RGB backend와 분리됐지만 connector/workcell/time-indexed moving-object collision과 drop containment, 실제 RGB inference와 Isaac feedback이 아직 완결되지 않았으므로 <code>execution_authorized=false</code>다.</div>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/0632e2a"><code>beltbench@0632e2a</code></a>은 Pepsi Light/source-001/Inspire Left/<code>drop_release</code>의 qualified grasp 82개를 상주 index에 올리고, predicted intercept별 nearest top-K부터 fresh full-task command 생성까지 하나의 source-closed planning session으로 실행한다. 독립 timing·grasp lifecycle/maximin 계약은 존재하지만 connector/workcell/time-indexed moving-object collision과 drop containment, measured RGB inference, integrated selection·handoff와 Isaac feedback이 아직 한 application graph에서 완결되지 않았으므로 <code>execution_authorized=false</code>다.</div>
 
 <h2>문제와 판단</h2>
 <table class="table">
@@ -198,6 +198,43 @@
 <li>cv2가 없는 잠긴 cuRobo 환경에서 admission 10/10이 통과했고, OpenCV 4.6.0이 있는 서버 RGB Python에서 RGB-only wiring과 realtime RGB pipeline 33/33이 0.576초에 통과했다.</li>
 </ol>
 <p>서버 RGB Python에는 pytest가 없어 첫 runner 호출은 시작되지 않았다. Dependency를 추가하지 않고 표준 <code>unittest</code>로 동일 모듈을 실행했다. 이 결과는 perception latency나 RGB inference 정확도 측정이 아니라, planning/validation process가 RGB backend package를 불필요하게 적재하지 않으며 실제 RGB process의 API도 유지된다는 import-boundary 검증이다.</p>
+
+<h2>2026-09-01 갱신: Nearest top-K를 공통 causal planning session에 결속</h2>
+<p>개별 stage는 이미 data-plane API로 분리됐지만 cuRobo probe가 grasp retrieval, prediction, interception, request, target과 command generation을 script 안에서 수동 조립하고 있었다. 이 상태에서는 Isaac adapter가 같은 순서를 다시 구현하거나 한 caller가 nearest-1을 command처럼 취급해도 공통 경계가 막지 못한다. 문제는 nearest 알고리즘 자체가 아니라 orchestration 책임이 여러 caller로 새는 구조였다.</p>
+
+<h3>해결 방법</h3>
+<ol>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/0632e2a"><code>0632e2a</code></a>에서 <code>OnlineFullTaskPlanningSession</code>을 추가했다. 한 generation의 current track, encoder와 robot motion state를 받아 grasp retrieval부터 fresh full-task command batch까지 같은 순서로 실행한다.</li>
+<li>Startup에서 exact grasp context, input authority, stable pose·calibration, motion-limit digest, connector/drop transform, arm/hand joint order, planner/chase backend identity와 warmup을 확인한다. 하나라도 다르면 online fallback 없이 시작을 거부한다.</li>
+<li>일반적인 빈 결과는 grasp retrieval, interception 또는 motion generation의 명시적 no-pick으로 반환한다. Contract/source 불일치는 no-pick으로 숨기지 않고 fault로 남긴다.</li>
+<li>Session은 top-K 전체를 fresh batched planning에 넘긴 뒤 멈춘다. Independent validation과 maximin selection 이전이므로 생성된 command도 실행 권한이 없다. Evidence hashing과 JSON publication은 계속 hot path 뒤에서 수행한다.</li>
+</ol>
+
+<h3>Nearest-1 직접 실행을 막는 회귀</h3>
+<p>새 회귀는 retrieval rank 0 후보의 첫 pregrasp solve만 의도적으로 실패시킨다. Rank 0은 <code>rejected</code>가 되고 뒤 slot의 후보는 <code>generated</code>로 남는다. Session이나 outcome 어디에도 selected command가 없고 모든 결과가 <code>execution_authorized=false</code>임을 함께 검사한다. 반대로 모든 grasp가 translation·rotation bound 밖이면 prediction과 GPU planning을 시작하지 않고 <code>no_grasp_within_retrieval_bounds</code>로 종료한다.</p>
+
+<h3>발생한 문제, 원인과 확인</h3>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>조치와 결과</th></tr>
+<tr><td>일반 <code>py_compile</code>이 로컬에서 실패</td><td>Read-only workspace가 <code>__pycache__</code>와 임시 파일 생성을 막음</td><td>Write-free AST parse와 <code>PYTHONDONTWRITEBYTECODE</code>, pytest capture/cache 비활성화를 사용했다. 새 테스트 3/3, 관련 stage 회귀 69개와 subtest 8개가 통과했다.</td></tr>
+<tr><td>서버 checkout이 GitHub push 뒤에도 이전 revision 유지</td><td>서버 origin이 현재 GitHub main을 직접 갱신하지 않는 기존 배포 구성</td><td><code>c51af06..0632e2a</code> 증분 bundle만 전송해 fast-forward했다. 잠긴 cuRobo 환경에서 관련 회귀 31/31이 11.32초에 통과했다.</td></tr>
+<tr><td>기존 probe의 validator source file을 같은 경로에서 찾을 수 없음</td><td>이전 report에는 digest만 남고 원래 argument path가 보존되지 않음</td><td>내용을 추정하지 않고 현재 source-bound xArm6/Inspire assembly URDF를 validator source digest로 사용했다. 이 digest는 command source closure만 바꾸며 planner 입력·candidate 결과는 기존과 동일하게 재현됐다.</td></tr>
+</table>
+
+<h3>RTX 3090 재검증</h3>
+<table class="table">
+<tr><th>항목</th><th>결과</th></tr>
+<tr><td>입력</td><td>Pepsi Light/source-001, yaw 0.35 rad, belt 0.12 m/s, acquisition x=-0.7 m, provisional diagnostic</td></tr>
+<tr><td>후보 결과</td><td>Ranks 1·2·4는 <code>planner_insufficient_start_lead</code>, rank 3은 682-waypoint·15.435 s command 생성</td></tr>
+<tr><td>Online stage span</td><td>1.117018 s; 별도 process wall 1.130988 s</td></tr>
+<tr><td>세부 latency</td><td>FK/nearest 1.720 ms, prediction 1.594 ms, interception 5.018 ms, request 2.151 ms, target 5.429 ms, five-phase/chase 1.096461 s</td></tr>
+<tr><td>Startup / warmup</td><td>1.737 s / 4.036 s, acquisition 전에 완료해야 하는 비용</td></tr>
+<tr><td>Evidence plane</td><td>9.453 s, control callback 밖의 비동기 비용</td></tr>
+<tr><td>Report</td><td><code>online-full-task-curobo/0632e2a-shared-session-v1</code>, file SHA-256 <code>18c637e2...9597</code></td></tr>
+<tr><td>Artifacts</td><td>Motion result file <code>201f7455...7140</code>, target batch file <code>f6193273...d6d</code>; canonical payload digest도 report 내부에서 재현</td></tr>
+</table>
+
+<div class="callout"><strong>객관적 결론:</strong> Nearest grasp는 쓰면 안 되는 것이 아니다. Exact context와 qualification을 먼저 통과한 후보의 bounded compute order로는 유효하고 측정 비용도 작다. 다만 이 run에서 가장 가까운 ranks 1·2가 실패하고 rank 3만 command를 생성했으므로 nearest-1 직접 실행은 실제 증거와도 맞지 않는다. 또한 이번 input은 synthetic provisional이며 command는 independent collision validation, maximin selection, controller handoff와 Isaac execution을 통과하지 않았으므로 grasp demo 성공이나 실시간 실행 권한을 주장하지 않는다.</div>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
 </body>
