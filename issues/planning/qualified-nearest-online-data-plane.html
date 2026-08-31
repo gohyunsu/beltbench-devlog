@@ -16,7 +16,7 @@
 <h1>Nearest grasp는 버리지 않고, 후보 검색에만 사용한다.</h1>
 <p class="lede">Nearest 하나를 곧바로 실행하면 현재 robot state, 충돌, 도달 시간과 강건성을 무시한다. 반대로 nearest를 전혀 쓰지 않으면 이미 검증된 정적 grasp library를 효율적으로 좁힐 수 없다. BeltBench는 exact object·stable pose·hand·capability 안의 nearest top-K를 빠른 검색 순서로 사용하고, 최종 실행 후보는 observation 이후 생성·검증한 complete command의 maximin margin으로 다시 고른다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/72ac7f4"><code>beltbench@72ac7f4</code></a>은 Pepsi Light/source-001/Inspire Left/<code>drop_release</code>의 qualified grasp 82개를 상주 index에 올리고, predicted intercept별 nearest top-K, current-state full-task cuRobo command와 독립 timing/maximin 경계를 제공한다. Connector/workcell/moving-object collision과 contact/drop validation, RGB inference와 Isaac feedback이 아직 완결되지 않았으므로 <code>execution_authorized=false</code>다.</div>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/b554300"><code>beltbench@b554300</code></a>은 Pepsi Light/source-001/Inspire Left/<code>drop_release</code>의 qualified grasp 82개를 상주 index에 올리고, predicted intercept별 nearest top-K, current-state full-task cuRobo command와 독립 timing·grasp-bound contact lifecycle/maximin 경계를 제공한다. Connector/workcell/time-indexed moving-object collision과 drop containment, RGB inference와 Isaac feedback이 아직 완결되지 않았으므로 <code>execution_authorized=false</code>다.</div>
 
 <h2>문제와 판단</h2>
 <table class="table">
@@ -129,6 +129,24 @@
 </table>
 
 <div class="callout"><strong>현재 no-authority 이유:</strong> timing contract와 actual handoff gate는 생겼지만 connector/workcell/time-indexed moving-object collision, hand contact ordering과 geometric bin containment component가 아직 complete backend에 연결되지 않았다. Provisional RGB/calibration 입력도 그대로다. 다음 단계는 이 항목들을 동일 command tensor에 결속한 뒤 nearest와 무관한 maximin 결과를 실제 RTX report로 남기는 것이다.</div>
+
+<h2>2026-08-31 갱신: 정적 grasp의 손 lifecycle을 command에서 독립 재검증</h2>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/b554300"><code>b554300</code></a>은 exact command가 선택된 정적 grasp의 <code>pregrasp_command</code>, first-contact <code>grasp_command</code>, <code>retention_command</code>와 <code>release_command</code>를 실제 event waypoint에 사용했는지 다시 검사한다. <code>hand_close_start &lt; contact &lt; hand_close_complete &lt;= attach &lt; release_open_start &lt; retention_end &lt; detach &lt; hand_open_complete</code> 순서를 요구하고, close 완료부터 release 시작까지 손 위치·속도·가속도가 retention hold bound를 벗어나면 <code>contact_order</code>를 거부한다. Nearest rank나 simulator contact truth는 읽지 않으며 실행 권한도 없다.</p>
+
+<h3>초안에서 제거한 잘못된 가정</h3>
+<p>첫 구현은 contact부터 attach까지 arm joint도 정지해야 한다고 가정했다. 그러나 conveyor 위 물체는 계속 평행이동하므로 closure 동안 arm이 물체를 추종해야 할 수 있다. 이 조건은 현재 compiler fixture에는 맞아도 실제 moving grasp에는 과도한 하드코딩이며, 오히려 물체와 상대 미끄럼을 유발할 수 있다. 따라서 contact component는 손 명령과 lifecycle 순서만 소유하고, arm-object 상대 pose·속도, guarded approach clearance와 moving-object collision은 별도 time-indexed validator가 검사하도록 분리했다.</p>
+
+<h3>발생한 문제, 원인과 해결</h3>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결과 결과</th></tr>
+<tr><td>Contact event 이름만 있으면 선택된 grasp와 다른 손 명령도 통과할 수 있음</td><td>기존 exact backend는 event order 슬롯만 요구했고 grasp payload의 네 hand state와 waypoint를 다시 대조하지 않음</td><td>Workspace가 exact intercept grasp SHA-256을 조회하고 모든 lifecycle hand state를 joint-name 기준으로 비교한다. Attach 상태 변조와 retention 중 손 움직임을 거부하는 회귀를 추가했다.</td></tr>
+<tr><td>접촉 뒤 arm 정지를 요구하면 moving closure가 불가능해짐</td><td>정적 fixture의 hold 동작을 일반적인 conveyor grasp 의미로 확대함</td><td>Arm hold 조건을 삭제하고 손 lifecycle과 time-indexed arm/object geometry 책임을 분리했다.</td></tr>
+<tr><td>로컬 테스트가 import 전에 종료됨</td><td>현재 local 기본 Python에 NumPy가 없고 filesystem은 read-only여서 새 환경 설치나 compileall cache 생성도 부적절함</td><td>소스는 write-free <code>compile()</code>로 syntax를 확인하고, 실제 회귀는 잠긴 RTX cuRobo environment에서 수행했다.</td></tr>
+<tr><td>서버 <code>git pull</code>이 최신 push 뒤에도 <code>72ac7f4</code> 유지</td><td>서버 checkout의 origin이 현재 GitHub main을 갱신하지 않는 배포 구성임</td><td><code>72ac7f4..b554300</code> 증분 bundle을 프로젝트 영역에 전송하고 <code>FETCH_HEAD</code>를 fast-forward했다. 패키지나 NAS 원본은 수정하지 않았다.</td></tr>
+</table>
+
+<h3>검증 결과와 남은 범위</h3>
+<p>RTX 3090 checkout <code>b554300</code>, cuRobo <code>8e734f3</code> 잠긴 environment에서 contact 6개를 포함해 timing, exact backend, GPU kinematics, partitioned self-collision, quintic subinterval과 continuous dynamics 회귀 34/34가 9.971초에 통과했다. 이는 test wall time이며 pipeline latency가 아니다. 또한 event schedule의 기하학적 접촉 성공을 증명하지 않는다. 다음 필수 단계는 예측 시각별 nearest batch의 provenance를 source-complete evidence에 보존하고, 동일 command에 time-indexed moving-object/approach collision과 drop containment를 결속하는 것이다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
 </body>
