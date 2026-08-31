@@ -16,7 +16,7 @@
 <h1>Nearest grasp는 버리지 않고, 후보 검색에만 사용한다.</h1>
 <p class="lede">Nearest 하나를 곧바로 실행하면 현재 robot state, 충돌, 도달 시간과 강건성을 무시한다. 반대로 nearest를 전혀 쓰지 않으면 이미 검증된 정적 grasp library를 효율적으로 좁힐 수 없다. BeltBench는 exact object·stable pose·hand·capability 안의 nearest top-K를 빠른 검색 순서로 사용하고, 최종 실행 후보는 observation 이후 생성·검증한 complete command의 maximin margin으로 다시 고른다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/0b5ddaa"><code>beltbench@0b5ddaa</code></a>은 Pepsi Light/source-001/Inspire Left/<code>drop_release</code>의 qualified grasp 82개를 상주 index에 올리고, predicted intercept별 nearest top-K와 source-complete evidence, stage-owned actual timestamp, current-state full-task cuRobo command 및 독립 timing·grasp-bound contact lifecycle/maximin 경계를 제공한다. Connector/workcell/time-indexed moving-object collision과 drop containment, RGB inference와 Isaac feedback이 아직 완결되지 않았으므로 <code>execution_authorized=false</code>다.</div>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/4cda817"><code>beltbench@4cda817</code></a>은 Pepsi Light/source-001/Inspire Left/<code>drop_release</code>의 qualified grasp 82개를 상주 index에 올리고, predicted intercept별 nearest top-K와 source-complete evidence, stage-owned actual timestamp, current-state full-task cuRobo command 및 독립 timing·grasp-bound contact lifecycle/maximin 경계를 제공한다. Planning/validation import는 optional RGB backend와 분리됐지만 connector/workcell/time-indexed moving-object collision과 drop containment, 실제 RGB inference와 Isaac feedback이 아직 완결되지 않았으므로 <code>execution_authorized=false</code>다.</div>
 
 <h2>문제와 판단</h2>
 <table class="table">
@@ -189,6 +189,15 @@
 </table>
 <p>실제 timestamp는 track 499480.089843401, grasp retrieval 499480.100208973–499480.101924312, prediction 499480.102187375–499480.103443521, interception 499480.103650101–499480.108113667, planning start 499480.110827435, target 499480.112795491–499480.115935690, command generation 완료 499481.051385227 순서다. 별도 latency에서 역산한 값이 아니라 각 stage가 실제 호출 전후에 기록한 값이다.</p>
 <div class="callout"><strong>남은 경계:</strong> 이 report의 RGB, encoder, stable pose, calibration과 drop은 provisional fixture다. cuRobo producer도 독립 exact connector/workcell/time-indexed object collision, geometric drop containment, integrated maximin, controller handoff와 Isaac feedback을 포함하지 않는다. 따라서 actual-time evidence가 생겼어도 실행 권한이나 grasp 성공을 주장할 수 없다.</div>
+
+<h2>2026-08-31 갱신: Planning과 optional RGB dependency 분리</h2>
+<p>Online core/validator 회귀 87/87은 RTX cuRobo 환경에서 통과했지만 admission test를 추가하자 test collection 전에 <code>ModuleNotFoundError: cv2</code>가 발생했다. Admission이나 trajectory contract가 OpenCV를 쓰는 것이 아니라, Python이 <code>runtime</code> submodule을 import하면서 package initializer를 실행하고, 여기서 multi-stable-pose simulation adapter와 RGB yaw backend까지 연쇄적으로 적재한 것이 원인이었다. cuRobo 환경에 OpenCV를 추가 설치하는 것은 모듈 결합을 숨기는 해결이므로 채택하지 않았다.</p>
+<ol>
+<li><a href="https://github.com/gohyunsu/beltbench/commit/962cad1"><code>962cad1</code></a>에서 <code>beltbench.perception</code>의 기존 RGB-only 공개 API를 source-declared lazy export로 바꿨다. API 이름과 RGB-D 비노출 조건은 유지하며 실제 RGB backend를 요청할 때만 해당 dependency를 import한다.</li>
+<li>첫 재검증에서 runtime initializer의 <code>multi_stable_pose_event</code>가, 두 번째에는 <code>object_only_full_task</code>가 같은 backend를 eager import하는 것을 확인했다. <a href="https://github.com/gohyunsu/beltbench/commit/0aea509"><code>0aea509</code></a>와 <a href="https://github.com/gohyunsu/beltbench/commit/4cda817"><code>4cda817</code></a>에서 이 세 application-level export만 lazy boundary로 이동했다. 전체 runtime initializer를 무리하게 재작성하지 않았다.</li>
+<li>cv2가 없는 잠긴 cuRobo 환경에서 admission 10/10이 통과했고, OpenCV 4.6.0이 있는 서버 RGB Python에서 RGB-only wiring과 realtime RGB pipeline 33/33이 0.576초에 통과했다.</li>
+</ol>
+<p>서버 RGB Python에는 pytest가 없어 첫 runner 호출은 시작되지 않았다. Dependency를 추가하지 않고 표준 <code>unittest</code>로 동일 모듈을 실행했다. 이 결과는 perception latency나 RGB inference 정확도 측정이 아니라, planning/validation process가 RGB backend package를 불필요하게 적재하지 않으며 실제 RGB process의 API도 유지된다는 import-boundary 검증이다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
 </body>
