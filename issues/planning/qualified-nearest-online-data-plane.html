@@ -323,7 +323,7 @@
 </table>
 
 <h3>문제, 원인, 수정, 결과</h3>
-<p>공통 planning session이 모든 current-state nearest no-pick을 조기 종료한 것이 원인이었다. Orchestrator는 이제 거리 bound miss만 <code>intercept-requeryable</code>로 분류하고 나머지 구조적 실패는 그대로 terminal로 유지한다. 회귀 fixture에서 현재 최소 translation distance는 0.188812 m, 선택된 미래 시점 최소값은 0.058001 m였다. 0.07 m bound를 적용하자 현재 query는 의도대로 비었지만 미래 query가 후보를 반환했고 motion generation까지 진행했다. Source 부재가 한 stage에서 끝나는 반대 경계도 포함해 관련 grasp/session/interception 회귀는 <code>41 passed, 5 subtests passed</code>다.</p>
+<p>공통 planning session이 모든 current-state nearest no-pick을 조기 종료한 것이 원인이었다. <a href="https://github.com/gohyunsu/beltbench/commit/ec45490"><code>ec45490</code></a>의 orchestrator는 이제 거리 bound miss만 <code>intercept-requeryable</code>로 분류하고 나머지 구조적 실패는 그대로 terminal로 유지한다. 회귀 fixture에서 현재 최소 translation distance는 0.188812 m, 선택된 미래 시점 최소값은 0.058001 m였다. 0.07 m bound를 적용하자 현재 query는 의도대로 비었지만 미래 query가 후보를 반환했고 motion generation까지 진행했다. Source 부재가 한 stage에서 끝나는 반대 경계도 포함해 로컬 관련 회귀는 <code>41 passed, 5 subtests passed</code>, RTX 3090 잠긴 cuRobo 환경은 <code>41/41</code>을 1.38초에 통과했다.</p>
 
 <div class="callout"><strong>해석:</strong> 이번 수정은 nearest를 최종 선택기로 바꾼 것이 아니다. 물체 이동을 무시한 잘못된 조기 종료를 없애고, 원래 설계대로 predicted intercept마다 nearest top-K를 다시 계산하게 한 것이다. 이후 command는 여전히 complete validation, nearest-rank 비의존 maximin과 future-start handoff를 통과해야 한다.</div>
 </main>
