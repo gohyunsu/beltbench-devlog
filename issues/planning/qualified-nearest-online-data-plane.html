@@ -289,6 +289,28 @@
 <p>화면 단계색도 measured state에서 나온다. RGB segmentation은 주황, pose acquisition은 노랑, planning은 파랑, <code>generated_unvalidated</code>는 성공으로 오인하지 않도록 황색, no-pick과 fault는 붉은색이다.</p>
 
 <div class="callout"><strong>남은 핵심 공백:</strong> 새 composition은 실제 Isaac runner에서 아직 구동되지 않았고 response에는 command가 없다. Online validator에는 dynamics, Jacobian, partitioned self-collision, connector/workcell, timing, contact와 drop component가 있지만 time-indexed moving-object collision은 아직 offline corpus compiler뿐이다. 이 검사가 resident component로 구현되고 동일 generated tensor에서 전체 coverage·maximin·future-start handoff가 끝나기 전에는 grasp animation이나 성공 영상을 만들지 않는다.</div>
+
+<h2>2026-09-01 갱신: Nearest 허용 범위와 dynamic collision qualification</h2>
+<p>Nearest grasp를 제거하는 것이 해결책은 아니다. Exact object, RGB가 추정한 stable-pose class, target hand, required capability, quality와 evidence를 먼저 hard gate한 뒤, predicted intercept마다 현재 robot FK 기준 top-K를 다시 계산하면 bounded compute ordering으로 유효하다. 금지할 것은 nearest-1 직접 실행, acquisition 시점 순서 재사용, 다른 stable pose로의 fallback, retrieval rank를 final score에 넣는 것이다.</p>
+
+<table class="table">
+<tr><th>단계</th><th>Nearest의 역할</th><th>실행 권한</th></tr>
+<tr><td>Retrieval</td><td>동일 context의 qualified static grasp를 bounded top-K로 정렬</td><td>없음</td></tr>
+<tr><td>Generation</td><td>Grasp/time pair의 GPU 계산 순서와 선택적 solver seed</td><td>없음</td></tr>
+<tr><td>Validation/selection</td><td>사용하지 않음. Current tensor의 timing·collision·kinematics·drop margin만 평가</td><td>모든 check와 future-start handoff를 통과한 maximin survivor만 가능</td></tr>
+</table>
+
+<p>이번 재검토에서 더 큰 공백은 nearest가 아니라 moving-object collision authority였다. 현재 Pepsi finite-cylinder contract는 명시적으로 <code>online_collision_authority=false</code>다. 따라서 빠른 CUDA cylinder reduction이 한 command를 clear로 판정해도 mandatory <code>moving_object_collision</code> check를 채울 수 없다. Exact mesh oracle 대비 independent holdout에서 false negative 0을 입증한 broad phase와 필요한 exact narrow phase를 구성하기 전에는 diagnostic 상태를 유지한다.</p>
+
+<h3>발생한 문제, 원인, 해결과 결과</h3>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결 및 결과</th></tr>
+<tr><td>Online-generated command의 schema 4 corpus를 exact HPP-FCL CLI가 평가하지 못함</td><td>Evaluator가 legacy schema 3/3.1 source graph만 재현함</td><td>Schema 4/4.1의 motion result, robot/object model, assembly, connector, proxy, interaction, static workcell과 compiler/timeline implementation을 전부 checksum 재검증한 뒤 exact mesh oracle을 실행하도록 연결했다.</td></tr>
+<tr><td>Independent dynamic holdout CLI가 policy parsing에서 실패할 수 있음</td><td>모든 parent에 static <code>CollisionCorpusAugmentationPolicy</code> loader를 사용함</td><td>Schema 3/4 parent는 <code>DynamicCollisionCorpusAugmentationPolicy</code>를 읽고, 서로 다른 Halton start의 development/holdout을 공통 independence gate로 평가한다.</td></tr>
+<tr><td>첫 local regression에서 7개 실패</td><td>Read-only sandbox가 <code>TemporaryDirectory</code>를 만들 수 없어 fixture 구성 전 실패</td><td>쓰기 가능한 temp 환경에서 같은 31개를 재실행해 31/31, 149.94초로 통과했다. 나머지 24개는 첫 실행에서도 통과했으며 알고리즘 failure는 없었다.</td></tr>
+</table>
+
+<div class="callout"><strong>현재 판정:</strong> Nearest top-K는 유지한다. 그러나 이는 retrieval/compute ordering일 뿐이다. 새 변경은 exact oracle과 independent holdout을 실행할 qualification tooling을 복구한 것이며, cylinder backend가 아직 acceptance를 통과했다는 뜻은 아니다. 다음 단계는 RTX 3090에서 schema 4 parent, 분리된 development/holdout, exact mesh oracle과 GPU candidate report를 생성하고 false negative·latency를 측정한 뒤 resident component의 authority 범위를 결정하는 것이다.</div>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
 </body>
