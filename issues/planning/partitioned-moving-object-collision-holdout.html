@@ -141,6 +141,19 @@
 </ul>
 <p>이 command는 위에서 -77.029 mm로 탈락한 <code>312:intrinsic-bodex-c2e29da0b57c3203</code>와 다른 command다. 하나의 실패와 하나의 pre-attach 통과를 섞어 일반화하지 않는다. 또한 113.463 ms는 한 후보의 moving-object pre-attach partition만 측정한 값이다. Source verification 15.788 s와 model bind 3.458 s는 warmed startup 영역이며, complete online candidate batch에는 self/workcell/connector, attached object, release envelope, dynamics, timing, grasp lifecycle, maximin과 future-start handoff가 추가되어야 한다.</p>
 
+<h2>Fresh online command와 prediction을 직접 결속한다</h2>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/7185d8d"><code>7185d8d</code></a> 이전의 연속 gate는 resident full-command lifecycle에서는 source-closed였지만, online exact-command validator의 workspace를 직접 받는 계약이 없었다. 따라서 실제 RGB·encoder prediction 이후 새로 만든 candidate command에 같은 검사를 적용하려면 caller가 timeline hash, attach pose와 속도를 따로 전달해야 했다. 이 경계는 잘못 조합한 command와 prediction을 구조적으로 막지 못하고, RGB pose covariance도 clearance에 반영하지 못한다.</p>
+<p>새 <code>OnlinePreAttachDynamicObjectInput</code>은 candidate, event command, 이름 순서가 결속된 command tensor, intercept, measured motion-prediction 전체 evidence, object model, stable pose와 grasp를 한 digest로 묶는다. Adapter는 backend-owned opaque factory를 통과한 workspace만 받으므로 component마다 깊은 request graph를 다시 검증하지 않으면서 caller가 임의 workspace를 검증 완료로 표시할 수 없다.</p>
+<p>Encoder prediction을 완전한 등속으로 가정하지도 않는다. Command start와 attach 사이의 prediction knot 전체에서 start-to-attach secant 잔차를 측정하고, translation 잔차와 object bounding radius로 환산한 rotation 잔차를 nominal continuous clearance에서 차감한다. 같은 구간 pose covariance의 translation·rotation trace도 policy의 표준편차 배수로 거리 inflation으로 변환한다. 따라서 nominal gate가 통과해도 model residual 또는 pose uncertainty가 policy를 넘으면 해당 partition은 reject된다.</p>
+<table>
+<tr><th>문제</th><th>원인</th><th>해결과 결과</th></tr>
+<tr><td>Online command와 moving prediction의 조합을 caller가 구성</td><td>Resident lifecycle 전용 adapter만 존재</td><td>Exact command/intercept/prediction/grasp/object source를 단일 SHA-256으로 결속</td></tr>
+<tr><td>Component마다 전체 workspace 재검증 시 latency 증가</td><td>검증 완료 identity가 없음</td><td>Backend factory만 보유한 opaque identity를 생성 시 주입하고 component에서는 identity만 확인</td></tr>
+<tr><td>가속 및 RGB pose uncertainty 누락</td><td>Qualified gate는 constant-translation nominal geometry만 증명</td><td>Secant model residual과 covariance/object-radius inflation을 보수적으로 clearance에서 차감</td></tr>
+<tr><td>Pre-attach 통과를 전체 object collision처럼 오인할 위험</td><td>Backend check 이름은 하나지만 lifecycle은 세 partition</td><td><code>complete_moving_object_collision_check=false</code>, <code>execution_authority=none</code>을 schema invariant로 고정</td></tr>
+</table>
+<p>Local 회귀는 online adapter 5개를 포함해 기존 timing, contact, selection과 continuous gate에서 39 passed, CUDA-only 1 skipped다. 이는 계약과 CPU gate 회귀 결과이며 RTX candidate-batch latency가 아니다. 다음 구현은 동일 command tensor의 attached-object와 release partition을 source-bound evaluator로 추가하고, 세 partition의 최소 slack을 합성한 뒤에만 backend의 <code>moving_object_collision</code> check와 robust maximin에 전달하는 것이다.</p>
+
 <h2>Nearest grasp에 대한 결론</h2>
 <p>Nearest grasp는 제거하지 않는다. Exact object, inferred stable-pose class, hand, capability와 evidence를 먼저 hard gate하고 predicted intercept마다 현재 RGB pose와 robot FK로 bounded top-K를 다시 계산하면 효율적인 proposal/solver order다. 금지하는 것은 nearest-1 직접 실행, acquisition 시점 rank 재사용, 다른 stable pose/hand fallback과 nearest distance를 final score에 넣는 것이다. 각 grasp/time pair는 fresh full command를 만들고 동일 tensor의 모든 partition을 독립 검증한 뒤 nearest-rank-independent robust maximin으로 선택해야 한다.</p>
 
