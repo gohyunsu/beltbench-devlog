@@ -311,6 +311,21 @@
 </table>
 
 <div class="callout"><strong>현재 판정:</strong> Nearest top-K는 유지한다. 그러나 이는 retrieval/compute ordering일 뿐이다. 새 변경은 exact oracle과 independent holdout을 실행할 qualification tooling을 복구한 것이며, cylinder backend가 아직 acceptance를 통과했다는 뜻은 아니다. 다음 단계는 RTX 3090에서 schema 4 parent, 분리된 development/holdout, exact mesh oracle과 GPU candidate report를 생성하고 false negative·latency를 측정한 뒤 resident component의 authority 범위를 결정하는 것이다.</div>
+
+<h2>2026-09-01 갱신: 현재-state distance miss는 미래 interception을 중단하지 않는다</h2>
+<p>현재 hand와 acquisition 시점 object pose 사이의 bounded nearest query가 비어 있어도 물체가 belt를 따라 평행이동하면 미래 <code>object_from_current_hand</code>는 달라진다. 따라서 <code>no_grasp_within_retrieval_bounds</code>를 grasp library 부재나 context 불일치와 같은 terminal no-pick으로 처리하면, 곧 도달 가능한 grasp/time 후보를 prediction 전에 잘못 버린다.</p>
+
+<table class="table">
+<tr><th>분류</th><th>처리</th><th>이유</th></tr>
+<tr><td>현재-state 거리·회전 bound 밖</td><td>Prediction을 계속하고 선택된 각 미래 intercept에서 exact-context index를 다시 query</td><td>Belt translation으로 reference transform이 변하므로 현재 miss는 일시적일 수 있음</td></tr>
+<tr><td>등록 source 없음, 호환 grasp 없음, provisional 미승인</td><td>즉시 no-pick</td><td>미래 물체 위치가 object·stable pose·hand·capability·evidence 부재를 해결하지 않음</td></tr>
+<tr><td>미래 query 후보</td><td>Fresh full-task generation과 independent validation 대상으로만 사용</td><td>Nearest rank·distance에는 실행 권한이 없음</td></tr>
+</table>
+
+<h3>문제, 원인, 수정, 결과</h3>
+<p>공통 planning session이 모든 current-state nearest no-pick을 조기 종료한 것이 원인이었다. Orchestrator는 이제 거리 bound miss만 <code>intercept-requeryable</code>로 분류하고 나머지 구조적 실패는 그대로 terminal로 유지한다. 회귀 fixture에서 현재 최소 translation distance는 0.188812 m, 선택된 미래 시점 최소값은 0.058001 m였다. 0.07 m bound를 적용하자 현재 query는 의도대로 비었지만 미래 query가 후보를 반환했고 motion generation까지 진행했다. Source 부재가 한 stage에서 끝나는 반대 경계도 포함해 관련 grasp/session/interception 회귀는 <code>41 passed, 5 subtests passed</code>다.</p>
+
+<div class="callout"><strong>해석:</strong> 이번 수정은 nearest를 최종 선택기로 바꾼 것이 아니다. 물체 이동을 무시한 잘못된 조기 종료를 없애고, 원래 설계대로 predicted intercept마다 nearest top-K를 다시 계산하게 한 것이다. 이후 command는 여전히 complete validation, nearest-rank 비의존 maximin과 future-start handoff를 통과해야 한다.</div>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
 </body>
