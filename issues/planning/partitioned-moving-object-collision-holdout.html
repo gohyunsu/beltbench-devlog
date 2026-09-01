@@ -16,7 +16,7 @@
 <h1>Moving-object collision을 GPU 보수 근사와 exact mesh의 명시적 분할로 검증한다.</h1>
 <p class="lede">Nearest grasp top-K는 후보를 빠르게 줄이는 데 유효하지만, 현재 RGB pose와 robot state에서 새로 만든 trajectory의 안전을 보장하지 않는다. 이번 단계는 움직이는 물체, robot, conveyor와 table의 시간별 관계를 동일 corpus에서 검사하고, cuRobo와 HPP-FCL이 소유할 collision domain을 겹침 없이 고정한 뒤 독립 holdout에서 false negative 0을 확인했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/19643bc"><code>beltbench@19643bc</code></a>의 frozen partition은 1,952개 generated final-holdout state에서 개발 corpus와 중복 0, false negative 0, false positive 8/449(1.7817%)로 통과했다. 그러나 exact 검사가 아직 online resident batch로 연결되지 않았고 complete command·maximin·handoff·Isaac RGB physics 실행도 닫히지 않았으므로 <code>execution_authorized=false</code>다.</div>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/097139d"><code>beltbench@097139d</code></a>에서 frozen partition을 source-bound resident worker로 구동하고 실제 command의 상태 수별 지연을 측정했다. Holdout의 false negative 0은 유지되지만 730-state 직렬 p95가 1.783초이고 coverage도 discrete state에 한정되므로 <code>execution_authorized=false</code>다.</div>
 
 <h2>Nearest grasp의 위치</h2>
 <table class="table">
@@ -62,10 +62,31 @@
 <ul>
 <li>관련 local regression은 29/29를 통과했다.</li>
 <li>Final oracle 2,682 states는 28.36 s, GPU component는 11.90 s, exact evaluation core는 8.44 s였다. 이는 offline corpus throughput이며 observation-to-command latency가 아니다.</li>
-<li>Exact selected-link path는 순차 호출 시 state당 약 3.15 ms다. 수십·수백 trajectory sample에 직렬 적용하면 실시간 budget을 넘는다.</li>
-<li>다음 구현은 source-bound resident exact worker, 고정 크기 shortlist batch, bounded parallelism과 RTX candidate-batch p50/p95/p99 측정이다. CPU fallback이나 cached validation은 두지 않는다.</li>
-<li>그 뒤 동일 generated tensor에 complete validator를 연결하고, nearest와 무관한 maximin selection, future-start controller lease, Isaac RGB actual-time 실행 순으로 닫는다.</li>
+<li>Resident selected-link path는 아래 RTX 측정에서 state당 p95 약 2.44~2.51 ms였다. 수십·수백 trajectory sample에 직렬 적용하면 실시간 budget을 넘는다.</li>
+<li>다음 구현은 qualified GPU rejection 뒤 exact process sharding을 적용한 고정 크기 shortlist batch와 end-to-end p95 측정이다. CPU permissive fallback이나 cached validation은 두지 않는다.</li>
+<li>Continuous/swept exact coverage까지 검증한 뒤 동일 generated tensor에 complete validator를 연결하고, nearest와 무관한 maximin selection, future-start controller lease, Isaac RGB actual-time 실행 순으로 닫는다.</li>
 </ul>
+
+<h2>Resident worker 실제 지연 측정</h2>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/54bc9d1"><code>54bc9d1</code></a>에서 Unix socket resident worker와 benchmark를 추가하고, <a href="https://github.com/gohyunsu/beltbench/commit/097139d"><code>097139d</code></a>에서 실제 <code>ObjectCollisionModel</code> 계약을 수정했다. RTX 3090 workstation의 i9-13900K에서 startup 검증과 model bind를 한 번만 수행한 뒤 같은 연결로 warmup 5회, 측정 20회를 실행했다.</p>
+<table class="table">
+<tr><th>Trajectory states</th><th>p95 round trip</th><th>p95/state</th></tr>
+<tr><td>1</td><td>3.323 ms</td><td>3.323 ms</td></tr>
+<tr><td>8</td><td>19.351 ms</td><td>2.419 ms</td></tr>
+<tr><td>32</td><td>80.444 ms</td><td>2.514 ms</td></tr>
+<tr><td>128</td><td>317.876 ms</td><td>2.483 ms</td></tr>
+<tr><td>730</td><td>1,782.816 ms</td><td>2.442 ms</td></tr>
+</table>
+<p>실제 generated candidate <code>312:intrinsic-bodex-c2e29da0b57c3203</code>는 8-state 검사에서 이미 <code>link4-object</code> margin -28.204 mm로 거절됐다. 전체 730 states에서는 8.15초의 <code>link5-object</code> margin -77.029 mm가 limiting witness였다. Nearest로 가장 가까운 정적 grasp를 찾거나 cuRobo가 trajectory를 생성했다는 사실만으로 moving grasp가 안전해지지 않는다.</p>
+
+<h2>추가 실패와 다음 조치</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결 또는 판단</th></tr>
+<tr><td>첫 resident startup이 <code>AttributeError</code>로 종료</td><td>단위 테스트 fixture에만 있던 <code>validate()</code>를 실제 immutable object model에도 있다고 가정함</td><td>실패 run을 보존하고 실제 API의 object ID와 geometry를 직접 검증하도록 수정했다. Targeted 7/7, local/server broader 20/20이 통과했다.</td></tr>
+<tr><td>730-state 직렬 exact 검사가 1.78초</td><td>두 exact mesh pair query가 trajectory state마다 순차 실행되어 비용이 거의 선형 증가함</td><td>현재 형태를 real-time이라고 부르지 않는다. GPU conservative rejection을 먼저 수행하고, 통과 complete tensor만 고정 process shard로 exact 검사하는 구조를 측정한다.</td></tr>
+<tr><td>희소 sample만으로 collision-free를 선언할 수 없음</td><td>Resident worker의 계약이 discrete states만 포함하며 state 사이 swept collision은 보장하지 않음</td><td>Downsampling은 rejection diagnostic에만 쓴다. Exact delegated domain의 continuous/swept contract와 holdout이 통과하기 전에는 controller handoff를 금지한다.</td></tr>
+</table>
+<p>성공 evidence는 <code>/mnt/paradex2/hyunsu/beltbench/evidence/runtime-diagnostics/resident-exact-dynamic/097139d-v2</code>에 있다. Identity 파일 SHA-256은 <code>a4f1da13...ae100</code>, latency report SHA-256은 <code>5d9599c7...f934</code>다. 다음 단계는 32 logical CPU를 고려한 bounded process-shard p95, GPU broad-phase와 합친 candidate-batch deadline, continuous coverage를 각각 분리해서 검증하는 것이다.</p>
 
 <p><a href="qualified-nearest-online-data-plane.html">Nearest online data plane</a>과 <a href="partitioned-online-self-collision.html">partitioned self-collision</a>을 함께 보면 후보 검색, 정적 robot 충돌과 움직이는 object 충돌의 권한 경계를 구분할 수 있다.</p>
 </main>
