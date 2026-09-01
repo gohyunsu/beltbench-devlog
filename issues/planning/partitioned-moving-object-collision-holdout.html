@@ -88,6 +88,18 @@
 </table>
 <p>성공 evidence는 <code>/mnt/paradex2/hyunsu/beltbench/evidence/runtime-diagnostics/resident-exact-dynamic/097139d-v2</code>에 있다. Identity 파일 SHA-256은 <code>a4f1da13...ae100</code>, latency report SHA-256은 <code>5d9599c7...f934</code>다. 다음 단계는 32 logical CPU를 고려한 bounded process-shard p95, GPU broad-phase와 합친 candidate-batch deadline, continuous coverage를 각각 분리해서 검증하는 것이다.</p>
 
+<h2>Process sharding 결과와 기각 기준</h2>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/503e12c"><code>503e12c</code></a>에서 complete state tensor를 고정 process pool에 분할하고 global limiting sample로 결정론적으로 합성했다. <a href="https://github.com/gohyunsu/beltbench/commit/966de2c"><code>966de2c</code></a>의 비교기는 serial과 모든 shard report의 command, timeline, state result SHA와 collision witness가 같지 않으면 speedup 계산 자체를 거부한다.</p>
+<table class="table">
+<tr><th>Process shards</th><th>32-state p95</th><th>128-state p95</th><th>730-state p95</th><th>730-state speedup</th></tr>
+<tr><td>1</td><td>80.444 ms</td><td>317.876 ms</td><td>1,782.816 ms</td><td>1.00×</td></tr>
+<tr><td>4</td><td>29.836 ms</td><td>101.574 ms</td><td>563.684 ms</td><td>3.16×</td></tr>
+<tr><td>8</td><td>21.924 ms</td><td>72.370 ms</td><td>358.118 ms</td><td>4.98×</td></tr>
+<tr><td>12</td><td>15.822 ms</td><td>52.827 ms</td><td>270.219 ms</td><td>6.60×</td></tr>
+</table>
+<p>12 processes를 점유해도 exact gate 한 후보만 0.270초로, 현재 validation-selection budget 0.180초를 넘는다. 따라서 shard 수를 더 늘리는 것을 production 기본값으로 정하지 않았다. 비교 report는 <code>/mnt/paradex2/hyunsu/beltbench/evidence/runtime-diagnostics/resident-exact-dynamic/966de2c-scaling-v1/scaling-report.json</code>이며 SHA-256은 <code>d5fdee40...2cf2</code>다. Report는 <code>witness_equivalence_verified=true</code>인 동시에 <code>production_configuration_selected=false</code>, <code>execution_authorized=false</code>를 기록한다.</p>
+<p>다음 latency 작업은 exact domain을 누락하는 sparse sampling이 아니다. Delegated link mesh를 실제로 포함하는 source-certified conservative broad phase로 확실히 먼 state를 증명하고, unsafe state는 fail-fast로 거절한 뒤 ambiguous state만 exact 검사해야 한다. 통과 후보에는 continuous/swept coverage가 여전히 필요하며, 마지막에는 RGB perception과 cuRobo가 동시에 구동되는 조건에서 candidate-batch p95를 다시 측정한다.</p>
+
 <p><a href="qualified-nearest-online-data-plane.html">Nearest online data plane</a>과 <a href="partitioned-online-self-collision.html">partitioned self-collision</a>을 함께 보면 후보 검색, 정적 robot 충돌과 움직이는 object 충돌의 권한 경계를 구분할 수 있다.</p>
 </main>
 <footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
