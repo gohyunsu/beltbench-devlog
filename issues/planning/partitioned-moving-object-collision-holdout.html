@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Partitioned moving-object collision holdout · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-113 · 2026-09-01 · partitioned moving-object collision holdout</div>
+<h1>Moving-object collision을 GPU 보수 근사와 exact mesh의 명시적 분할로 검증한다.</h1>
+<p class="lede">Nearest grasp top-K는 후보를 빠르게 줄이는 데 유효하지만, 현재 RGB pose와 robot state에서 새로 만든 trajectory의 안전을 보장하지 않는다. 이번 단계는 움직이는 물체, robot, conveyor와 table의 시간별 관계를 동일 corpus에서 검사하고, cuRobo와 HPP-FCL이 소유할 collision domain을 겹침 없이 고정한 뒤 독립 holdout에서 false negative 0을 확인했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/19643bc"><code>beltbench@19643bc</code></a>의 frozen partition은 1,952개 generated final-holdout state에서 개발 corpus와 중복 0, false negative 0, false positive 8/449(1.7817%)로 통과했다. 그러나 exact 검사가 아직 online resident batch로 연결되지 않았고 complete command·maximin·handoff·Isaac RGB physics 실행도 닫히지 않았으므로 <code>execution_authorized=false</code>다.</div>
+
+<h2>Nearest grasp의 위치</h2>
+<table class="table">
+<tr><th>단계</th><th>허용 범위</th></tr>
+<tr><td>검색</td><td>Exact object, inferred stable-pose class, hand, capability와 evidence가 일치한 resident library에서 predicted intercept마다 top-8을 다시 조회한다.</td></tr>
+<tr><td>계획</td><td>각 grasp/time pair를 현재 robot feedback에서 fresh full-task trajectory로 생성한다.</td></tr>
+<tr><td>검증</td><td>동일 trajectory tensor를 dynamics, timing, self/workcell/connector와 이번 time-indexed moving-object collision backend가 독립 검사한다.</td></tr>
+<tr><td>선택</td><td>통과 후보만 robust maximin으로 고른다. Nearest rank와 distance는 final score와 command authority에 들어가지 않는다.</td></tr>
+</table>
+<p>따라서 nearest를 쓰면 안 되는 것이 아니라 nearest-1을 곧바로 실행하면 안 된다. 실제 생성 후보에서는 robot-object approach가 약 27.4 mm 침투한 사례도 확인됐으므로, 기하학적으로 가까운 정적 grasp라는 사실은 moving trajectory 안전 증거가 아니다.</p>
+
+<h2>분할 설계</h2>
+<table class="table">
+<tr><th>소유자</th><th>검사 domain</th><th>이유</th></tr>
+<tr><td>cuRobo conservative GPU</td><td><code>link4</code>·<code>link5</code>를 제외한 robot-object, object-conveyor/table/bin</td><td>대부분의 상태를 batch 처리하고 환경 충돌을 보수적으로 거른다.</td></tr>
+<tr><td>HPP-FCL exact mesh</td><td><code>link4</code>·<code>link5</code>와 object</td><td>보수 sphere가 국소 형상을 과도하게 막는 domain만 실제 mesh로 판정한다.</td></tr>
+<tr><td>Composite</td><td>두 결과의 논리 AND</td><td>모든 domain에 정확히 한 owner를 두고 누락이나 permissive fallback을 금지한다.</td></tr>
+</table>
+<p>Partition configuration SHA-256은 <code>4cb53ff0...c1a</code>다. Component report가 같은 policy와 backend identity를 갖지 않으면 합성하지 않는다. Pepsi finite-cylinder proxy 단독에는 online authority가 없으며, frozen partition 전체의 holdout 결과만 candidate representation 적합성을 뒷받침한다.</p>
+
+<h2>개발 과정과 측정</h2>
+<table class="table">
+<tr><th>설계</th><th>Corpus 결과</th><th>판단</th></tr>
+<tr><td>기존 b512 단독</td><td>FN 0, FP 454/601(75.54%)</td><td>안전하지만 지나치게 보수적이어서 online candidate를 대부분 제거한다.</td></tr>
+<tr><td>모든 object-environment를 exact 소유</td><td>FN 0, FP 0, exact 전체 37.7 s</td><td>정확하지만 online shortlist에 그대로 사용할 수 없는 비용이다.</td></tr>
+<tr><td>환경은 GPU, <code>link4/5</code>만 exact</td><td>Development FN 0, FP 9/601(1.50%), exact 8.49 s</td><td>명시적 보수성은 남기면서 exact domain과 비용을 줄였다.</td></tr>
+<tr><td>Frozen final full corpus</td><td>2,682 cases, oracle clear/unsafe 614/2,068, FN 0, FP 8/614(1.30%)</td><td>사전 고정 candidate가 전체 acceptance를 통과했다.</td></tr>
+<tr><td>Independent generated scope</td><td>1,952 cases, clear/unsafe 449/1,503, boundary 180, overlap 0, FN 0, FP 8/449(1.78%)</td><td>별도 Halton start의 generated-only holdout도 통과했다.</td></tr>
+</table>
+<p>Final evidence 경로는 <code>/mnt/paradex2/hyunsu/beltbench/evidence/runtime-diagnostics/online-dynamic-qualification/dabd8c8-final-holdout-v1</code>이다. 통과 보고서 <code>independent-generated-holdout-report.json</code>의 SHA-256은 <code>ef190aeae6d3b131021c01d26274058a2015bde5b1430ec3fe2b47f59ede1b0f</code>다.</p>
+
+<h2>발생한 문제, 원인과 해결</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결과 결과</th></tr>
+<tr><td>cuRobo process가 exact evaluator import에서 중단</td><td>CUDA 환경에는 Pinocchio/HPP-FCL이 없는데 source module이 concrete exact dependency를 함께 import함</td><td><a href="https://github.com/gohyunsu/beltbench/commit/d869d5f"><code>d869d5f</code></a>에서 공통 source closure와 backend-specific loader를 분리했다.</td></tr>
+<tr><td>Exact partition이 37.7초 소요</td><td>Robot-object shortlist뿐 아니라 object-environment 전체를 mesh로 매 state 다시 검사함</td><td><a href="https://github.com/gohyunsu/beltbench/commit/303e2d0"><code>303e2d0</code></a>에서 selected-link hot path와 resident obstacle geometry를 추가하고, <a href="https://github.com/gohyunsu/beltbench/commit/660392d"><code>660392d</code></a>에서 환경 domain을 conservative GPU owner로 이동했다.</td></tr>
+<tr><td>Holdout lineage 비교가 NumPy truth-value 오류로 실패</td><td>NumPy array를 포함한 dataclass tuple을 직접 비교함</td><td><a href="https://github.com/gohyunsu/beltbench/commit/5b0e00a"><code>5b0e00a</code></a>에서 canonical payload로 비교하고 JSON round-trip 회귀를 추가했다.</td></tr>
+<tr><td>첫 generated-only 보고서가 coverage 부족으로 거부</td><td>2,600-case 전체 corpus의 절대 clear/unsafe/unique 최소값을 1,952개 generated subset에 그대로 적용함</td><td>실패 보고서를 보존했다. <a href="https://github.com/gohyunsu/beltbench/commit/19643bc"><code>19643bc</code></a>에서 사전 고정 1,900 minimum 비율로 절대 count만 366/1,316/110으로 기계 환산했다. FN 0, FP 5%와 backend identity는 바꾸지 않았다.</td></tr>
+<tr><td>서버가 새 module 대신 과거 editable checkout을 import</td><td>가상환경의 editable install root와 authoritative checkout이 달랐음</td><td>모든 server 검증에서 <code>PYTHONPATH=/home/hyunsu/.agile/projects/beltbench-4852fc9</code>를 고정했다. Package fallback이나 environment mutation은 하지 않았다.</td></tr>
+</table>
+
+<h2>검증과 남은 병목</h2>
+<ul>
+<li>관련 local regression은 29/29를 통과했다.</li>
+<li>Final oracle 2,682 states는 28.36 s, GPU component는 11.90 s, exact evaluation core는 8.44 s였다. 이는 offline corpus throughput이며 observation-to-command latency가 아니다.</li>
+<li>Exact selected-link path는 순차 호출 시 state당 약 3.15 ms다. 수십·수백 trajectory sample에 직렬 적용하면 실시간 budget을 넘는다.</li>
+<li>다음 구현은 source-bound resident exact worker, 고정 크기 shortlist batch, bounded parallelism과 RTX candidate-batch p50/p95/p99 측정이다. CPU fallback이나 cached validation은 두지 않는다.</li>
+<li>그 뒤 동일 generated tensor에 complete validator를 연결하고, nearest와 무관한 maximin selection, future-start controller lease, Isaac RGB actual-time 실행 순으로 닫는다.</li>
+</ul>
+
+<p><a href="qualified-nearest-online-data-plane.html">Nearest online data plane</a>과 <a href="partitioned-online-self-collision.html">partitioned self-collision</a>을 함께 보면 후보 검색, 정적 robot 충돌과 움직이는 object 충돌의 권한 경계를 구분할 수 있다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
