@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Online attached collision input authority · BeltBench 개발 기록</title>
+<link rel="stylesheet" href="../../assets/css/site.css">
+</head>
+<body>
+<header class="top"><div class="wrap">
+<a class="brand" href="../../index.html">belt<span>bench</span> / 개발 기록</a>
+<nav><a href="../../project.html">프로젝트</a><a href="../index.html">이슈</a></nav>
+</div></header>
+<main class="wrap article">
+<div class="eyebrow">ISSUE-114 · 2026-09-01 · online attached collision authority</div>
+<h1>Nearest top-K는 유지하되 measured RGB command가 없으면 attached 검사를 시작하지 않는다.</h1>
+<p class="lede">정적 AutoDex grasp가 성공했고 현재 hand pose에 가깝다는 사실은 이동 grasp의 attach 이후 안전을 보장하지 않는다. Exact-context nearest는 후보 계산 순서로만 사용하고, observation 이후 새로 생성된 동일 command tensor의 attach→detach 구간을 robot-object와 object-world 연속 충돌로 다시 검사하도록 분리했다.</p>
+
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/58c3643"><code>beltbench@58c3643</code></a>은 attached partition의 exact source binding과 RTX preflight를 구현한다. 그러나 NAS의 positive motion artifact 8개가 모두 <code>provisional_diagnostic</code> 입력이어서 현재 command는 kernel 전에 거절됐다. 이것은 안전한 no-pick이며 실행 권한이나 attached latency 결과가 아니다.</div>
+
+<h2>Nearest grasp의 정확한 역할</h2>
+<table class="table">
+<tr><th>단계</th><th>사용 여부</th><th>판정 기준</th></tr>
+<tr><td>Retrieval</td><td>사용</td><td>동일 object, inferred stable pose, hand, capability와 qualification 안에서 predicted intercept별 top-K를 다시 계산한다.</td></tr>
+<tr><td>Motion generation</td><td>순서로만 사용</td><td>각 grasp/time pair를 현재 robot feedback에서 fresh full command로 생성한다.</td></tr>
+<tr><td>Attached collision</td><td>rank 미사용</td><td>동일 command tensor, grasp SHA, prediction, connector, robot, object와 workcell source를 검사한다.</td></tr>
+<tr><td>Final selection</td><td>미사용</td><td>모든 partition을 통과한 handoff-feasible command의 robust maximin으로 결정한다.</td></tr>
+</table>
+<p>따라서 nearest grasp 자체를 금지할 이유는 없다. 금지 대상은 nearest-1 직접 실행, 다른 stable pose나 hand로의 fallback, acquisition 시점 rank 재사용과 nearest distance를 final score에 넣는 것이다.</p>
+
+<h2>구현한 attached partition</h2>
+<table class="table">
+<tr><th>경계</th><th>구현</th><th>남은 권한</th></tr>
+<tr><td>Attach continuity</td><td>Predicted object pose와 cuRobo FK·<code>object_from_tool</code>로 복원한 실제 attach pose의 translation/rotation 오차를 계산한다.</td><td>Measured RGB command 필요</td></tr>
+<tr><td>Robot-object</td><td>Certified Pepsi sphere set과 비접촉 robot link를 knot와 최대 20 ms quintic cell midpoint에서 검사한다.</td><td>현재 kernel 미실행</td></tr>
+<tr><td>Object-world</td><td>Certified outer OBB를 conveyor, mounting table과 drop bin에 대해 SAT margin으로 검사한다.</td><td>Release partition 미구현</td></tr>
+<tr><td>Uncertainty</td><td>Attach 실제 불연속과 source-bound retention translation/rotation을 physical margin에서 차감한다.</td><td>Retention bound는 provisional</td></tr>
+<tr><td>Authority</td><td><code>complete_moving_object_collision_check=false</code>와 <code>execution_authority=none</code>을 schema invariant로 고정한다.</td><td>Pre-attach·attached·release 합성 필요</td></tr>
+</table>
+
+<h2>발생한 문제, 원인과 해결</h2>
+<table class="table">
+<tr><th>문제</th><th>원인</th><th>해결과 결과</th></tr>
+<tr><td>첫 probe가 certificate load에서 종료</td><td>Attached-world contract에 <code>payload()</code>는 있지만 검증형 <code>from_payload()</code>가 없었음</td><td><a href="https://github.com/gohyunsu/beltbench/commit/9bd13a7"><code>9bd13a7</code></a>에서 class/file loader와 round-trip 테스트를 추가했다.</td></tr>
+<tr><td>두 번째 probe가 device gate에서 종료</td><td>같은 GPU를 뜻하는 <code>cuda</code>와 <code>cuda:0</code>를 객체 equality로 비교함</td><td><a href="https://github.com/gohyunsu/beltbench/commit/8bfb0c0"><code>8bfb0c0</code></a>에서 current CUDA index를 정규화하고 실제 다른 index는 계속 거절한다.</td></tr>
+<tr><td>약 80초 model startup 뒤 authority rejection</td><td>입력 authority를 resident model 구성보다 늦게 검사함</td><td><code>58c3643</code>에서 SHA source preflight를 model load 앞으로 이동했다. 최종 rejection은 4.8초 process wall 안에 끝났고 model/kernel 호출은 0회다.</td></tr>
+<tr><td>한 환경에서 전체 테스트 수집 실패</td><td>Locked cuRobo env에는 의도적으로 Pinocchio/HPP-FCL이 없음</td><td>cuRobo 측과 HPP-FCL 측 회귀를 기존 환경에서 분리했다. dependency를 섞어 설치하지 않았다.</td></tr>
+<tr><td>SAT signed-margin 테스트가 3.999 µm 차이로 실패</td><td>평행축 안정화 epsilon보다 테스트 decimal tolerance가 작았음</td><td>물리 판정은 유지하고 허용오차를 10 µm로 명시했다. 서버 attached-world 테스트 4/4가 통과했다.</td></tr>
+</table>
+
+<h2>RTX preflight evidence</h2>
+<ul>
+<li>입력: Pepsi Light/source-001/Inspire Left grasp <code>intrinsic-bodex-c2e29da0b57c3203</code>, 682-waypoint generated command.</li>
+<li>NAS 감사: generated motion-result 8개, measured 0개, <code>provisional_diagnostic</code> 8개.</li>
+<li>판정: <code>input_rejected</code>, failure <code>prediction_input_not_measured</code>, model load false, kernel invocation false.</li>
+<li>Evidence: <code>/mnt/paradex2/hyunsu/beltbench/evidence/runtime-diagnostics/online-attached-object-collision/58c3643-current-command-attached-preflight-v1/report.json</code>.</li>
+<li>Report SHA-256: <code>5a2bdc3368d38142fd01f29226f560071abe8b04e6257b19a306cba8a8e5238f</code>.</li>
+</ul>
+
+<h2>다음 단계</h2>
+<p>다음 positive는 기존 command의 authority label을 바꾸어 만들지 않는다. Isaac simulation RGB frame을 segmentation·pose·stable-pose admission과 belt tracking에 통과시키고, 그 관측 이후 현재 robot state에서 새 command를 생성해야 한다. 이 measured artifact로 attached CUDA kernel을 실제 측정한 뒤 release partition, 세 partition minimum slack, complete validator, nearest-rank-independent maximin과 future-start handoff를 순서대로 닫는다.</p>
+</main>
+<footer class="footer"><div class="wrap"><a href="../index.html">← 전체 이슈 목록</a></div></footer>
+</body>
+</html>
