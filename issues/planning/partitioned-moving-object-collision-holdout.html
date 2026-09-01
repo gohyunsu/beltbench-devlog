@@ -16,7 +16,7 @@
 <h1>Moving-object collision을 GPU 보수 근사와 exact mesh의 명시적 분할로 검증한다.</h1>
 <p class="lede">Nearest grasp top-K는 후보를 빠르게 줄이는 데 유효하지만, 현재 RGB pose와 robot state에서 새로 만든 trajectory의 안전을 보장하지 않는다. 이번 단계는 움직이는 물체, robot, conveyor와 table의 시간별 관계를 동일 corpus에서 검사하고, cuRobo와 HPP-FCL이 소유할 collision domain을 겹침 없이 고정한 뒤 독립 holdout에서 false negative 0을 확인했다.</p>
 
-<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/0f56eb3"><code>beltbench@0f56eb3</code></a>에서 같은 exact mesh의 bounded threshold query를 final holdout 전에 고정했다. 2,682/2,682 decision, FN 0, FP 0을 확인했지만 final corpus core가 2.004초이고 coverage도 discrete state에 한정되므로 <code>execution_authorized=false</code>다.</div>
+<div class="callout"><strong>현재 효력:</strong> <a href="https://github.com/gohyunsu/beltbench/commit/c42f445"><code>beltbench@c42f445</code></a>는 final-holdout-qualified threshold gate와 source-derived sphere prefilter를 relative-motion-bounded continuous interval certificate로 합성했다. RTX 3090에서 1,800-waypoint command의 0--9초 pre-attach partition을 113.463 ms에 검사했지만 attached/release/dynamics, complete candidate batch, maximin과 controller handoff는 아직 합성되지 않았으므로 <code>execution_authorized=false</code>다.</div>
 
 <h2>Nearest grasp의 위치</h2>
 <table class="table">
@@ -117,6 +117,32 @@
 <tr><td>3.77배 빨라졌지만 full trajectory budget 미충족</td><td>모든 discrete state에서 두 mesh pair를 여전히 검사함</td><td>Threshold gate 단독을 production으로 선택하지 않았다. Quintic command의 joint-speed bound와 물체의 constant-translation bound를 합쳐 midpoint clearance로 연속 interval을 증명하는 단계가 남았다.</td></tr>
 </table>
 <p>Final evidence는 <code>/mnt/paradex2/hyunsu/beltbench/evidence/runtime-diagnostics/dynamic-clearance-gate/0f56eb3-final-holdout-v1</code>에 보존한다. 이 결과는 nearest top-K 이후의 sampled validator를 더 빠르게 만들 수 있음을 증명하지만, nearest rank에 실행 권한을 주거나 state를 듬성듬성 건너뛸 근거는 아니다. 다음 기준은 relative-motion bound를 포함한 continuous interval certificate, complete validator 합성, candidate-batch p95와 future-start handoff다.</p>
+
+<h2>Continuous interval certificate와 실제 resident command</h2>
+<p><a href="https://github.com/gohyunsu/beltbench/commit/dbcd54a"><code>dbcd54a</code></a>부터 <a href="https://github.com/gohyunsu/beltbench/commit/c42f445"><code>c42f445</code></a>까지 discrete state 생략 대신 exact quintic command의 interval bound를 구현했다. 각 cell의 midpoint robot pose와 moving object pose를 평가하고, URDF joint path에서 유도한 link motion gain과 belt의 constant-translation 속도 bound를 요구 clearance에서 차감한다. Lower bound가 양수인 cell만 통과하며, 애매한 cell은 최소 2.5 ms까지 이분한다. Interval budget을 소진하면 no-pick으로 닫힌다.</p>
+<table class="table">
+<tr><th>Revision / 설계</th><th>Online evaluation</th><th>관측과 조치</th></tr>
+<tr><td><code>b2d870d</code>, 0--9 s root cell</td><td>7.109 s</td><td>9초 전체 motion bound가 지나치게 커져 HPP-FCL threshold query와 분할 비용이 폭증했다.</td></tr>
+<tr><td><code>5b0ee3c</code>, initial 100 ms cells</td><td>426.236 ms</td><td>90개 bounded cell로 expensive threshold를 제한했지만 모든 cell에서 exact backend를 호출했다.</td></tr>
+<tr><td><code>89b9433</code>, enclosing-sphere prefilter</td><td>404.864 ms</td><td>90/90 cell을 source-derived sphere가 증명해 exact query는 0회였지만 command 전처리와 source binding이 병목으로 남았다.</td></tr>
+<tr><td><code>398d6f4</code>, quintic polynomial 일회 준비</td><td>273.283 ms</td><td>각 interval에서 1,800-point command를 다시 전처리하던 중복을 제거했다.</td></tr>
+<tr><td><code>b371f1b</code>, timing 경계 분리</td><td>223.970 ms</td><td>Input binding 215.201 ms, 실제 gate 8.770 ms로 병목이 canonical lifecycle 처리임을 확인했다.</td></tr>
+<tr><td><code>c42f445</code>, lifecycle 1회 검증</td><td>113.463 ms</td><td>Canonical digest 정의는 유지하고 hash 경로의 중복 전체/sample 검증만 제거했다. Binding 104.505 ms, gate 8.957 ms다.</td></tr>
+</table>
+
+<h2>최종 source closure와 판정 범위</h2>
+<p>Certificate schema <code>1.2</code>는 arm/combined URDF, object mesh·scale·mesh transform, delegated link mesh, partition·threshold policy, final corpus와 oracle/candidate/comparison report, geometry motion gain뿐 아니라 continuous evaluator, sphere prefilter와 quintic polynomial 구현 파일 SHA-256까지 묶는다. 구현이 바뀌면 과거 certificate를 읽어 성공으로 재사용하지 않고 새로 컴파일한다.</p>
+<ul>
+<li>Evidence: <code>/mnt/paradex2/hyunsu/beltbench/evidence/runtime-diagnostics/continuous-dynamic-object/c42f445-resident-r80-v1</code></li>
+<li>Certificate SHA-256: <code>2ca26b92f27b817dfdc98de4f8b5d5f8db5d26ea8b9e74b203e9c0618371b643</code></li>
+<li>Receipt SHA-256: <code>55dc115c985abdbdf9e1646f04791df227c4ac01e27aeaac36e8faf636dbb697</code></li>
+<li>Command: <code>resident-singleton-full-task-smoke-command</code>, 1,800 waypoints, pre-attach 0--9 s, 90개 100 ms interval</li>
+<li>Result: accepted, sphere-certified 90/90, exact state query 0, limiting <code>arm/link4_0</code>--<code>object/pepsi_light</code> lower bound 75.530 mm at 6.6--6.7 s</li>
+</ul>
+<p>이 command는 위에서 -77.029 mm로 탈락한 <code>312:intrinsic-bodex-c2e29da0b57c3203</code>와 다른 command다. 하나의 실패와 하나의 pre-attach 통과를 섞어 일반화하지 않는다. 또한 113.463 ms는 한 후보의 moving-object pre-attach partition만 측정한 값이다. Source verification 15.788 s와 model bind 3.458 s는 warmed startup 영역이며, complete online candidate batch에는 self/workcell/connector, attached object, release envelope, dynamics, timing, grasp lifecycle, maximin과 future-start handoff가 추가되어야 한다.</p>
+
+<h2>Nearest grasp에 대한 결론</h2>
+<p>Nearest grasp는 제거하지 않는다. Exact object, inferred stable-pose class, hand, capability와 evidence를 먼저 hard gate하고 predicted intercept마다 현재 RGB pose와 robot FK로 bounded top-K를 다시 계산하면 효율적인 proposal/solver order다. 금지하는 것은 nearest-1 직접 실행, acquisition 시점 rank 재사용, 다른 stable pose/hand fallback과 nearest distance를 final score에 넣는 것이다. 각 grasp/time pair는 fresh full command를 만들고 동일 tensor의 모든 partition을 독립 검증한 뒤 nearest-rank-independent robust maximin으로 선택해야 한다.</p>
 
 <p><a href="qualified-nearest-online-data-plane.html">Nearest online data plane</a>과 <a href="partitioned-online-self-collision.html">partitioned self-collision</a>을 함께 보면 후보 검색, 정적 robot 충돌과 움직이는 object 충돌의 권한 경계를 구분할 수 있다.</p>
 </main>
